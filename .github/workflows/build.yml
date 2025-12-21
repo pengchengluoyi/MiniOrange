@@ -1,0 +1,54 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ macos-latest, windows-latest ]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 25
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Download Backend Binary
+        env:
+          # Uses the token you uploaded to Secrets
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+          # 🔥 PLEASE UPDATE THIS TO YOUR ACTUAL BACKEND REPO NAME (Owner/Repo)
+          BACKEND_REPO: 'pengchengluoyi/MiniOrangeServer'
+        run: node scripts/download-backend.js
+
+      - name: Build and Release
+        env:
+          # Token for creating releases in THIS repo
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniOrange-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+
+      # Artifacts are automatically uploaded to GitHub Releases by electron-builder
+      # because of "publish": ["github"] in package.json

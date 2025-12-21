@@ -1,0 +1,102 @@
+{
+  "name": "MiniOrange",
+  "private": true,
+  "version": "0.0.1",
+  "main": "dist-electron/main.js",
+  "description": "MiniOrange",
+  "author": "pengchengluoyi@126.com",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && electron-builder",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.3",
+    "@vue-flow/core": "^1.47.0",
+    "@vue-flow/minimap": "^1.5.4",
+    "@yume-chan/adb-backend-webusb": "^0.0.19",
+    "@yume-chan/scrcpy": "^2.3.0",
+    "@yume-chan/scrcpy-decoder-tinyh264": "^2.1.0",
+    "adbkit": "^2.0.17",
+    "axios": "^1.13.2",
+    "dagre": "^0.8.5",
+    "jmuxer": "^2.1.0",
+    "lucide-vue-next": "^0.554.0",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.24",
+    "vue-router": "^4.6.3",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "electron": "^39.2.3",
+    "electron-builder": "^26.0.12",
+    "rimraf": "^6.1.2",
+    "vite": "^7.2.4",
+    "vite-plugin-electron": "^0.29.0"
+  },
+  "build": {
+    "appId": "com.MiniOrange",
+    "productName": "MiniOrange",
+    "icon": "public/icon.ico",
+    "publish": [
+      "github"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "public/recorder-preload.js",
+        "to": "recorder-preload.js"
+      },
+      {
+        "from": "services/main",
+        "to": "services",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "tools/platform-tools/${os}",
+        "to": "platform-tools"
+      },
+      {
+        "from": "tools/scrcpy-server-v3.3.3.jar",
+        "to": "tools/scrcpy-server-v3.3.3.jar"
+      },
+      {
+        "from": "public/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "public/icon.icns",
+        "to": "icon.icns"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "framework/**/*"
+    ],
+    "mac": {
+      "icon": "public/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
