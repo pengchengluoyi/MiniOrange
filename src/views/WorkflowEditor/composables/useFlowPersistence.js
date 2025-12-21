@@ -41,13 +41,18 @@ export function useFlowPersistence(getNodes, getEdges, setNodes, setEdges, flowN
                 payloadNodes = rawData
             }
 
-            // 🔥 数据清洗：移除 schema 定义 (inputs/outputs)，保留 platform 在 data 中
+            // 🔥 数据清洗：移除 schema 定义 (inputs/outputs)，将 platform 移动到节点根层级
             for (const key in payloadNodes) {
                 if (key === '_ui_meta') continue
                 const node = payloadNodes[key]
                 if (node.data) {
                     if (node.data.inputs) delete node.data.inputs
                     if (node.data.outputs) delete node.data.outputs
+
+                    if (node.data.platform) {
+                        node.platform = node.data.platform
+                        delete node.data.platform
+                    }
                 }
             }
         } catch (e) {
