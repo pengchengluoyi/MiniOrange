@@ -51,7 +51,6 @@ export function useFlowPersistence(getNodes, getEdges, setNodes, setEdges, flowN
 
                     if (node.data.platform) {
                         node.platform = node.data.platform
-                        delete node.data.platform
                     }
                 }
             }
