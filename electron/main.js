@@ -78,6 +78,7 @@ const startPythonService = () => {
 
     if (!fs.existsSync(executablePath)) {
         console.error(`❌ Python 服务可执行文件不存在: ${executablePath}`);
+        sendUiAlert('error', '核心服务缺失', `找不到 Python 服务文件，请尝试重新安装。\n路径: ${executablePath}`)
         return;
     }
 
@@ -104,6 +105,7 @@ const startPythonService = () => {
     });
     pyProc.on('error', (err) => {
         console.error('❌ Python 服务启动失败:', err);
+        sendUiAlert('error', '服务启动失败', `Python 引擎无法启动: ${err.message}`)
     });
     pyProc.on('close', (code) => {
         console.log(`Python 服务退出，代码: ${code}`);
@@ -200,8 +202,6 @@ function initAutoUpdater() {
 // IPC 处理器 (只保留与串流相关的部分，其他保持不变)
 // ----------------------------------------------------
 app.whenReady().then(() => {
-    startPythonService()
-
     // 6. 🔥🔥 运行测试用例 (修复模块导入问题) 🔥🔥
 // 6. 🔥🔥 运行测试用例 (修复：优先使用 .venv 虚拟环境) 🔥🔥
     ipcMain.on('run-case', (event, {rootPath, filename}) => {
@@ -297,6 +297,7 @@ app.whenReady().then(() => {
     })
 
     createWindow()
+    startPythonService() // 🔥 移到窗口创建之后，确保报错时能弹出 Vue 提示
     initAutoUpdater() // 🔥 启动自动更新检查
 
     app.on('activate', () => {
