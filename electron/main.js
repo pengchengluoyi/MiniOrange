@@ -21,7 +21,7 @@ let mainWindow = null                   // 🔥 全局主窗口引用
 let wsClient = null                     // 🔥 新增：当前活跃的 WebSocket 客户端
 let connectionTimeout = null            // 🔥 新增：连接延迟定时器
 const STREAM_PORT = 8888                // ADB 转发使用的本地端口
-const WS_PORT = STREAM_PORT + 1         // WebSocket 服务器使用的端口 (8889)
+const WS_PORT = 8000                    // WebSocket 服务器使用的端口 (8000)
 const SCRCPY_VERSION = '3.3.3'            // 根据你下载的 jar 包版本修改
 // !!! 请确保该路径下的文件存在 !!!
 const SCRCPY_SERVER_PATH = app.isPackaged 
