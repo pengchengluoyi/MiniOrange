@@ -41,7 +41,11 @@
     "productName": "MiniOrange",
     "icon": "public/icon.ico",
     "publish": [
-      "github"
+      {
+        "provider": "github",
+        "owner": "pengchengluoyi@126.com",
+        "repo": "MiniOrange"
+      }
     ],
     "directories": {
       "output": "release"

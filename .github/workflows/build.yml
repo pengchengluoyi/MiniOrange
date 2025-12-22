@@ -51,7 +51,6 @@ jobs:
           path: |
             release/*.exe
             release/*.dmg
-            release/*.zip
 
       # Artifacts are automatically uploaded to GitHub Releases by electron-builder
       # because of "publish": ["github"] in package.json
