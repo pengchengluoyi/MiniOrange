@@ -160,22 +160,25 @@ function initAutoUpdater() {
 
     // 1. 发现新版本
     autoUpdater.on('update-available', (info) => {
+        console.log('✅ [AutoUpdater] 发现新版本:', info.version)
         if (mainWindow) mainWindow.webContents.send('update-available', info)
     })
 
     // 2. 下载进度
     autoUpdater.on('download-progress', (progressObj) => {
+        console.log(`⬇️ [AutoUpdater] 下载进度: ${progressObj.percent.toFixed(2)}%`)
         if (mainWindow) mainWindow.webContents.send('update-progress', progressObj)
     })
 
     // 3. 下载完成
     autoUpdater.on('update-downloaded', (info) => {
+        console.log('✅ [AutoUpdater] 下载完成')
         if (mainWindow) mainWindow.webContents.send('update-downloaded', info)
     })
 
     // 4. 错误处理
     autoUpdater.on('error', (err) => {
-        console.error('AutoUpdater Error:', err)
+        console.error('❌ [AutoUpdater] 发生错误:', err)
     })
 
     // 生产环境才检查更新

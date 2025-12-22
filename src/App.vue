@@ -1,4 +1,7 @@
 <template>
+  <!-- 🔥 全局更新弹窗 -->
+  <UpdatePrompt />
+
   <!-- 1. 启动等待层 -->
   <div v-if="!isServerReady" class="startup-screen">
     <div class="startup-content">
@@ -28,6 +31,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import UpdatePrompt from './components/UpdatePrompt.vue'
 
 const isServerReady = ref(false)
 const showRetryBtn = ref(false)
