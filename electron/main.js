@@ -68,7 +68,7 @@ const startPythonService = () => {
         // 【开发环境】
         // 路径：项目根目录/py_service/api.exe
         // 假设 main.js 在 src 目录下，需要回退一级 '../py_service'
-        const basePath = path.join(__dirname, '../services/main');
+        const basePath = path.join(__dirname, '../services');
         executablePath = path.join(basePath, 'main');
         cwdPath = basePath;
     }
