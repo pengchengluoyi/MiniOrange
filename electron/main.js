@@ -1,6 +1,6 @@
 // electron/main.js - 完整的 Electron 主进程代码 (使用纯 JS 实现 scrcpy 转发)
 
-const {app, BrowserWindow, ipcMain, dialog} = require('electron')
+const {app, BrowserWindow, ipcMain} = require('electron')
 const path = require('path')
 
 const { autoUpdater } = require('electron-updater')
@@ -153,6 +153,13 @@ function createWindow() {
     }
 }
 
+// 🔥 辅助函数：发送 UI 弹窗指令 (替代 dialog.showMessageBox)
+const sendUiAlert = (type, title, message) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('show-alert', { type, title, message })
+    }
+}
+
 // --- 自动更新逻辑 ---
 function initAutoUpdater() {
     // 配置不自动下载，交由用户决定
@@ -179,6 +186,8 @@ function initAutoUpdater() {
     // 4. 错误处理
     autoUpdater.on('error', (err) => {
         console.error('❌ [AutoUpdater] 发生错误:', err)
+        // 🔥 使用 Vue 弹窗提示错误
+        sendUiAlert('error', '自动更新出错', err.message || '网络连接失败或未知错误')
     })
 
     // 生产环境才检查更新

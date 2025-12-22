@@ -60,4 +60,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (_event, value) => callback(value)),
     startDownload: () => ipcRenderer.send('start-download'),
     quitAndInstall: () => ipcRenderer.send('quit-and-install'),
+
+    // 🔥 全局弹窗 (替代 dialog.showMessageBox)
+    onShowAlert: (callback) => ipcRenderer.on('show-alert', (_event, value) => callback(value)),
 })
