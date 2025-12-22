@@ -43,7 +43,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "pengchengluoyi@126.com",
+        "owner": "pengchengluoyi",
         "repo": "MiniOrange"
       }
     ],
