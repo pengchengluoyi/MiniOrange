@@ -21,7 +21,8 @@ if (fs.existsSync(destDir)) {
 fs.mkdirSync(destDir, { recursive: true });
 
 async function getLatestRelease() {
-  const url = `https://api.github.com/repos/${REPO}/releases/latest`;
+  // Change to fetch list of releases to include pre-releases
+  const url = `https://api.github.com/repos/${REPO}/releases?per_page=1`;
   const headers = {
     Authorization: `token ${TOKEN}`,
     Accept: 'application/vnd.github.v3+json'
@@ -29,7 +30,10 @@ async function getLatestRelease() {
 
   try {
     const res = await axios.get(url, { headers });
-    return res.data;
+    if (!res.data || res.data.length === 0) {
+      throw new Error('No releases found');
+    }
+    return res.data[0];
   } catch (error) {
     console.error(`Failed to fetch releases from ${REPO}:`, error.message);
     throw error;
@@ -60,6 +64,7 @@ async function downloadAsset(asset, destPath) {
   try {
     console.log(`Fetching latest release from ${REPO}...`);
     const release = await getLatestRelease();
+    console.log(`Using release: ${release.tag_name}`);
     const platform = process.platform;
 
     // Determine keyword to match asset (e.g., 'win', 'mac', 'darwin')
