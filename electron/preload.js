@@ -52,5 +52,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         }
         // 生产环境 (资源目录)
         return path.join(process.resourcesPath, 'recorder-preload.js');
-    }
+    },
+
+    // 🔥 自动更新相关 API
+    onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (_event, value) => callback(value)),
+    onUpdateProgress: (callback) => ipcRenderer.on('update-progress', (_event, value) => callback(value)),
+    onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (_event, value) => callback(value)),
+    startDownload: () => ipcRenderer.send('start-download'),
+    quitAndInstall: () => ipcRenderer.send('quit-and-install'),
 })

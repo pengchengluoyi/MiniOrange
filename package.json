@@ -1,7 +1,7 @@
 {
   "name": "MiniOrange",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "dist-electron/main.js",
   "description": "MiniOrange",
   "author": "pengchengluoyi@126.com",
@@ -21,6 +21,7 @@
     "adbkit": "^2.0.17",
     "axios": "^1.13.2",
     "dagre": "^0.8.5",
+    "electron-updater": "^6.6.2",
     "jmuxer": "^2.1.0",
     "lucide-vue-next": "^0.554.0",
     "pinia": "^3.0.4",
@@ -44,7 +45,9 @@
       {
         "provider": "github",
         "owner": "pengchengluoyi",
-        "repo": "MiniOrange"
+        "repo": "MiniOrange",
+        "releaseType": "release",
+        "publishAutoUpdate": true
       }
     ],
     "directories": {

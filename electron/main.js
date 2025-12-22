@@ -3,6 +3,7 @@
 const {app, BrowserWindow, ipcMain, dialog} = require('electron')
 const path = require('path')
 
+const { autoUpdater } = require('electron-updater')
 const {AdbDaemonWebSocket} = require('@yume-chan/adb');
 const {ScrcpyClient} = require('@yume-chan/scrcpy');
 const fs = require('fs')
@@ -152,6 +153,37 @@ function createWindow() {
     }
 }
 
+// --- 自动更新逻辑 ---
+function initAutoUpdater() {
+    // 配置不自动下载，交由用户决定
+    autoUpdater.autoDownload = false
+
+    // 1. 发现新版本
+    autoUpdater.on('update-available', (info) => {
+        if (mainWindow) mainWindow.webContents.send('update-available', info)
+    })
+
+    // 2. 下载进度
+    autoUpdater.on('download-progress', (progressObj) => {
+        if (mainWindow) mainWindow.webContents.send('update-progress', progressObj)
+    })
+
+    // 3. 下载完成
+    autoUpdater.on('update-downloaded', (info) => {
+        if (mainWindow) mainWindow.webContents.send('update-downloaded', info)
+    })
+
+    // 4. 错误处理
+    autoUpdater.on('error', (err) => {
+        console.error('AutoUpdater Error:', err)
+    })
+
+    // 生产环境才检查更新
+    if (app.isPackaged) {
+        autoUpdater.checkForUpdates()
+    }
+}
+
 // ----------------------------------------------------
 // IPC 处理器 (只保留与串流相关的部分，其他保持不变)
 // ----------------------------------------------------
@@ -242,7 +274,18 @@ app.whenReady().then(() => {
             event.reply('run-case-finished', {code: 1})
         })
     })
+
+    // --- 自动更新 IPC 监听 ---
+    ipcMain.on('start-download', () => {
+        autoUpdater.downloadUpdate()
+    })
+
+    ipcMain.on('quit-and-install', () => {
+        autoUpdater.quitAndInstall()
+    })
+
     createWindow()
+    initAutoUpdater() // 🔥 启动自动更新检查
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
