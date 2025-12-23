@@ -106,6 +106,11 @@ jobs:
           if [ -f "services/main/$TARGET_FILE" ]; then
             echo "Renaming $TARGET_FILE to $FINAL_NAME..."
             mv "services/main/$TARGET_FILE" "services/main/$FINAL_NAME"
+            
+            # 🔥 建议新增：确保二进制文件有执行权限 (Mac/Linux)
+            if [ "${{ matrix.os }}" != "windows-latest" ]; then
+              chmod +x "services/main/$FINAL_NAME"
+            fi
           fi
           
           # Cleanup

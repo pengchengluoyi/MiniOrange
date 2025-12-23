@@ -1,7 +1,7 @@
 {
   "name": "MiniOrange",
   "private": true,
-  "version": "0.0.9",
+  "version": "0.0.11",
   "main": "dist-electron/main.js",
   "description": "MiniOrange",
   "author": "pengchengluoyi@126.com",
@@ -72,16 +72,6 @@
       {
         "from": "tools/scrcpy-server-v3.3.3.jar",
         "to": "tools/scrcpy-server-v3.3.3.jar"
-      },
-      {
-        "from": "public/icon.ico",
-        "to": "icon.ico",
-        "os": ["win", "linux"]
-      },
-      {
-        "from": "public/icon.icns",
-        "to": "icon.icns",
-        "os": ["mac"]
       }
     ],
     "files": [
@@ -96,18 +86,30 @@
         "dmg",
         "zip"
       ],
-      "identity": null
+      "identity": null,
+      "extraResources": [
+        {
+          "from": "public/icon.icns",
+          "to": "icon.icns"
+        }
+      ]
     },
     "win": {
       "target": [
         "nsis"
+      ],
+      "extraResources": [
+        {
+          "from": "public/icon.ico",
+          "to": "icon.ico"
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "compression": "normal",
       "differentialPackage": false
-    }
+    },
+    "compression": "normal"
   }
 }

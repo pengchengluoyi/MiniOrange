@@ -273,7 +273,11 @@ function createWindow() {
         
         // 确保文件存在再设置，避免报错
         if (fs.existsSync(iconPath)) {
-            app.dock.setIcon(iconPath);
+            try {
+                app.dock.setIcon(iconPath);
+            } catch (e) {
+                console.error('[Main] 设置 Dock 图标失败:', e.message);
+            }
         }
     }
 }
