@@ -316,7 +316,9 @@ function initAutoUpdater() {
         const msg = err.message || '';
         if (msg.includes('ERR_CONNECTION_RESET') || 
             msg.includes('ERR_CONNECTION_TIMED_OUT') ||
-            msg.includes('ERR_INTERNET_DISCONNECTED')) {
+            msg.includes('ERR_INTERNET_DISCONNECTED') ||
+            msg.includes('HttpError: 404') ||             // 🔥 新增：忽略 404 文件未找到错误
+            msg.includes('Cannot find latest.yml')) {     // 🔥 新增：忽略更新配置文件缺失错误
             console.log('[AutoUpdater] 网络错误 (忽略弹窗):', msg);
             return;
         }

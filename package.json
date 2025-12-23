@@ -75,11 +75,13 @@
       },
       {
         "from": "public/icon.ico",
-        "to": "icon.ico"
+        "to": "icon.ico",
+        "os": ["win", "linux"]
       },
       {
         "from": "public/icon.icns",
-        "to": "icon.icns"
+        "to": "icon.icns",
+        "os": ["mac"]
       }
     ],
     "files": [
@@ -103,7 +105,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "compression": "normal",
+      "differentialPackage": false
     }
   }
 }
