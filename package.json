@@ -86,13 +86,7 @@
         "dmg",
         "zip"
       ],
-      "identity": null,
-      "extraResources": [
-        {
-          "from": "public/icon.icns",
-          "to": "icon.icns"
-        }
-      ]
+      "identity": null
     },
     "win": {
       "target": [
