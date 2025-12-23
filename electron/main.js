@@ -834,21 +834,30 @@ ipcMain.handle('set-app-badge', (event, state) => {
             app.dock.setBadge(''); 
         }
     } else if (state === 'success') {
-        mainWindow.setProgressBar(-1); // 清除进度条
+        // Windows: 进度条设为 1 (100%)，mode 默认为 normal (通常是绿色/主题色)
+        // 这解决了 "没有提示" 的问题，满条表示完成
+        mainWindow.setProgressBar(1, { mode: 'normal' });
+
         if (process.platform === 'darwin') {
-            // macOS 显示绿色对勾
-            app.dock.setBadge('✅');
+            // macOS: 移除 "丑陋" 的 emoji，改为跳动提示
+            app.dock.setBadge('');
+            app.dock.bounce(); // 默认是 inform (跳一次)
         } else if (process.platform === 'win32') {
             // Windows 任务栏图标闪烁提示
             mainWindow.flashFrame(true);
+            setTimeout(() => mainWindow.flashFrame(false), 1500);
         }
     } else if (state === 'fail') {
-        mainWindow.setProgressBar(-1); 
+        // Windows: 进度条设为 1 (100%)，mode 为 error (红色)
+        mainWindow.setProgressBar(1, { mode: 'error' });
+
         if (process.platform === 'darwin') {
-            app.dock.setBadge('❌');
+            app.dock.setBadge('!');
+            app.dock.bounce('critical');
         } else if (process.platform === 'win32') {
             // Windows 显示红色错误状态
             mainWindow.setProgressBar(1, { mode: 'error' });
+            mainWindow.flashFrame(true);
         }
     } else {
         // idle / clear
