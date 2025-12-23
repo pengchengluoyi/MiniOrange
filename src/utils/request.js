@@ -4,8 +4,8 @@ import axios from 'axios'
 // 创建 axios 实例
 const service = axios.create({
   // 从环境变量获取 Base URL，方便开发/生产切换
-  // 如果是本地 Python 服务，这里通常是 http://localhost:8000
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  // 如果是本地 Python 服务，这里通常是 http://127.0.0.1:8000
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000',
   timeout: 5000 // 请求超时时间
 })
 

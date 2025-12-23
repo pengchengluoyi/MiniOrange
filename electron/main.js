@@ -53,7 +53,53 @@ const getAdbPath = () => {
 
 let pyProc = null;
 
-const startPythonService = () => {
+// 🔥 新增：强力杀掉 Python 进程 (解决残留问题)
+const killPythonProcess = () => {
+    return new Promise((resolve) => {
+        // 1. 优先杀掉已知的子进程引用
+        if (pyProc) {
+            console.log(`[Main] 正在终止 Python 服务 (PID: ${pyProc.pid})...`);
+            try {
+                if (process.platform === 'win32') {
+                    // Windows: 使用 taskkill 强制杀掉进程树 (/T)
+                    const killer = spawn('taskkill', ['/pid', pyProc.pid, '/f', '/t'], { stdio: 'ignore' });
+                } else {
+                    // Unix: 发送 SIGKILL
+                    pyProc.kill('SIGKILL');
+                }
+            } catch (e) {
+                console.error('[Main] 终止 Python 服务失败:', e);
+            }
+            pyProc = null;
+        }
+
+        // 2. 🔥 全局清理：按名称强制杀掉可能残留的僵尸进程 (双重保险)
+        // 解决 "应用关闭后进程未退出" 导致的端口占用和下次启动慢的问题
+        const isWin = process.platform === 'win32';
+        const procName = isWin ? 'main.exe' : 'main';
+        
+        if (isWin) {
+            const k = spawn('taskkill', ['/IM', procName, '/F'], { stdio: 'ignore' });
+            k.on('close', () => resolve());
+            k.on('error', () => resolve());
+        } else {
+            // Mac/Linux: 使用 -9 (SIGKILL) 确保必杀，避免 SIGTERM 被忽略
+            const k = spawn('pkill', ['-9', '-f', `services/${procName}`]);
+            k.on('close', () => resolve());
+            k.on('error', () => resolve());
+        }
+    });
+};
+
+const startPythonService = async () => {
+    console.log('[Main] 准备启动 Python 服务...');
+    // 防止重复启动，先清理旧进程
+    await killPythonProcess();
+
+    // 🔥 新增：等待 1 秒确保操作系统释放端口 (解决 "Address already in use" 导致的启动失败)
+    console.log('[Main] 等待端口释放...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     let executablePath;
     let cwdPath; // Current Working Directory (工作目录)
 
@@ -69,7 +115,7 @@ const startPythonService = () => {
         // 【开发环境】
         // 路径：项目根目录/py_service/api.exe
         // 假设 main.js 在 src 目录下，需要回退一级 '../py_service'
-        const basePath = path.join(__dirname, '../services');
+        const basePath = path.join(__dirname, '../services/main');
         executablePath = path.join(basePath, 'main');
         cwdPath = basePath;
     }
@@ -80,6 +126,16 @@ const startPythonService = () => {
         console.error(`❌ Python 服务可执行文件不存在: ${executablePath}`);
         sendUiAlert('error', '核心服务缺失', `找不到 Python 服务文件，请尝试重新安装。\n路径: ${executablePath}`)
         return;
+    }
+
+    // 🔥 修复 EACCES 错误：确保二进制文件有执行权限 (macOS/Linux)
+    if (!isWin) {
+        try {
+            console.log(`[Main] 正在赋予执行权限 (chmod +x): ${executablePath}`);
+            fs.chmodSync(executablePath, 0o755);
+        } catch (err) {
+            console.error(`[Main] 无法修改文件权限: ${err.message}`);
+        }
     }
 
     // 启动进程
@@ -196,6 +252,20 @@ function initAutoUpdater() {
     if (app.isPackaged) {
         autoUpdater.checkForUpdates()
     }
+}
+
+// 🔥 新增：单实例锁 (防止双击启动两个应用)
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+    app.quit()
+} else {
+    app.on('second-instance', () => {
+        // 当运行第二个实例时，焦点切换回主窗口
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.focus()
+        }
+    })
 }
 
 // ----------------------------------------------------
@@ -759,8 +829,20 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('will-quit', () => {
-    // 退出时确保清理
-    // ipcMain.emit('stop-stream');
-    if (pyProc) pyProc.kill();
+let isQuitting = false;
+app.on('before-quit', async (event) => {
+    // 🔥 如果是第二个实例 (没有拿到锁)，直接退出，不要执行清理逻辑 (否则会误杀主实例的 Python 进程)
+    if (!gotTheLock) return;
+
+    if (isQuitting) return;
+    
+    // 🔥 关键修复：阻止默认退出，等待异步清理完成
+    // 解决 "关闭应用后后台进程仍然存活" 的问题
+    event.preventDefault();
+    isQuitting = true;
+    
+    console.log('[Main] 应用退出中，正在清理后台进程...');
+    ipcMain.emit('stop-stream');
+    await killPythonProcess();
+    app.quit();
 });

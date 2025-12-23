@@ -372,7 +372,7 @@ const startStream = async () => {
     // 🔥 启动 DOM 监听 WebSocket
     if (domWs.value) domWs.value.close();
     // 假设服务端运行在本地 8000 端口，实际请根据环境配置
-    domWs.value = new MWebSocket('ws://localhost:8000/ws');
+    domWs.value = new MWebSocket('ws://127.0.0.1:8000/ws');
     domWs.value.on('open', () => {
       console.log('DOM WS Connected');
       domWs.value.send({ action: "dumpAndroidDom", devices_id: selectedDeviceId.value });
@@ -497,7 +497,7 @@ const connectWebSocket = (port) => {
       ws.value.close();
     }
 
-    ws.value = new WebSocket(`ws://localhost:${port}`);
+    ws.value = new WebSocket(`ws://127.0.0.1:${port}`);
     ws.value.binaryType = 'arraybuffer';
 
     ws.value.onopen = () => {
