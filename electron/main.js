@@ -244,8 +244,18 @@ function initAutoUpdater() {
     // 4. 错误处理
     autoUpdater.on('error', (err) => {
         console.error('❌ [AutoUpdater] 发生错误:', err)
+        
+        // 🔥 修复：忽略网络连接错误 (如 GitHub 连接重置)，避免每次启动都弹窗骚扰用户
+        const msg = err.message || '';
+        if (msg.includes('ERR_CONNECTION_RESET') || 
+            msg.includes('ERR_CONNECTION_TIMED_OUT') ||
+            msg.includes('ERR_INTERNET_DISCONNECTED')) {
+            console.log('[AutoUpdater] 网络错误 (忽略弹窗):', msg);
+            return;
+        }
+
         // 🔥 使用 Vue 弹窗提示错误
-        sendUiAlert('error', '自动更新出错', err.message || '网络连接失败或未知错误')
+        sendUiAlert('error', '自动更新出错', msg || '网络连接失败或未知错误')
     })
 
     // 生产环境才检查更新

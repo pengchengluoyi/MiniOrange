@@ -66,7 +66,12 @@ jobs:
           
           echo "Extracting backend..."
           mkdir -p services/main
-          unzip -q backend_tmp/$ASSET_NAME -d backend_tmp/extracted
+
+          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+            7z x backend_tmp/$ASSET_NAME -obackend_tmp/extracted -y
+          else
+            unzip -q backend_tmp/$ASSET_NAME -d backend_tmp/extracted
+          fi
           
           # Find the folder containing the executable (main or main.exe)
           # This handles nested folders in the zip (e.g. MiniOrangeServer_vX.X.X/)
