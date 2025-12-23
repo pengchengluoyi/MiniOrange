@@ -72,6 +72,10 @@ export function useFlowRun(performSave, workflowId, showLogPanel) {
         if (isRunning.value) {
             isRunning.value = false
             addLog('warn', '🛑 用户手动停止轮询')
+            // 🔥 手动停止：显示失败/停止状态
+            if (window.electronAPI && window.electronAPI.invoke) {
+                window.electronAPI.invoke('set-app-badge', 'fail');
+            }
         }
     }
 
@@ -95,6 +99,11 @@ export function useFlowRun(performSave, workflowId, showLogPanel) {
         if (!workflowId.value) {
             addLog('error', '未获取到流程ID，无法运行');
             return
+        }
+
+        // 🔥 开始运行：设置 Dock 转圈/进度条
+        if (window.electronAPI && window.electronAPI.invoke) {
+            window.electronAPI.invoke('set-app-badge', 'running');
         }
 
         isRunning.value = true;
@@ -167,9 +176,18 @@ export function useFlowRun(performSave, workflowId, showLogPanel) {
                     if (isTaskFinished) {
                         addLog('info', '✅ 运行结束')
                         isRunning.value = false
+                        // 🔥 运行成功：显示 ✅
+                        if (window.electronAPI && window.electronAPI.invoke) {
+                            window.electronAPI.invoke('set-app-badge', 'success');
+                        }
                     } else if (status && ['finished', 'completed', 'success', 'failed', 'error', 'stopped'].includes(status.toLowerCase())) {
                         addLog('info', `任务结束: ${status}`)
                         isRunning.value = false
+                        // 🔥 根据状态显示 ✅ 或 ❌
+                        const isSuccess = ['finished', 'completed', 'success'].includes(status.toLowerCase());
+                        if (window.electronAPI && window.electronAPI.invoke) {
+                            window.electronAPI.invoke('set-app-badge', isSuccess ? 'success' : 'fail');
+                        }
                     } else {
                         // 继续轮询
                         if (isRunning.value) setTimeout(pollLogs, 3000)
@@ -185,6 +203,10 @@ export function useFlowRun(performSave, workflowId, showLogPanel) {
         } catch (e) {
             addLog('error', `❌ 运行请求失败: ${e.message || e}`)
             isRunning.value = false
+            // 🔥 请求失败：显示 ❌
+            if (window.electronAPI && window.electronAPI.invoke) {
+                window.electronAPI.invoke('set-app-badge', 'fail');
+            }
         }
     }
 
@@ -197,8 +219,14 @@ export function useFlowRun(performSave, workflowId, showLogPanel) {
             })
             window.electronAPI.onRunFinished((data) => {
                 isRunning.value = false;
-                if (data.code === 0) addLog('info', '✅ 运行成功完成');
-                else addLog('error', `❌ 运行异常结束 (Exit Code: ${data.code})`)
+                if (data.code === 0) {
+                    addLog('info', '✅ 运行成功完成');
+                    if (window.electronAPI.invoke) window.electronAPI.invoke('set-app-badge', 'success');
+                }
+                else {
+                    addLog('error', `❌ 运行异常结束 (Exit Code: ${data.code})`)
+                    if (window.electronAPI.invoke) window.electronAPI.invoke('set-app-badge', 'fail');
+                }
             })
         }
     }

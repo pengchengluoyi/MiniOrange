@@ -148,24 +148,26 @@ async function downloadAsset(asset, destPath) {
 
     console.log(`Found binary at: ${binaryPath}`);
 
-    // Rename/Move to 'main' or 'main.exe'
+    // 1. Rename the binary to 'main' or 'main.exe' IN PLACE (inside the extracted folder)
     const targetName = platform === 'win32' ? 'main.exe' : 'main';
-    const targetPath = path.join(destDir, targetName);
+    const binaryDir = path.dirname(binaryPath);
+    const newBinaryPath = path.join(binaryDir, targetName);
 
-    if (binaryPath !== targetPath) {
-      fs.renameSync(binaryPath, targetPath);
+    if (binaryPath !== newBinaryPath) {
+      console.log(`Renaming ${path.basename(binaryPath)} to ${targetName}...`);
+      fs.renameSync(binaryPath, newBinaryPath);
     }
 
-    // Cleanup: Remove everything else in destDir to keep the package clean
-    const allFiles = fs.readdirSync(destDir);
-    for (const f of allFiles) {
-      if (f !== targetName) {
-        fs.rmSync(path.join(destDir, f), { recursive: true, force: true });
-      }
-    }
+    // 2. Move ALL contents from the binary's directory to destDir (services/main)
+    // This preserves _internal folder and other dependencies
+    console.log(`Moving contents from ${binaryDir} to ${destDir}...`);
+    fs.cpSync(binaryDir, destDir, { recursive: true, force: true });
+
+    // 3. Ensure executable permission (Mac/Linux)
+    const finalBinaryPath = path.join(destDir, targetName);
 
     if (platform !== 'win32') {
-      fs.chmodSync(targetPath, 0o755); // Make executable
+      fs.chmodSync(finalBinaryPath, 0o755); // Make executable
     }
 
     console.log('Backend download complete.');

@@ -807,6 +807,48 @@ ipcMain.handle('check-lock-screen', async (event, deviceId) => {
     });
 });
 
+// 🔥 新增：设置应用 Dock/任务栏 状态 (进度条/角标)
+ipcMain.handle('set-app-badge', (event, state) => {
+    if (!mainWindow) return;
+    
+    // state: 'running' | 'success' | 'fail' | 'idle'
+    // console.log(`[Main] 设置应用状态: ${state}`);
+
+    if (state === 'running') {
+        // Windows: 2 = Indeterminate (任务栏图标转圈/流动)
+        // macOS: 显示进度条 (Electron 在 macOS 上不支持 Indeterminate，通常显示满条，但能表示正在运行)
+        mainWindow.setProgressBar(2); 
+        
+        if (process.platform === 'darwin') {
+            // macOS 运行时清除之前的角标
+            app.dock.setBadge(''); 
+        }
+    } else if (state === 'success') {
+        mainWindow.setProgressBar(-1); // 清除进度条
+        if (process.platform === 'darwin') {
+            // macOS 显示绿色对勾
+            app.dock.setBadge('✅');
+        } else if (process.platform === 'win32') {
+            // Windows 任务栏图标闪烁提示
+            mainWindow.flashFrame(true);
+        }
+    } else if (state === 'fail') {
+        mainWindow.setProgressBar(-1); 
+        if (process.platform === 'darwin') {
+            app.dock.setBadge('❌');
+        } else if (process.platform === 'win32') {
+            // Windows 显示红色错误状态
+            mainWindow.setProgressBar(1, { mode: 'error' });
+        }
+    } else {
+        // idle / clear
+        mainWindow.setProgressBar(-1);
+        if (process.platform === 'darwin') {
+            app.dock.setBadge('');
+        }
+    }
+});
+
 ipcMain.handle('scrcpy-start', async () => {
     if (!scrcpyInstance) return await startScrcpy();
     return {videoStream: scrcpyInstance.videoStream};

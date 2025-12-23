@@ -1,28 +1,44 @@
-name: Build and Release
+name: Build MiniOrange Application
 
 on:
   push:
     branches:
       - main
+      - master
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Version from package.json
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Detected version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   build:
+    needs: check-version
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ macos-latest, windows-latest ]
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 25
           cache: 'npm'
@@ -30,13 +46,42 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Download Backend Binary
+      - name: Download Backend Artifacts
+        shell: bash
         env:
-          # Uses the token you uploaded to Secrets
-          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
-          # 🔥 PLEASE UPDATE THIS TO YOUR ACTUAL BACKEND REPO NAME (Owner/Repo)
+          GH_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
           BACKEND_REPO: 'pengchengluoyi/MiniOrangeServer'
-        run: node scripts/download-backend.js
+        run: |
+          # 1. Determine artifact name based on OS
+          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+            ASSET_NAME="miniorange-win-amd64.zip"
+            TARGET_FILE="main.exe"
+          else
+            ASSET_NAME="miniorange-macos-arm64.zip"
+            TARGET_FILE="main"
+          fi
+          
+          echo "Downloading $ASSET_NAME from $BACKEND_REPO..."
+          gh release download --repo $BACKEND_REPO --pattern "$ASSET_NAME" --dir backend_tmp
+          
+          echo "Extracting backend..."
+          mkdir -p services/main
+          unzip -q backend_tmp/$ASSET_NAME -d backend_tmp/extracted
+          
+          # Find the folder containing the executable (main or main.exe)
+          # This handles nested folders in the zip (e.g. MiniOrangeServer_vX.X.X/)
+          TARGET_PATH=$(find backend_tmp/extracted -name "$TARGET_FILE" -type f | head -n 1)
+          TARGET_DIR=$(dirname "$TARGET_PATH")
+          
+          echo "Found backend at $TARGET_DIR"
+          # Copy all contents (executable + dependencies/_internal) to services/main/
+          cp -r "$TARGET_DIR"/* services/main/
+          
+          # Cleanup
+          rm -rf backend_tmp
+          
+          # Verify
+          ls -R services/main/
 
       - name: Build and Release
         env:
