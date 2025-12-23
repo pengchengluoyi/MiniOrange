@@ -55,10 +55,14 @@ jobs:
           # 1. Determine artifact name based on OS
           if [ "${{ matrix.os }}" == "windows-latest" ]; then
             ASSET_NAME="miniorange-win-amd64.zip"
-            TARGET_FILE="main.exe"
+            # 🔥 修复：后端 build.py 生成的是 MiniOrangeServer.exe
+            TARGET_FILE="MiniOrangeServer.exe"
+            FINAL_NAME="main.exe"
           else
             ASSET_NAME="miniorange-macos-arm64.zip"
-            TARGET_FILE="main"
+            # 🔥 修复：后端 build.py 生成的是 MiniOrangeServer
+            TARGET_FILE="MiniOrangeServer"
+            FINAL_NAME="main"
           fi
           
           echo "Downloading $ASSET_NAME from $BACKEND_REPO..."
@@ -68,19 +72,41 @@ jobs:
           mkdir -p services/main
 
           if [ "${{ matrix.os }}" == "windows-latest" ]; then
-            7z x backend_tmp/$ASSET_NAME -obackend_tmp/extracted -y
+            # 使用引号包裹路径，防止空格问题
+            7z x "backend_tmp/$ASSET_NAME" -o"backend_tmp/extracted" -y
           else
             unzip -q backend_tmp/$ASSET_NAME -d backend_tmp/extracted
           fi
           
           # Find the folder containing the executable (main or main.exe)
           # This handles nested folders in the zip (e.g. MiniOrangeServer_vX.X.X/)
-          TARGET_PATH=$(find backend_tmp/extracted -name "$TARGET_FILE" -type f | head -n 1)
+          # 🔥 使用 -iname 忽略大小写
+          TARGET_PATH=$(find backend_tmp/extracted -iname "$TARGET_FILE" -type f | head -n 1)
+
+          if [ -z "$TARGET_PATH" ]; then
+            echo "::error::Could not find $TARGET_FILE in extracted files!"
+            find backend_tmp/extracted -maxdepth 3
+            exit 1
+          fi
+
           TARGET_DIR=$(dirname "$TARGET_PATH")
           
           echo "Found backend at $TARGET_DIR"
+
+          # 🔥 防止递归复制错误的最后一道防线
+          if [ "$TARGET_DIR" == "." ]; then
+             echo "::error::Target directory resolved to root (.), aborting."
+             exit 1
+          fi
+
           # Copy all contents (executable + dependencies/_internal) to services/main/
           cp -r "$TARGET_DIR"/* services/main/
+
+          # 🔥 重命名为 main/main.exe 以匹配 Electron 代码的预期
+          if [ -f "services/main/$TARGET_FILE" ]; then
+            echo "Renaming $TARGET_FILE to $FINAL_NAME..."
+            mv "services/main/$TARGET_FILE" "services/main/$FINAL_NAME"
+          fi
           
           # Cleanup
           rm -rf backend_tmp
