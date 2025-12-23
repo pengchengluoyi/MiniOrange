@@ -4,12 +4,12 @@
       <h3>选择变量</h3>
       <div class="var-source-info">来自节点: {{ pickedNode?.label }}</div>
       <div class="var-list">
-         <div v-for="v in vars" :key="v.key" class="var-item" @click="$emit('select', v.key)">
+         <div v-for="v in displayVars" :key="v.key" class="var-item" @click="$emit('select', v.key)">
            <span class="var-key">{{ v.key }}</span>
            <span class="var-desc">{{ v.label }}</span>
            <span class="var-type">{{ v.type }}</span>
          </div>
-         <div v-if="vars.length === 0" class="empty-vars">此节点无输出变量</div>
+         <div v-if="displayVars.length === 0" class="empty-vars">此节点无输出变量</div>
       </div>
       <div class="modal-footer"><button class="cancel-btn" @click="$emit('close')">返回</button></div>
     </div>
@@ -17,8 +17,51 @@
 </template>
 
 <script setup>
-defineProps(['pickedNode', 'vars'])
+import { computed } from 'vue'
+
+const props = defineProps(['pickedNode', 'vars'])
 defineEmits(['select', 'close'])
+
+// 统一标准化变量列表，兼容数组和对象格式
+const displayVars = computed(() => {
+  // 1. 尝试获取数据源：优先 props.vars，若为空则尝试从节点数据中获取 outputs
+  let raw = props.vars
+  const isVarsEmpty = !raw || (Array.isArray(raw) && raw.length === 0) || (typeof raw === 'object' && Object.keys(raw).length === 0)
+
+  if (isVarsEmpty) {
+    // 尝试更多可能的字段路径
+    raw = props.pickedNode?.data?.outputs || props.pickedNode?.outputs || props.pickedNode?.data?.output || props.pickedNode?.output
+  }
+
+  // 2. 如果仍然为空，尝试根据 nodeCode 补充默认输出 (针对 screenshot 等隐式输出节点)
+  const isRawEmpty = !raw || (Array.isArray(raw) && raw.length === 0) || (typeof raw === 'object' && Object.keys(raw).length === 0)
+  
+  if (isRawEmpty) {
+    const nodeCode = props.pickedNode?.data?.nodeCode || props.pickedNode?.nodeCode
+    if (nodeCode === 'public/screenshot') {
+      raw = ['path', 'url']
+    }
+  }
+
+  if (!raw) return []
+
+  if (Array.isArray(raw)) {
+    return raw.map(item => {
+      if (typeof item === 'string') return { key: item, label: item, type: 'string' }
+      return {
+        key: item.key || item.name || item.id || item.value,
+        label: item.label || item.desc || item.description || item.name || '',
+        type: item.type || 'any'
+      }
+    }).filter(v => v.key)
+  }
+
+  return Object.entries(raw).map(([k, v]) => ({
+    key: k,
+    label: v?.label || v?.desc || v?.description || k,
+    type: v?.type || 'any'
+  }))
+})
 </script>
 
 <style scoped>
