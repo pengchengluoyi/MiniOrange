@@ -1,6 +1,6 @@
 // electron/main.js - 完整的 Electron 主进程代码 (使用纯 JS 实现 scrcpy 转发)
 
-const {app, BrowserWindow, ipcMain} = require('electron')
+const {app, BrowserWindow, ipcMain, nativeImage, Notification} = require('electron')
 const path = require('path')
 
 const { autoUpdater } = require('electron-updater')
@@ -20,6 +20,7 @@ let controlSocket = null                // 🔥 新增：用于发送控制指�
 let mainWindow = null                   // 🔥 全局主窗口引用
 let wsClient = null                     // 🔥 新增：当前活跃的 WebSocket 客户端
 let connectionTimeout = null            // 🔥 新增：连接延迟定时器
+let badgeTimeout = null                 // 🔥 新增：状态清除定时器
 const STREAM_PORT = 8888                // ADB 转发使用的本地端口
 const WS_PORT = 8000                    // WebSocket 服务器使用的端口 (8000)
 const SCRCPY_VERSION = '3.3.3'            // 根据你下载的 jar 包版本修改
@@ -103,20 +104,83 @@ const startPythonService = async () => {
     let executablePath;
     let cwdPath; // Current Working Directory (工作目录)
 
+    // 🔥 动态查找可执行文件 (支持带版本号的文件名，如 MiniOrangeServer_v0.0.9.exe)
+    // 解决后端文件名变动导致无法启动的问题
+    const findBackend = (baseDir) => {
+        try {
+            if (!fs.existsSync(baseDir)) return null;
+            const isWin = process.platform === 'win32';
+            
+            // 定义我们要找的文件名模式
+            // 1. MiniOrangeServer.exe (新版)
+            // 2. main.exe (旧版兼容)
+            const targetNames = ['MiniOrangeServer', 'main'];
+
+            // 辅助函数：在指定目录找 exe
+            const checkDir = (dir) => {
+                const files = fs.readdirSync(dir);
+                for (const name of targetNames) {
+                    const candidates = files.filter(f => {
+                        const lower = f.toLowerCase();
+                        const nameMatch = lower.startsWith(name.toLowerCase());
+                        const extMatch = isWin ? lower.endsWith('.exe') : (!lower.includes('.')); // 简单判断非扩展名文件
+                        return nameMatch && extMatch;
+                    });
+                    if (candidates.length > 0) {
+                        // 找到了！返回完整路径和所在的目录(cwd)
+                        return { 
+                            exe: path.join(dir, candidates[0]), 
+                            cwd: dir 
+                        };
+                    }
+                }
+                return null;
+            };
+
+            // 1. 优先检查当前目录
+            let result = checkDir(baseDir);
+            if (result) return result;
+
+            // 2. 如果没找到，检查是否有 "MiniOrangeServer_v*" 这样的子文件夹
+            const subDirs = fs.readdirSync(baseDir, { withFileTypes: true })
+                .filter(d => d.isDirectory() && d.name.startsWith('MiniOrangeServer_v'));
+            
+            if (subDirs.length > 0) {
+                // 进入第一个匹配的子文件夹查找
+                const versionDir = path.join(baseDir, subDirs[0].name);
+                result = checkDir(versionDir);
+                if (result) return result;
+            }
+
+        } catch (e) {
+            console.error('[Main] 查找后端文件失败:', e);
+        }
+        return null;
+    };
+
     const isWin = process.platform === 'win32';
+    let basePath;
+
     if (app.isPackaged) {
         // 【生产环境】
         // 路径：安装目录/resources/py_service/api.exe
-        const basePath = path.join(process.resourcesPath, 'services');
-        // 🔥 修复：Windows 必须显式加上 .exe 后缀，否则 fs.existsSync 会失败
-        executablePath = path.join(basePath, isWin ? 'main.exe' : 'main');
-        cwdPath = basePath; // 设置工作目录为该文件夹，方便 Python 读取同级目录下的 config.json
+        basePath = path.join(process.resourcesPath, 'services');
     } else {
         // 【开发环境】
         // 路径：项目根目录/py_service/api.exe
         // 假设 main.js 在 src 目录下，需要回退一级 '../py_service'
-        const basePath = path.join(__dirname, '../services/main');
-        executablePath = path.join(basePath, 'main');
+        basePath = path.join(__dirname, '../services');
+    }
+
+    // 执行查找
+    const found = findBackend(basePath);
+    
+    if (found) {
+        executablePath = found.exe;
+        cwdPath = found.cwd; // 🔥 关键：将工作目录设置为 exe 所在的子文件夹，否则找不到 _internal
+    } else {
+        // 没找到时的默认回退（用于报错提示）
+        executablePath = path.join(basePath, isWin ? 'MiniOrangeServer.exe' : 'MiniOrangeServer');
         cwdPath = basePath;
     }
 
@@ -124,7 +188,10 @@ const startPythonService = async () => {
 
     if (!fs.existsSync(executablePath)) {
         console.error(`❌ Python 服务可执行文件不存在: ${executablePath}`);
-        sendUiAlert('error', '核心服务缺失', `找不到 Python 服务文件，请尝试重新安装。\n路径: ${executablePath}`)
+        const helpMsg = app.isPackaged 
+            ? '找不到 Python 服务文件，请尝试重新安装。' 
+            : '开发环境缺失后端服务，请执行: node scripts/download-backend.js';
+        sendUiAlert('error', '核心服务缺失', `${helpMsg}\n路径: ${executablePath}`)
         return;
     }
 
@@ -817,9 +884,33 @@ ipcMain.handle('check-lock-screen', async (event, deviceId) => {
     });
 });
 
+// 🔥 新增：生成简单的纯色 Overlay Icon (用于 Windows 任务栏角标)
+const createOverlayIcon = (type) => {
+    const size = 16;
+    const buffer = Buffer.alloc(size * size * 4);
+    for (let i = 0; i < buffer.length; i += 4) {
+        if (type === 'success') {
+            // Green (RGBA)
+            buffer[i] = 0; buffer[i+1] = 255; buffer[i+2] = 0; buffer[i+3] = 255;
+        } else {
+            // Red (RGBA)
+            buffer[i] = 255; buffer[i+1] = 0; buffer[i+2] = 0; buffer[i+3] = 255;
+        }
+    }
+    try {
+        return nativeImage.createFromBitmap(buffer, { width: size, height: size });
+    } catch (e) { return null; }
+};
+
 // 🔥 新增：设置应用 Dock/任务栏 状态 (进度条/角标)
 ipcMain.handle('set-app-badge', (event, state) => {
     if (!mainWindow) return;
+
+    // 🔥 清除之前的自动重置定时器，防止状态冲突
+    if (badgeTimeout) {
+        clearTimeout(badgeTimeout);
+        badgeTimeout = null;
+    }
     
     // state: 'running' | 'success' | 'fail' | 'idle'
     // console.log(`[Main] 设置应用状态: ${state}`);
@@ -835,35 +926,78 @@ ipcMain.handle('set-app-badge', (event, state) => {
         }
     } else if (state === 'success') {
         // Windows: 进度条设为 1 (100%)，mode 默认为 normal (通常是绿色/主题色)
-        // 这解决了 "没有提示" 的问题，满条表示完成
         mainWindow.setProgressBar(1, { mode: 'normal' });
 
+        // 🔥 全平台通用：显示系统通知 (Mac 在屏幕右上角，Win 在右下角)
+        new Notification({ title: 'MiniOrange', body: '✅ 运行成功完成' }).show();
+
         if (process.platform === 'darwin') {
-            // macOS: 移除 "丑陋" 的 emoji，改为跳动提示
-            app.dock.setBadge('');
+            // macOS: 恢复 ✅ 角标 (用户反馈需要看到明确的成功标识)
+            app.dock.setBadge('✅');
             app.dock.bounce(); // 默认是 inform (跳一次)
         } else if (process.platform === 'win32') {
             // Windows 任务栏图标闪烁提示
             mainWindow.flashFrame(true);
-            setTimeout(() => mainWindow.flashFrame(false), 1500);
+            
+            // 🔥 Windows Overlay Icon (右下角角标)
+            const img = createOverlayIcon('success');
+            if (img) mainWindow.setOverlayIcon(img, '运行成功');
         }
+
+        // 🔥 3秒后自动清除状态 (解决 "进度条不会消失" 的问题)
+        badgeTimeout = setTimeout(() => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.setProgressBar(-1);
+                if (process.platform === 'darwin') app.dock.setBadge('');
+                if (process.platform === 'win32') {
+                    mainWindow.flashFrame(false);
+                    mainWindow.setOverlayIcon(null, ''); // 清除角标
+                }
+            }
+            badgeTimeout = null;
+        }, 3000);
+
     } else if (state === 'fail') {
         // Windows: 进度条设为 1 (100%)，mode 为 error (红色)
         mainWindow.setProgressBar(1, { mode: 'error' });
+
+        // 🔥 全平台通用：显示系统通知
+        new Notification({ title: 'MiniOrange', body: '❌ 运行失败' }).show();
 
         if (process.platform === 'darwin') {
             app.dock.setBadge('!');
             app.dock.bounce('critical');
         } else if (process.platform === 'win32') {
             // Windows 显示红色错误状态
-            mainWindow.setProgressBar(1, { mode: 'error' });
             mainWindow.flashFrame(true);
+            
+            // 🔥 Windows Overlay Icon
+            const img = createOverlayIcon('fail');
+            if (img) mainWindow.setOverlayIcon(img, '运行失败');
         }
+
+        // 🔥 5秒后自动清除状态
+        badgeTimeout = setTimeout(() => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.setProgressBar(-1);
+                if (process.platform === 'darwin') app.dock.setBadge('');
+                if (process.platform === 'win32') {
+                    mainWindow.flashFrame(false);
+                    mainWindow.setOverlayIcon(null, '');
+                }
+            }
+            badgeTimeout = null;
+        }, 5000);
+
     } else {
         // idle / clear
         mainWindow.setProgressBar(-1);
         if (process.platform === 'darwin') {
             app.dock.setBadge('');
+        }
+        if (process.platform === 'win32') {
+            mainWindow.flashFrame(false);
+            mainWindow.setOverlayIcon(null, '');
         }
     }
 });
