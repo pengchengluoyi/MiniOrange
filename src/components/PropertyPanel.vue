@@ -268,6 +268,18 @@
                     </span>
                 </div>
 
+                <!-- File Input -->
+                <template v-else-if="field.type === 'file'">
+                  <div class="input-wrapper">
+                    <input type="text"
+                           v-model="node.data[field.name]"
+                           :placeholder="field.placeholder || '请选择文件...'"
+                           class="panel-input" style="padding-right: 60px;"/>
+                    <button class="pick-btn" style="right: 34px;" @click="handleFileSelect(field.name)" title="浏览本地文件">📂</button>
+                    <button class="pick-btn" @click="$emit('pick-var', field.name)" title="选择变量">🎯</button>
+                  </div>
+                </template>
+
                 <!-- Textarea -->
                 <textarea v-else-if="field.type === 'text'"
                           v-model="node.data[field.name]"
@@ -344,6 +356,37 @@ const addCondition = () => {
 }
 const removeCondition = (idx) => {
   props.node.data.conditions.splice(idx, 1)
+}
+
+// --- File Select ---
+const handleFileSelect = async (fieldName) => {
+  // 1. 尝试通过 IPC 调用原生文件选择框 (推荐，可获取完整路径)
+  // 适配 preload.js 中暴露的 window.electronAPI
+  const ipc = window.electronAPI
+  
+  if (ipc && ipc.invoke) {
+    try {
+      const path = await ipc.invoke('select-file')
+      if (path) {
+        props.node.data[fieldName] = path
+      }
+      return
+    } catch (e) {
+      console.error('IPC select-file 失败，回退到普通 Input:', e)
+    }
+  }
+
+  // 2. 降级方案: HTML5 Input (在 contextIsolation:true 下只能拿到文件名)
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.value = ''
+  input.onchange = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      props.node.data[fieldName] = file.path || file.name
+    }
+  }
+  input.click()
 }
 
 // --- List 逻辑 ---

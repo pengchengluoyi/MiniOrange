@@ -1,6 +1,6 @@
 // electron/main.js - 完整的 Electron 主进程代码 (使用纯 JS 实现 scrcpy 转发)
 
-const {app, BrowserWindow, ipcMain, nativeImage, Notification} = require('electron')
+const {app, BrowserWindow, ipcMain, nativeImage, Notification, dialog} = require('electron')
 const path = require('path')
 
 const { autoUpdater } = require('electron-updater')
@@ -456,6 +456,15 @@ app.whenReady().then(() => {
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+})
+
+// 🔥 新增：处理文件选择 (解决渲染进程无法获取文件全路径的问题)
+ipcMain.handle('select-file', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        properties: ['openFile']
+    })
+    if (canceled) return null
+    return filePaths[0]
 })
 
 // 7. 扫描 Android 设备 (使用 ADB) - 保持不变
