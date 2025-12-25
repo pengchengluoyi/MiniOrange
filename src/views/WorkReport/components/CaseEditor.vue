@@ -38,6 +38,7 @@
         fit-view-on-init
         class="flow-canvas"
         @connect="onConnect"
+        @pane-ready="onPaneReady"
         @nodes-selection-change="onSelectionChange"
         @node-click="onNodeClick"
         @node-double-click="onNodeDoubleClick"
@@ -71,7 +72,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -86,7 +87,6 @@ import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
 
-const { addEdges, removeNodes, removeEdges, fitView } = useVueFlow()
 const isReady = ref(false)
 const nodes = ref([])
 const edges = ref([])
@@ -95,18 +95,66 @@ const route = useRoute()
 const graphId = ref(null)
 const saveStatus = ref('saved')
 let autoSaveTimer = null
+let flowInstance = null
 
-onMounted(async () => {
-  // 从 API 获取数据
-  const id = route.params.id || route.query.id
+const onPaneReady = (instance) => {
+  flowInstance = instance
+  // 初始适配视图
+  instance.fitView()
+}
+
+const loadGraphData = async () => {
+  // 🔥 增强 ID 获取：优先 params.id，其次 query.id，最后尝试 params 的第一个值（防止路由参数名不叫 id）
+  let id = route.params.id || route.query.id
+  if (!id && Object.keys(route.params).length > 0) {
+    id = Object.values(route.params)[0]
+  }
+
+  console.log('Loading Graph Data. ID:', id, 'Params:', route.params, 'Query:', route.query)
+
   if (id) {
     try {
-      // 如果有 ID，直接视为 GraphID 获取详情
-      graphId.value = id
-      const detailRes = await api.getAppGraphDetail(id)
-      if (detailRes.code === 200) {
-        nodes.value = detailRes.data.nodes || []
-        edges.value = detailRes.data.edges || []
+      // 判断 id 是 AppID (UUID字符串) 还是 GraphID (数字)
+      const isAppId = isNaN(Number(id))
+
+      if (isAppId) {
+        // 1. 如果是 AppID，先获取该应用下的图谱列表
+        const listRes = await api.getAppGraphList(id)
+        if (listRes.code === 200 && listRes.data?.length > 0) {
+          graphId.value = listRes.data[0].id
+        } else {
+          // 2. 如果没有，创建一个默认图谱
+          const createRes = await api.createAppGraph({ name: 'Default Graph', app_id: id })
+          if (createRes.code === 200) graphId.value = createRes.data.id
+        }
+      } else {
+        // 3. 如果是数字，直接视为 GraphID
+        graphId.value = id
+      }
+
+      // 4. 获取图谱详情
+      if (graphId.value) {
+        const detailRes = await api.getAppGraphDetail(graphId.value)
+        if (detailRes.code === 200) {
+          // 🔥 数据清洗：确保格式正确，防止 VueFlow 渲染失败
+          const rawNodes = detailRes.data.nodes || []
+          const rawEdges = detailRes.data.edges || []
+
+          nodes.value = rawNodes.map(n => ({
+            id: String(n.id),
+            type: n.type || 'page', // 确保有默认类型
+            position: { x: Number(n.position?.x) || 0, y: Number(n.position?.y) || 0 },
+            data: n.data || {},
+            // 清除可能导致冲突的内部状态
+            selected: false,
+            dragging: false
+          }))
+
+          edges.value = rawEdges.map(e => ({
+            ...e,
+            id: String(e.id)
+          }))
+        }
       }
     } catch (e) {
       console.error('Load graph failed:', e)
@@ -123,10 +171,19 @@ onMounted(async () => {
       sessionStorage.removeItem('last_visited_case_id')
       const targetNode = nodes.value.find(n => n.id === lastVisitedId)
       if (targetNode) {
-        fitView({ nodes: [targetNode], padding: 0.2, duration: 800 })
+        flowInstance?.fitView({ nodes: [targetNode], padding: 0.2, duration: 800 })
       }
     }
   }, 400)
+}
+
+onMounted(() => {
+  loadGraphData()
+})
+
+// 🔥 监听路由变化，解决组件复用时不重新加载的问题
+watch(() => route.fullPath, () => {
+  loadGraphData()
 })
 
 // 键盘快捷键支持
@@ -171,7 +228,7 @@ const selectedNode = ref(null) // 控制编辑器显示
 
 // 连线事件
 const onConnect = (params) => {
-  addEdges([params])
+  flowInstance?.addEdges([params])
   triggerAutoSave()
 }
 
@@ -191,9 +248,10 @@ const onNodeDoubleClick = ({ node }) => {
 
     // 如果是临时ID（以node-开头），则视为新建流程；否则视为已有流程（ID即为WorkflowID）
     if (node.id.toString().startsWith('node-')) {
-      router.push({ name: 'Editor', query: {} })
+      router.push({ name: 'Editor', query: { appId: route.query.appId } })
     } else {
-      router.push({ name: 'Editor', query: { id: node.id } })
+      // 🔥 修复：优先使用 params 跳转，匹配 /report/editor/:id 路由结构
+      router.push({ name: 'Editor', params: { id: node.id } })
     }
     return
   }
@@ -222,7 +280,18 @@ const ensureGraphId = async () => {
 
   try {
     // 尝试从 query 获取 appId，如果没有则使用默认值
-    const appId = route.query.appId || 'default_app'
+    let appId = route.query.appId
+    // 如果 params.id 是 UUID，也可以作为 appId 使用
+    let paramId = route.params.id || route.query.id
+    if (!paramId && Object.keys(route.params).length > 0) {
+      paramId = Object.values(route.params)[0]
+    }
+
+    if (!appId && paramId && isNaN(Number(paramId))) {
+      appId = paramId
+    }
+    appId = appId || 'default_app'
+
     const createRes = await api.createAppGraph({ 
       name: 'New Workflow ' + new Date().toLocaleString(), 
       app_id: appId 
@@ -350,7 +419,7 @@ const addNode = async (type) => {
   // 如果有父节点，自动连线
   if (parentNode) {
     setTimeout(() => {
-      addEdges([{
+      flowInstance?.addEdges([{
         id: `e-${parentNode.id}-${newNode.id}`,
         source: parentNode.id,
         target: newNode.id,
@@ -375,7 +444,7 @@ const addChildNode = async () => {
 
   nodes.value.push(newNode)
   setTimeout(() => {
-    addEdges([{ id: `e-${parent.id}-${newNode.id}`, source: parent.id, target: newNode.id, type: 'smoothstep' }])
+    flowInstance?.addEdges([{ id: `e-${parent.id}-${newNode.id}`, source: parent.id, target: newNode.id, type: 'smoothstep' }])
   }, 10)
   triggerAutoSave()
 }
@@ -394,7 +463,7 @@ const addParentNode = async () => {
 
   nodes.value.push(newNode)
   setTimeout(() => {
-    addEdges([{ id: `e-${newNode.id}-${child.id}`, source: newNode.id, target: child.id, type: 'smoothstep' }])
+    flowInstance?.addEdges([{ id: `e-${newNode.id}-${child.id}`, source: newNode.id, target: child.id, type: 'smoothstep' }])
   }, 10)
   triggerAutoSave()
 }
@@ -418,10 +487,14 @@ const addSiblingNode = async () => {
 }
 
 const removeSelected = () => {
-  removeNodes(selectedElements.value)
+  if (flowInstance) {
+    flowInstance.removeNodes(selectedElements.value)
+  }
   selectedElements.value = []
   triggerAutoSave()
 }
+
+const fitView = () => flowInstance?.fitView()
 </script>
 
 <style scoped>

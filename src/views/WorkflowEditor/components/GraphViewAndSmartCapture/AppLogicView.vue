@@ -371,7 +371,12 @@ const handleAddPage = async () => {
   }
 
   const nid = `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`
-  await addEmptyNode(currentApp.value.id, nid, startX, startY)
+  await addEmptyNode({
+    graph_id: currentApp.value.id,
+    node_id: nid,
+    x: startX,
+    y: startY
+  })
   // 直接操作 nodes 数组
   const newNode = {
     id: nid,

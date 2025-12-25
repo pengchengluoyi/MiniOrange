@@ -205,8 +205,8 @@ const isLandscape = ref(false); // 🔥 是否为横屏/宽屏设备
 let isFirstChunk = true; // 🔥 新增：标记是否为首个数据包 (用于跳过 Header)
 const hiddenInput = ref(null); // 隐藏输入框引用
 
-// 🔥 DOM 投屏相关
-const domWs = shallowRef(null);
+// 🔥 后端服务 WS (DOM 投屏 + 文件上传)
+const backendWs = shallowRef(null);
 const domTree = shallowRef(null);
 const highlightRect = ref(null);
 
@@ -252,6 +252,26 @@ watch(unlockPassword, (newPwd) => {
   }
 });
 
+// 🔥 初始化后端 WebSocket 服务
+const initBackendWs = () => {
+  if (backendWs.value) backendWs.value.close();
+  // 🔥 业务 WebSocket (Python后端): 负责 DOM 树和文件上传，改为 10104
+  backendWs.value = new MWebSocket('ws://127.0.0.1:10104/ws');
+  
+  backendWs.value.on('open', () => {
+    console.log('Backend WS Connected');
+  });
+  
+  // 监听服务端推送的 DOM 数据 (兼容旧逻辑)
+  backendWs.value.on('message', (msg) => {
+    if (msg.type === 'android_dom' && msg.content) {
+      parseDomXml(msg.content);
+    }
+  });
+  
+  backendWs.value.connect();
+};
+
 onMounted(async () => {
   await refreshDevices();
   // 🔥 3. 自动投屏：如果有设备，默认选中第一个并开始
@@ -271,6 +291,9 @@ onMounted(async () => {
     });
     resizeObserver.observe(canvas.value);
   }
+
+  // 启动后端连接
+  initBackendWs();
 });
 
 const selectDevice = async (id) => {
@@ -369,21 +392,15 @@ const startStream = async () => {
     connectionStatus.value = '2. 正在启动串流服务...';
     const device = deviceList.value.find(d => d.id === selectedDeviceId.value);
 
-    // 🔥 启动 DOM 监听 WebSocket
-    if (domWs.value) domWs.value.close();
-    // 假设服务端运行在本地 8000 端口，实际请根据环境配置
-    domWs.value = new MWebSocket('ws://127.0.0.1:8000/ws');
-    domWs.value.on('open', () => {
-      console.log('DOM WS Connected');
-      domWs.value.send({ action: "dumpAndroidDom", devices_id: selectedDeviceId.value });
-    });
-    domWs.value.on('message', (msg) => {
-      if (msg.type === 'android_dom' && msg.content) {
-        parseDomXml(msg.content);
-      }
-      console.log(msg)
-    });
-    domWs.value.connect();
+    // 🔥 启动 DOM 监听 (发送指令给后端)
+    if (backendWs.value && backendWs.value.ws && backendWs.value.ws.readyState === 1) {
+      // 使用 sendRequest 或 send 发送指令
+      // 适配 Python 后端: action + data
+      backendWs.value.send({ 
+        action: "dumpAndroidDom", 
+        data: { devices_id: selectedDeviceId.value } 
+      });
+    }
 
     await startMirroring(device);
 
@@ -393,7 +410,9 @@ const startStream = async () => {
       console.log('串流启动成功，端口:', streamPort.value);
       connectionStatus.value = `3. 串流启动成功 (端口: ${streamPort.value})`;
       // 立即连接，避免后端超时或缓冲区溢出
-      connectWebSocket(streamPort.value);
+      // 🔥 强制连接到 8080 端口 (即使 Electron 返回了 10104)
+      // 请确保 Electron 主进程 (main.js) 中的 WS_PORT 已修改为 8080
+      connectWebSocket(8080);
 
       // 🔥 3. 自动唤醒屏幕 (解决投屏时屏幕不亮导致灰色的问题)
       // KEYCODE_WAKEUP = 224
@@ -497,6 +516,7 @@ const connectWebSocket = (port) => {
       ws.value.close();
     }
 
+    // 🔥 视频流 WebSocket (Scrcpy): 负责传输 H.264 数据，端口固定为 8080
     ws.value = new WebSocket(`ws://127.0.0.1:${port}`);
     ws.value.binaryType = 'arraybuffer';
 
@@ -988,6 +1008,37 @@ const sendKey = (keycode) => {
   }
 };
 
+// 🔥 新增：截图并上传 (供父组件调用)
+const captureAndUpload = async () => {
+  if (!canvas.value || !isStreaming.value) {
+    showToast('请先连接设备并开始投屏', 'error');
+    return null;
+  }
+
+  try {
+    // 1. 获取 Canvas 图片 (Base64)
+    const base64Data = canvas.value.toDataURL('image/jpeg', 0.8);
+    const filename = `screenshot_${Date.now()}.jpg`;
+
+    // 2. 通过 WebSocket 发送上传请求
+    const res = await backendWs.value.sendRequest('upload', {
+      name: filename,
+      content: base64Data
+    });
+
+    if (res.code === 200) {
+      showToast('截图上传成功', 'success');
+      return res.data; // 返回 { filename, path, url }
+    } else {
+      throw new Error(res.msg || 'Unknown error');
+    }
+  } catch (e) {
+    console.error('Upload failed:', e);
+    showToast(`截图失败: ${e.message}`, 'error');
+    return null;
+  }
+};
+
 const stopStream = () => {
   isManualStop.value = true; // 🔥 标记为手动停止
   cleanupStreamState();
@@ -999,10 +1050,8 @@ const cleanupStreamState = () => {
     ws.value.close();
     ws.value = null;
   }
-  if (domWs.value) {
-    domWs.value.close();
-    domWs.value = null;
-  }
+  // backendWs 不需要关闭，它是全局服务
+  
   stopMirroring(); // 使用 useScrcpy 的停止逻辑
   stopKeepAlive(); // 停止心跳
   connectionStatus.value = '已停止';
@@ -1040,6 +1089,12 @@ onUnmounted(() => {
   stopStream(); // stopStream 内部会调用 releaseDecoder
   window.removeEventListener('pointermove', onWindowPointerMove);
   window.removeEventListener('pointerup', onWindowPointerUp);
+  if (backendWs.value) backendWs.value.close();
+});
+
+// 暴露方法给父组件
+defineExpose({
+  captureAndUpload
 });
 </script>
 
