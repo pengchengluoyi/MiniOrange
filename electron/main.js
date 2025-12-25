@@ -333,7 +333,12 @@ function initAutoUpdater() {
 
     // 生产环境才检查更新
     if (app.isPackaged) {
-        autoUpdater.checkForUpdates()
+        // 🔥 修复：macOS 如果没有 Apple 开发者证书签名 (identity: null)，自动更新会校验失败
+        // 报错: Code signature at URL ... did not pass validation
+        // 除非配置了 Apple 证书，否则在 Mac 上禁用自动更新以避免报错
+        if (process.platform !== 'darwin') {
+            autoUpdater.checkForUpdates()
+        }
     }
 }
 

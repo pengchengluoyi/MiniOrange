@@ -149,7 +149,7 @@ import '@vue-flow/controls/dist/style.css'
 
 import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
-import { fetchAppList, createAppGraph, fetchGraphDetail, syncLayout, addEmptyNode } from '@/api/appGraph'
+import { fetchAppList, createAppGraph, getGraphDetail, syncGraphLayout, addEmptyNode } from '@/api/appGraph'
 
 // 将 nodeTypes 定义在 setup 外面或作为非响应式常量，避免不必要的重新渲染
 const nodeTypes = { page: markRaw(PageNode) }
@@ -202,7 +202,7 @@ const enterApp = async (app) => {
   await nextTick()
 
   try {
-    const res = await fetchGraphDetail(app.id)
+    const res = await getGraphDetail(app.id)
     if (res.code === 200) {
       // 深拷贝切断 Proxy 链，并防止 data 为 null 导致崩溃
       const rawData = res.data ? JSON.parse(JSON.stringify(res.data)) : { nodes: [], edges: [] }
@@ -339,7 +339,7 @@ const handleSaveLayout = async () => {
     // toObject 仍然会返回 nodes 和 edges，可以直接用
     const saveNodes = obj.nodes.map(n => ({ id: n.id, position: n.position }))
     const saveEdges = obj.edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, label: e.label, trigger: e.data?.trigger }))
-    await syncLayout({ graph_id: currentApp.value.id, nodes: saveNodes, edges: saveEdges })
+    await syncGraphLayout({ graph_id: currentApp.value.id, nodes: saveNodes, edges: saveEdges })
     saveStatus.value = 'saved'
     lastSavedTime.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   } catch (e) {

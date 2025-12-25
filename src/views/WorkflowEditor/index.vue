@@ -137,7 +137,7 @@ const handleToggleScrcpy = () => {
 const isResizing = ref(false)
 let startX = 0, startWidth = 0
 
-const goBack = () => router.push('/')
+const goBack = () => router.back()
 
 const handleRun = () => flowCanvasRef.value?.handleRunCase()
 const handleStop = () => flowCanvasRef.value?.stopRun()
