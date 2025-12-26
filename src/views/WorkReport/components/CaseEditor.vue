@@ -144,7 +144,17 @@ const loadGraphData = async () => {
             id: String(n.id),
             type: n.type || 'page', // 确保有默认类型
             position: { x: Number(n.position?.x) || 0, y: Number(n.position?.y) || 0 },
-            data: n.data || {},
+            data: {
+              ...(n.data || {}),
+              // 🔥 修复：扁平化 interactions 数据，防止 rect 嵌套导致热区位置计算错误 (NaN%)
+              interactions: (n.data?.interactions || []).map(i => {
+                if (i.rect) {
+                  return { ...i, x: i.rect.x, y: i.rect.y, w: i.rect.w, h: i.rect.h }
+                }
+                return i
+              }),
+              type: n.type || 'page' // 🔥 确保 data.type 存在，用于 PageNode 样式判断
+            },
             // 清除可能导致冲突的内部状态
             selected: false,
             dragging: false
