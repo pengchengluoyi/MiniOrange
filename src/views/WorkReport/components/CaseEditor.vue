@@ -86,6 +86,7 @@ import { Delete, Refresh, ArrowLeft } from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
+import { fetchWorkflowAdd } from '@/api/workflow'
 
 const isReady = ref(false)
 const nodes = ref([])
@@ -104,12 +105,8 @@ const onPaneReady = (instance) => {
 }
 
 const loadGraphData = async () => {
-  // 🔥 增强 ID 获取：优先 params.id，其次 query.id，最后尝试 params 的第一个值（防止路由参数名不叫 id）
-  let id = route.params.id || route.query.id
-  if (!id && Object.keys(route.params).length > 0) {
-    id = Object.values(route.params)[0]
-  }
-
+  // The route is /report/editor/:appId, so we get the ID from there.
+  const id = route.params.appId;
   console.log('Loading Graph Data. ID:', id, 'Params:', route.params, 'Query:', route.query)
 
   if (id) {
@@ -276,8 +273,9 @@ const onConnect = async (params) => {
         type: childNode.type,
         label: childNode.label,
         parentNode: parentId,
+        naturalSize: childNode.data.naturalSize,
         screenshot: childNode.data.screenshot,
-        workflow_id: childNode.data.workflow_id,
+        workflow_id: childNode.data.workflow_id ? String(childNode.data.workflow_id) : null,
         components: (childNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
       }
       try {
@@ -308,11 +306,14 @@ const onNodeDoubleClick = ({ node }) => {
     // 🔥 修复：优先使用 data.workflow_id，如果没有则回退到 node.id (兼容旧数据)
     const targetId = node.data?.workflow_id
 
-    if (!targetId || node.id.toString().startsWith('node-')) {
-      router.push({ name: 'Editor', query: { appId: route.query.appId } })
-    } else {
+    if (targetId) {
       // 🔥 修复：优先使用 params 跳转，匹配 /report/editor/:id 路由结构
       router.push({ name: 'Editor', params: { id: targetId } })
+    } else if (node.id.toString().startsWith('node-')) {
+      router.push({ name: 'Editor', query: { appId: route.query.appId } })
+    } else {
+      // 旧数据兼容：如果没有 workflow_id 且不是临时节点，假设 node.id 就是 workflowId
+      router.push({ name: 'Editor', params: { id: node.id } })
     }
     return
   }
@@ -339,20 +340,12 @@ const triggerAutoSave = () => {
 const ensureGraphId = async () => {
   if (graphId.value) return graphId.value
 
+  const appId = route.params.appId;
+  if (!appId) {
+    ElMessage.error('无法确定当前应用，无法创建图谱');
+    return null;
+  }
   try {
-    // 尝试从 query 获取 appId，如果没有则使用默认值
-    let appId = route.query.appId
-    // 如果 params.id 是 UUID，也可以作为 appId 使用
-    let paramId = route.params.id || route.query.id
-    if (!paramId && Object.keys(route.params).length > 0) {
-      paramId = Object.values(route.params)[0]
-    }
-
-    if (!appId && paramId && isNaN(Number(paramId))) {
-      appId = paramId
-    }
-    appId = appId || 'default_app'
-
     const createRes = await api.createAppGraph({ 
       name: 'New Workflow ' + new Date().toLocaleString(), 
       app_id: appId 
@@ -431,8 +424,9 @@ const onNodeUpdate = async (updatedNode) => {
     type: updatedNode.type || 'page',
     label: updatedNode.label,
     parentNode: updatedNode.parentNode,
+    naturalSize: updatedNode.data.naturalSize,
     screenshot: updatedNode.data.screenshot,
-    workflow_id: updatedNode.data.workflow_id, // 🔥 保存关联的 workflow_id
+    workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null, // 🔥 保存关联的 workflow_id
     components: (updatedNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
   }
   
@@ -457,8 +451,45 @@ const createNodeData = (type, position, label) => {
       label: label || labelMap[type],
       type,
       desc: '',
+
       ...(type === 'page' ? { naturalSize: { w: 375, h: 667 }, interactions: [] } : {}),
       ...(type === 'case' ? { workflow_id: null } : {}) // 🔥 初始化 workflow_id
+    }
+  }
+}
+
+// 辅助函数：如果是用例节点，自动创建关联的 Workflow
+const initWorkflowIfCase = async (node) => {
+  if (node.type === 'case') {
+    // 🔥 修复：如果已经有 workflow_id，就不再创建
+    if (node.data.workflow_id) {
+      return
+    }
+
+    try {
+      console.log('正在自动创建关联流程:', node.label)
+      // 🔥 修复：后端要求 nodes 字段必须是字典(Object)，同时为了兼容 VueFlow 数据结构，我们需要包裹一层
+      const content = {
+        nodes: [{ 
+          id: `public-trigger-${Date.now()}`, 
+          type: 'custom', 
+          position: { x: 100, y: 200 }, 
+          data: { label: '开始', nodeCode: 'public/trigger', outputs: [] } 
+        }],
+        edges: []
+      }
+      const res = await fetchWorkflowAdd(node.label, '自动创建的关联流程', content)
+      console.log('创建流程返回:', res)
+      if (res.code === 200) {
+        // 兼容 res.data.id 或 res.data 直接为 ID 的情况
+        const wfId = res.data?.id || (res.data && typeof res.data !== 'object' ? res.data : null) || res.id
+        if (wfId) {
+          node.data.workflow_id = wfId
+        }
+      }
+    } catch (e) {
+      console.error('Failed to create workflow for case node', e)
+      ElMessage.warning('创建关联流程失败: ' + (e.message || '网络异常'))
     }
   }
 }
@@ -479,6 +510,9 @@ const addNode = async (type) => {
 
   const newNode = createNodeData(type, position)
 
+  // 🔥 新增：如果是用例节点，自动创建 Workflow
+  await initWorkflowIfCase(newNode)
+
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
@@ -487,8 +521,9 @@ const addNode = async (type) => {
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
-        x: position.x,
-        y: position.y
+        label: newNode.label,
+        x: parseInt(position.x),
+        y: parseInt(position.y)
       })
       // 🔥 立即保存节点详情，防止 addEmptyNode 丢失 type/label
       await api.saveNodeDetail({
@@ -496,7 +531,8 @@ const addNode = async (type) => {
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        workflow_id: newNode.data.workflow_id,
+        naturalSize: newNode.data.naturalSize,
+        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -528,18 +564,29 @@ const addChildNode = async () => {
   const type = parent.type || 'page'
   const newNode = createNodeData(type, { x: parent.position.x + 300, y: parent.position.y })
   
+  // 🔥 新增：如果是用例节点，自动创建 Workflow
+  await initWorkflowIfCase(newNode)
+
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ 
+        graph_id: gid, 
+        node_id: newNode.id, 
+        type: newNode.type,
+        label: newNode.label,
+        x: parseInt(newNode.position.x), 
+        y: parseInt(newNode.position.y) 
+      })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        workflow_id: newNode.data.workflow_id,
+        naturalSize: newNode.data.naturalSize,
+        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -563,18 +610,29 @@ const addParentNode = async () => {
   const type = child.type || 'page'
   const newNode = createNodeData(type, { x: child.position.x - 300, y: child.position.y })
   
+  // 🔥 新增：如果是用例节点，自动创建 Workflow
+  await initWorkflowIfCase(newNode)
+
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ 
+        graph_id: gid, 
+        node_id: newNode.id, 
+        type: newNode.type,
+        label: newNode.label,
+        x: parseInt(newNode.position.x), 
+        y: parseInt(newNode.position.y) 
+      })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        workflow_id: newNode.data.workflow_id,
+        naturalSize: newNode.data.naturalSize,
+        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -599,18 +657,29 @@ const addSiblingNode = async () => {
   const type = current.type || 'page'
   const newNode = createNodeData(type, { x: current.position.x, y: current.position.y + 150 })
   
+  // 🔥 新增：如果是用例节点，自动创建 Workflow
+  await initWorkflowIfCase(newNode)
+
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ 
+        graph_id: gid, 
+        node_id: newNode.id, 
+        type: newNode.type,
+        label: newNode.label,
+        x: parseInt(newNode.position.x), 
+        y: parseInt(newNode.position.y) 
+      })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        workflow_id: newNode.data.workflow_id,
+        naturalSize: newNode.data.naturalSize,
+        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }

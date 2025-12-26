@@ -87,7 +87,8 @@ import {useRecord} from './composables/useRecord'
 
 const route = useRoute()
 const router = useRouter()
-const flowId = route.query.id
+// 🔥 修复：优先从 params 获取 ID (匹配 /editor/:id)，其次从 query 获取
+const flowId = route.params.id || route.query.id
 
 const flowCanvasRef = ref(null)
 const flowName = ref('')

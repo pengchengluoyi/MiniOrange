@@ -124,6 +124,17 @@ export function useFlowPersistence(getNodes, getEdges, setNodes, setEdges, flowN
                     }
                 }
 
+                // 🔥 修复：如果 nodesData 包含 nodes 数组 (CaseEditor 保存的格式)，需要提取并转换为对象
+                if (nodesData && nodesData.nodes && Array.isArray(nodesData.nodes)) {
+                    const normalizedNodes = {}
+                    nodesData.nodes.forEach(n => {
+                        if (n.id) normalizedNodes[n.id] = n
+                    })
+                    // 保留 _ui_meta
+                    if (nodesData._ui_meta) normalizedNodes._ui_meta = nodesData._ui_meta
+                    nodesData = normalizedNodes
+                }
+
                 // 重构为适配器需要的完整结构 (补回 case_info 和嵌套 nodes)
                 // 此时 nodesData 结构: { node1: {}, node2: {}, _ui_meta: {} }
                 const { _ui_meta, ...restNodes } = nodesData

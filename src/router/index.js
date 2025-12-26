@@ -55,7 +55,8 @@ const routes = [,
     ]
   },
   {
-    path: '/editor',
+    // 修复：添加可选的 :id 参数以支持编辑现有工作流
+    path: '/editor/:id?',
     name: 'Editor',
     component: WorkflowEditor
   }

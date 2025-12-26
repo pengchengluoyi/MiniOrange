@@ -1,5 +1,5 @@
 // src/composables/useKeyboardShortcuts.js
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, getCurrentInstance } from 'vue'
 
 export function useKeyboardShortcuts(shortcuts = {}) {
   const handleKeydown = (e) => {
@@ -21,11 +21,13 @@ export function useKeyboardShortcuts(shortcuts = {}) {
     // 这里可以继续扩展，例如 Undo/Redo
   }
 
-  onMounted(() => {
-    window.addEventListener('keydown', handleKeydown)
-  })
+  if (getCurrentInstance()) {
+    onMounted(() => {
+      window.addEventListener('keydown', handleKeydown)
+    })
 
-  onUnmounted(() => {
-    window.removeEventListener('keydown', handleKeydown)
-  })
+    onUnmounted(() => {
+      window.removeEventListener('keydown', handleKeydown)
+    })
+  }
 }
