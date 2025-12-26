@@ -227,8 +227,57 @@ const selectedElements = ref([])
 const selectedNode = ref(null) // 控制编辑器显示
 
 // 连线事件
-const onConnect = (params) => {
+const onConnect = async (params) => {
   flowInstance?.addEdges([params])
+
+  // 🔥 自动设置 parentNode 逻辑
+  const sourceNode = nodes.value.find(n => n.id === params.source)
+  const targetNode = nodes.value.find(n => n.id === params.target)
+
+  if (sourceNode && targetNode) {
+    let parentId = null
+    let childNode = null
+
+    // 优先级：Page > Component > Case
+    const priority = { page: 3, component: 2, case: 1 }
+    const sLevel = priority[sourceNode.type] || 0
+    const tLevel = priority[targetNode.type] || 0
+
+    if (sLevel === tLevel) {
+      // 同级：Source 是 Parent (遵循 Source -> Target 关系)
+      parentId = sourceNode.id
+      childNode = targetNode
+    } else if (sLevel > tLevel) {
+      // Source 优先级高：Source 是 Parent
+      parentId = sourceNode.id
+      childNode = targetNode
+    } else {
+      // Target 优先级高：Target 是 Parent
+      parentId = targetNode.id
+      childNode = sourceNode
+    }
+
+    if (childNode && parentId) {
+      childNode.parentNode = parentId
+      // 立即调用接口保存 parentNode
+      const payload = {
+        graph_id: graphId.value,
+        node_id: childNode.id,
+        type: childNode.type,
+        label: childNode.label,
+        parentNode: parentId,
+        screenshot: childNode.data.screenshot,
+        workflow_id: childNode.data.workflow_id,
+        components: (childNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
+      }
+      try {
+        await api.saveNodeDetail(payload)
+      } catch (e) {
+        console.error('Save parentNode failed', e)
+      }
+    }
+  }
+
   triggerAutoSave()
 }
 
@@ -246,12 +295,14 @@ const onNodeDoubleClick = ({ node }) => {
     // 记录当前节点ID，用于返回时定位
     sessionStorage.setItem('last_visited_case_id', node.id)
 
-    // 如果是临时ID（以node-开头），则视为新建流程；否则视为已有流程（ID即为WorkflowID）
-    if (node.id.toString().startsWith('node-')) {
+    // 🔥 修复：优先使用 data.workflow_id，如果没有则回退到 node.id (兼容旧数据)
+    const targetId = node.data?.workflow_id
+
+    if (!targetId || node.id.toString().startsWith('node-')) {
       router.push({ name: 'Editor', query: { appId: route.query.appId } })
     } else {
       // 🔥 修复：优先使用 params 跳转，匹配 /report/editor/:id 路由结构
-      router.push({ name: 'Editor', params: { id: node.id } })
+      router.push({ name: 'Editor', params: { id: targetId } })
     }
     return
   }
@@ -320,7 +371,13 @@ const handleSaveLayout = async () => {
       }
     }
 
-    const saveNodes = nodes.value.map(n => ({ id: n.id, position: n.position }))
+    const saveNodes = nodes.value.map(n => ({ 
+      id: n.id, 
+      position: n.position,
+      type: n.type,
+      parentNode: n.parentNode,
+      data: { ...n.data, label: n.label || n.data.label }
+    }))
     const saveEdges = edges.value.map(e => ({
       id: e.id,
       source: e.source,
@@ -363,7 +420,9 @@ const onNodeUpdate = async (updatedNode) => {
     node_id: updatedNode.id,
     type: updatedNode.type || 'page',
     label: updatedNode.label,
+    parentNode: updatedNode.parentNode,
     screenshot: updatedNode.data.screenshot,
+    workflow_id: updatedNode.data.workflow_id, // 🔥 保存关联的 workflow_id
     components: (updatedNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
   }
   
@@ -385,9 +444,11 @@ const createNodeData = (type, position, label) => {
     label: label || labelMap[type],
     position,
     data: {
+      label: label || labelMap[type],
       type,
       desc: '',
-      ...(type === 'page' ? { naturalSize: { w: 375, h: 667 }, interactions: [] } : {})
+      ...(type === 'page' ? { naturalSize: { w: 375, h: 667 }, interactions: [] } : {}),
+      ...(type === 'case' ? { workflow_id: null } : {}) // 🔥 初始化 workflow_id
     }
   }
 }
@@ -415,8 +476,18 @@ const addNode = async (type) => {
       await api.addEmptyNode({
         graph_id: gid,
         node_id: newNode.id,
+        type: newNode.type,
         x: position.x,
         y: position.y
+      })
+      // 🔥 立即保存节点详情，防止 addEmptyNode 丢失 type/label
+      await api.saveNodeDetail({
+        graph_id: gid,
+        node_id: newNode.id,
+        type: newNode.type,
+        label: newNode.label,
+        workflow_id: newNode.data.workflow_id,
+        components: []
       })
     }
     nodes.value.push(newNode)
@@ -444,13 +515,23 @@ const addNode = async (type) => {
 const addChildNode = async () => {
   if (selectedElements.value.length === 0) return
   const parent = selectedElements.value[0]
-  const newNode = createNodeData('page', { x: parent.position.x + 300, y: parent.position.y })
+  const type = parent.type || 'page'
+  const newNode = createNodeData(type, { x: parent.position.x + 300, y: parent.position.y })
   
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      // 🔥 立即保存节点详情
+      await api.saveNodeDetail({
+        graph_id: gid,
+        node_id: newNode.id,
+        type: newNode.type,
+        label: newNode.label,
+        workflow_id: newNode.data.workflow_id,
+        components: []
+      })
     }
     nodes.value.push(newNode)
   } catch (error) {
@@ -469,13 +550,23 @@ const addChildNode = async () => {
 const addParentNode = async () => {
   if (selectedElements.value.length === 0) return
   const child = selectedElements.value[0]
-  const newNode = createNodeData('page', { x: child.position.x - 300, y: child.position.y })
+  const type = child.type || 'page'
+  const newNode = createNodeData(type, { x: child.position.x - 300, y: child.position.y })
   
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      // 🔥 立即保存节点详情
+      await api.saveNodeDetail({
+        graph_id: gid,
+        node_id: newNode.id,
+        type: newNode.type,
+        label: newNode.label,
+        workflow_id: newNode.data.workflow_id,
+        components: []
+      })
     }
     nodes.value.push(newNode)
   } catch (error) {
@@ -495,13 +586,23 @@ const addSiblingNode = async () => {
   if (selectedElements.value.length === 0) return
   const current = selectedElements.value[0]
   // 简单处理：在下方添加
-  const newNode = createNodeData('page', { x: current.position.x, y: current.position.y + 150 })
+  const type = current.type || 'page'
+  const newNode = createNodeData(type, { x: current.position.x, y: current.position.y + 150 })
   
   // 🔥 核心修复：调用后端接口创建节点
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, type: newNode.type, x: newNode.position.x, y: newNode.position.y })
+      // 🔥 立即保存节点详情
+      await api.saveNodeDetail({
+        graph_id: gid,
+        node_id: newNode.id,
+        type: newNode.type,
+        label: newNode.label,
+        workflow_id: newNode.data.workflow_id,
+        components: []
+      })
     }
     nodes.value.push(newNode)
   } catch (error) {
