@@ -81,7 +81,7 @@ import { MiniMap } from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
-import { ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain } from 'element-plus'
+import { ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage } from 'element-plus'
 import { Delete, Refresh, ArrowLeft } from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
@@ -367,8 +367,13 @@ const onNodeUpdate = async (updatedNode) => {
     components: (updatedNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
   }
   
-  await api.saveNodeDetail(payload)
-  triggerAutoSave() // 同时触发一次布局保存以防万一
+  try {
+    await api.saveNodeDetail(payload)
+    triggerAutoSave() // 同时触发一次布局保存以防万一
+  } catch (error) {
+    console.error('Save node detail failed:', error)
+    ElMessage.error('保存节点详情失败')
+  }
 }
 
 // 辅助函数：创建节点数据
@@ -404,17 +409,22 @@ const addNode = async (type) => {
   const newNode = createNodeData(type, position)
 
   // 🔥 核心修复：调用后端接口创建节点
-  const gid = await ensureGraphId()
-  if (gid) {
-    await api.addEmptyNode({
-      graph_id: gid,
-      node_id: newNode.id,
-      x: position.x,
-      y: position.y
-    })
+  try {
+    const gid = await ensureGraphId()
+    if (gid) {
+      await api.addEmptyNode({
+        graph_id: gid,
+        node_id: newNode.id,
+        x: position.x,
+        y: position.y
+      })
+    }
+    nodes.value.push(newNode)
+  } catch (error) {
+    console.error('Add node failed:', error)
+    ElMessage.error('添加节点失败')
+    return
   }
-
-  nodes.value.push(newNode)
 
   // 如果有父节点，自动连线
   if (parentNode) {
@@ -437,12 +447,18 @@ const addChildNode = async () => {
   const newNode = createNodeData('page', { x: parent.position.x + 300, y: parent.position.y })
   
   // 🔥 核心修复：调用后端接口创建节点
-  const gid = await ensureGraphId()
-  if (gid) {
-    await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+  try {
+    const gid = await ensureGraphId()
+    if (gid) {
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+    }
+    nodes.value.push(newNode)
+  } catch (error) {
+    console.error('Add child node failed:', error)
+    ElMessage.error('添加子节点失败')
+    return
   }
 
-  nodes.value.push(newNode)
   setTimeout(() => {
     flowInstance?.addEdges([{ id: `e-${parent.id}-${newNode.id}`, source: parent.id, target: newNode.id, type: 'smoothstep' }])
   }, 10)
@@ -456,12 +472,18 @@ const addParentNode = async () => {
   const newNode = createNodeData('page', { x: child.position.x - 300, y: child.position.y })
   
   // 🔥 核心修复：调用后端接口创建节点
-  const gid = await ensureGraphId()
-  if (gid) {
-    await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+  try {
+    const gid = await ensureGraphId()
+    if (gid) {
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+    }
+    nodes.value.push(newNode)
+  } catch (error) {
+    console.error('Add parent node failed:', error)
+    ElMessage.error('添加父节点失败')
+    return
   }
 
-  nodes.value.push(newNode)
   setTimeout(() => {
     flowInstance?.addEdges([{ id: `e-${newNode.id}-${child.id}`, source: newNode.id, target: child.id, type: 'smoothstep' }])
   }, 10)
@@ -476,12 +498,18 @@ const addSiblingNode = async () => {
   const newNode = createNodeData('page', { x: current.position.x, y: current.position.y + 150 })
   
   // 🔥 核心修复：调用后端接口创建节点
-  const gid = await ensureGraphId()
-  if (gid) {
-    await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+  try {
+    const gid = await ensureGraphId()
+    if (gid) {
+      await api.addEmptyNode({ graph_id: gid, node_id: newNode.id, x: newNode.position.x, y: newNode.position.y })
+    }
+    nodes.value.push(newNode)
+  } catch (error) {
+    console.error('Add sibling node failed:', error)
+    ElMessage.error('添加同级节点失败')
+    return
   }
 
-  nodes.value.push(newNode)
   // 注意：同级节点通常意味着共享同一个父节点，这里简化为仅创建节点，若需自动连线需遍历 edges 查找父节点
   triggerAutoSave()
 }
