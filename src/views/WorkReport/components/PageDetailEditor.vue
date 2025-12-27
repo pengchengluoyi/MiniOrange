@@ -137,11 +137,12 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, onBeforeUpda
 import { ElMessage, ElContainer, ElHeader, ElMain, ElAside, ElButton, ElButtonGroup, ElInput, ElTag, ElIcon, ElEmpty, ElScrollbar } from 'element-plus'
 import { ZoomIn, ZoomOut, FullScreen, Camera, Check, Close, Delete, Document, InfoFilled } from '@element-plus/icons-vue'
 import * as api from '@/api/workReport'
+import { wsUploadFile, wsGetFile } from '@/api/mWebSocket'
 
 const props = defineProps({ node: Object })
 const emit = defineEmits(['close', 'update'])
 
-const localData = reactive({ label: '', desc: '', screenshot: '', interactions: [], naturalW: 0, naturalH: 0 })
+const localData = reactive({ label: '', desc: '', screenshot: '', screenshotPath: '', interactions: [], naturalW: 0, naturalH: 0 })
 const ocrLoading = ref(false)
 const selectedCompIndex = ref(-1)
 
@@ -178,10 +179,26 @@ const handleFileUpload = async (e) => {
 
   const reader = new FileReader()
   reader.onload = async (evt) => {
-    localData.screenshot = evt.target.result
-    // 图片加载是异步的，onImgLoad 会被触发，那里会调用 fitToScreen
-    // 这里先调用 OCR
-    await performOCR(evt.target.result)
+    const base64 = evt.target.result
+    ocrLoading.value = true
+    try {
+      // 1. Upload via WebSocket
+      const res = await wsUploadFile(file.name, base64)
+      if (res.code === 200) {
+        // 🔥 修复：如果后端返回的是对象 {filename, path, url}，优先取 path (绝对路径)
+        localData.screenshotPath = (res.data && typeof res.data === 'object' && res.data.path) ? res.data.path : res.data
+        localData.screenshot = base64 // Use base64 for immediate display
+        // 2. Perform OCR
+        await performOCR(base64)
+      } else {
+        ElMessage.error(res.msg || '上传失败')
+        ocrLoading.value = false
+      }
+    } catch (e) {
+      console.error(e)
+      ElMessage.error('上传出错')
+      ocrLoading.value = false
+    }
   }
   reader.readAsDataURL(file)
 }
@@ -238,7 +255,7 @@ const updateNode = () => {
   props.node.label = localData.label
   props.node.desc = localData.desc
   if (props.node.data) props.node.data.desc = localData.desc
-  props.node.data.screenshot = localData.screenshot
+  props.node.data.screenshot = localData.screenshotPath || localData.screenshot
   props.node.data.interactions = localData.interactions
   props.node.data.naturalSize = { w: localData.naturalW, h: localData.naturalH }
   emit('update', props.node)
@@ -455,11 +472,34 @@ const handleKeydown = (e) => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (props.node) {
     localData.label = props.node.label
     localData.desc = props.node.desc || props.node.data?.desc || ''
-    localData.screenshot = props.node.data.screenshot
+    
+    // 🔥 修复：安全地获取截图路径字符串，防止因数据为对象而崩溃
+    const screenshotData = props.node.data.screenshot
+    let path = ''
+    if (screenshotData && typeof screenshotData === 'object') {
+      path = screenshotData.path || screenshotData.url || ''
+    } else if (typeof screenshotData === 'string') {
+      path = screenshotData
+    }
+    localData.screenshotPath = path
+
+    if (path && !path.startsWith('data:image') && !path.startsWith('http')) {
+      try {
+        const res = await wsGetFile(path)
+        if (res.code === 200) {
+          localData.screenshot = res.data // Assuming res.data contains the base64 content
+        }
+      } catch (e) {
+        console.error('Failed to load image via WS', e)
+      }
+    } else {
+      localData.screenshot = path
+    }
+
     localData.interactions = JSON.parse(JSON.stringify(props.node.data.interactions || []))
     localData.naturalW = props.node.data.naturalSize?.w || 0
     localData.naturalH = props.node.data.naturalSize?.h || 0

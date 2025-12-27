@@ -1,116 +1,130 @@
-// /Users/cpc/code/MiniOrange/src/api/mWebSocket.js
+import { ElMessage } from 'element-plus'
 
-export default class MWebSocket {
-    constructor(url) {
-        this.url = url;
-        this.ws = null;
-        this.listeners = {};
-        this.pendingRequests = new Map(); // Map<req_id, {resolve, reject, timer}>
-        this.reconnectTimer = null;
+// Default to local Python service port 10104
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:10104/ws'
+
+let ws = null
+let isConnected = false
+const pendingRequests = new Map()
+let reconnectTimer = null
+const messageListeners = new Set() // 🔥 Listeners for push messages
+
+export const initWebSocket = () => {
+  if (ws) return
+
+  ws = new WebSocket(WS_URL)
+
+  ws.onopen = () => {
+    console.log('[WS] Connected')
+    isConnected = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
     }
+  }
 
-    connect() {
-        if (this.ws) this.ws.close();
-        try {
-            this.ws = new WebSocket(this.url);
+  ws.onclose = () => {
+    console.log('[WS] Disconnected')
+    isConnected = false
+    ws = null
+    // Auto reconnect
+    reconnectTimer = setTimeout(() => {
+      initWebSocket()
+    }, 3000)
+  }
 
-            this.ws.onopen = () => {
-                console.log('MWebSocket Connected:', this.url);
-                this.emit('open');
-            };
+  ws.onerror = (e) => {
+    console.error('[WS] Error', e)
+    isConnected = false
+  }
 
-            this.ws.onmessage = (event) => {
-                try {
-                    const response = JSON.parse(event.data);
+  ws.onmessage = (e) => {
+    try {
+      const res = JSON.parse(e.data)
+      
+      // 🔥 Notify global listeners (e.g. for Scrcpy DOM updates)
+      messageListeners.forEach(fn => fn(res))
 
-                    // 1. Handle Request-Response (req_id)
-                    if (response.req_id && this.pendingRequests.has(response.req_id)) {
-                        const { resolve, reject, timer } = this.pendingRequests.get(response.req_id);
-                        clearTimeout(timer);
-                        this.pendingRequests.delete(response.req_id);
+      // Handle request-response by req_id
+      if (res.req_id && pendingRequests.has(res.req_id)) {
+        const { resolve, reject, timer } = pendingRequests.get(res.req_id)
+        clearTimeout(timer)
+        pendingRequests.delete(res.req_id)
 
-                        if (response.code === 200) {
-                            resolve(response);
-                        } else {
-                            reject(response); // Reject with full response object for error handling
-                        }
-                    }
-
-                    // 2. Emit generic events (for subscriptions/push)
-                    if (response.action) {
-                        this.emit(response.action, response);
-                    }
-                    this.emit('message', response);
-
-                } catch (e) {
-                    console.error('MWebSocket JSON Parse Error:', e, event.data);
-                }
-            };
-
-            this.ws.onclose = (e) => {
-                console.log('MWebSocket Closed:', e.code);
-                this.emit('close', e);
-                this.ws = null;
-
-                // Reject all pending requests
-                this.pendingRequests.forEach(({ reject, timer }) => {
-                    clearTimeout(timer);
-                    reject(new Error('WebSocket connection closed'));
-                });
-                this.pendingRequests.clear();
-            };
-
-            this.ws.onerror = (e) => {
-                console.error('MWebSocket Error:', e);
-                this.emit('error', e);
-            };
-        } catch (e) {
-            console.error('MWebSocket Connection Failed:', e);
+        if (res.code === 200) {
+          resolve(res)
+        } else {
+          reject(res)
         }
+      }
+    } catch (err) {
+      console.error('[WS] Message parse error', err)
     }
+  }
+}
 
-    /**
-     * Send a request and wait for response
-     * @param {string} action - The action name (e.g., 'upload')
-     * @param {object} data - The data payload
-     * @param {number} timeout - Timeout in ms
-     * @returns {Promise<any>}
-     */
-    sendRequest(action, data = {}, timeout = 10000) {
-        return new Promise((resolve, reject) => {
-            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-                return reject(new Error('WebSocket not connected'));
-            }
-
-            const req_id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-
-            const payload = {
-                action,
-                req_id,
-                data
-            };
-
-            const timer = setTimeout(() => {
-                if (this.pendingRequests.has(req_id)) {
-                    this.pendingRequests.delete(req_id);
-                    reject(new Error(`Request timeout: ${action}`));
-                }
-            }, timeout);
-
-            this.pendingRequests.set(req_id, { resolve, reject, timer });
-
-            this.ws.send(JSON.stringify(payload));
-        });
-    }
-
-    send(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
+export const sendWsRequest = (action, data = {}) => {
+  return new Promise((resolve, reject) => {
+    // 🔥 Helper to execute send
+    const executeSend = () => {
+      const req_id = Date.now().toString(36) + Math.random().toString(36).substr(2)
+      const timer = setTimeout(() => {
+        if (pendingRequests.has(req_id)) {
+          pendingRequests.delete(req_id)
+          reject(new Error('Request timeout'))
         }
+      }, 30000)
+
+      pendingRequests.set(req_id, { resolve, reject, timer })
+
+      ws.send(JSON.stringify({
+        action,
+        req_id,
+        data
+      }))
     }
 
-    on(event, callback) { if (!this.listeners[event]) this.listeners[event] = []; this.listeners[event].push(callback); }
-    off(event, callback) { if (!this.listeners[event]) return; this.listeners[event] = this.listeners[event].filter(cb => cb !== callback); }
-    emit(event, data) { if (this.listeners[event]) this.listeners[event].forEach(cb => cb(data)); }
-    close() { if (this.ws) { this.ws.close(); this.ws = null; } }
+    // 🔥 Check connection and wait if necessary
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      executeSend()
+    } else {
+      // Try to init if not existing or closed
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        initWebSocket()
+      }
+      
+      // Wait for connection (max 3s)
+      let checks = 0
+      const interval = setInterval(() => {
+        checks++
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          clearInterval(interval)
+          executeSend()
+        } else if (checks > 30) {
+          clearInterval(interval)
+          reject(new Error('WebSocket not connected'))
+        }
+      }, 100)
+    }
+  })
+}
+
+export const wsUploadFile = (filename, content) => {
+  return sendWsRequest('upload', { name: filename, content })
+}
+
+export const wsGetFile = (path) => {
+  return sendWsRequest('get_file', { name: path })
+}
+
+export const addMessageListener = (fn) => messageListeners.add(fn)
+export const removeMessageListener = (fn) => messageListeners.delete(fn)
+
+export default {
+  initWebSocket,
+  sendWsRequest,
+  wsUploadFile,
+  wsGetFile,
+  addMessageListener,
+  removeMessageListener
 }

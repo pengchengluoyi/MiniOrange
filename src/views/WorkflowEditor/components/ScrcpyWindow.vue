@@ -176,7 +176,7 @@
 import {onMounted, ref, shallowRef, onUnmounted, reactive, markRaw, computed, watch} from "vue";
 import {TinyH264Decoder} from "@yume-chan/scrcpy-decoder-tinyh264";
 import {useScrcpy} from "../composables/useScrcpy";
-import MWebSocket from '@/api/mWebSocket.js';
+import mWebSocket from '@/api/mWebSocket.js';
 
 const canvas = ref(null);
 const decoder = shallowRef(null); // 使用 shallowRef 避免 Vue 代理复杂对象
@@ -255,21 +255,26 @@ watch(unlockPassword, (newPwd) => {
 // 🔥 初始化后端 WebSocket 服务
 const initBackendWs = () => {
   if (backendWs.value) backendWs.value.close();
-  // 🔥 业务 WebSocket (Python后端): 负责 DOM 树和文件上传，改为 10104
-  backendWs.value = new MWebSocket('ws://127.0.0.1:10104/ws');
   
-  backendWs.value.on('open', () => {
-    console.log('Backend WS Connected');
-  });
+  // Ensure connection is started
+  mWebSocket.initWebSocket();
   
-  // 监听服务端推送的 DOM 数据 (兼容旧逻辑)
-  backendWs.value.on('message', (msg) => {
+  // Listener for DOM updates
+  const onMessage = (msg) => {
     if (msg.type === 'android_dom' && msg.content) {
       parseDomXml(msg.content);
     }
-  });
-  
-  backendWs.value.connect();
+  }
+  mWebSocket.addMessageListener(onMessage)
+
+  // Create a wrapper object to match previous usage in this component
+  backendWs.value = {
+    close: () => mWebSocket.removeMessageListener(onMessage),
+    // Wrapper for fire-and-forget send
+    send: (payload) => mWebSocket.sendWsRequest(payload.action, payload.data).catch(e => console.warn('WS Send failed', e)),
+    // Wrapper for request-response
+    sendRequest: (action, data) => mWebSocket.sendWsRequest(action, data)
+  }
 };
 
 onMounted(async () => {

@@ -6,7 +6,7 @@ const service = axios.create({
   // 从环境变量获取 Base URL，方便开发/生产切换
   // 如果是本地 Python 服务，这里通常是 http://127.0.0.1:10104
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:10104',
-  timeout: 20000 // 请求超时时间调整为 20s
+  timeout: 60000 // 请求超时时间调整为 20s
 })
 
 // --- 请求拦截器 ---

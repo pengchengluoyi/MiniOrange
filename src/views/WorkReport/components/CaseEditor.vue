@@ -104,7 +104,7 @@ const onPaneReady = (instance) => {
   instance.fitView()
 }
 
-const loadGraphData = async () => {
+const loadGraphData = async (retryCount = 0) => {
   // The route is /report/editor/:appId, so we get the ID from there.
   const id = route.params.appId;
   console.log('Loading Graph Data. ID:', id, 'Params:', route.params, 'Query:', route.query)
@@ -185,7 +185,14 @@ const loadGraphData = async () => {
         }
       }
     } catch (e) {
-      console.error('Load graph failed:', e)
+      // 🔥 增加重试机制，应对后端服务启动慢导致的连接失败
+      if ((e.code === 'ECONNABORTED' || e.code === 'ERR_NETWORK' || e.message.includes('Network Error')) && retryCount < 3) {
+        console.warn(`Backend not ready, retrying in 3 seconds... (Attempt ${retryCount + 1})`);
+        setTimeout(() => loadGraphData(retryCount + 1), 3000);
+      } else {
+        console.error('Load graph failed:', e)
+        ElMessage.error('加载图谱数据失败，请检查后端服务是否运行。')
+      }
     }
   }
 
@@ -206,7 +213,7 @@ const loadGraphData = async () => {
 }
 
 onMounted(() => {
-  loadGraphData()
+  loadGraphData() // Initial call
 })
 
 // 🔥 监听路由变化，解决组件复用时不重新加载的问题
@@ -254,6 +261,13 @@ onUnmounted(() => {
 const selectedElements = ref([])
 const selectedNode = ref(null) // 控制编辑器显示
 
+// 🔥 辅助函数：安全获取截图 URL (防止对象类型导致后端 422)
+const getSafeScreenshot = (val) => {
+  if (val && typeof val === 'object') return val.path || val.url
+  if (typeof val === 'string') return val
+  return null
+}
+
 // 连线事件
 const onConnect = async (params) => {
   flowInstance?.addEdges([params])
@@ -293,9 +307,10 @@ const onConnect = async (params) => {
         node_id: childNode.id,
         type: childNode.type,
         label: childNode.label,
+        desc: childNode.data.desc || '',
         parentNode: parentId,
-        naturalSize: childNode.data.naturalSize,
-        screenshot: childNode.data.screenshot,
+        naturalSize: childNode.data.naturalSize || null,
+        screenshot: getSafeScreenshot(childNode.data.screenshot),
         workflow_id: childNode.data.workflow_id ? String(childNode.data.workflow_id) : null,
         components: (childNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
       }
@@ -445,10 +460,10 @@ const onNodeUpdate = async (updatedNode) => {
     node_id: updatedNode.id,
     type: updatedNode.type || 'page',
     label: updatedNode.label,
-    desc: updatedNode.data.desc, // 🔥 保存描述信息
-    parentNode: updatedNode.parentNode,
-    naturalSize: updatedNode.data.naturalSize,
-    screenshot: updatedNode.data.screenshot,
+    desc: updatedNode.data.desc || '', // 🔥 保存描述信息
+    parentNode: updatedNode.parentNode || null,
+    naturalSize: updatedNode.data.naturalSize || null,
+    screenshot: getSafeScreenshot(updatedNode.data.screenshot),
     workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null, // 🔥 保存关联的 workflow_id
     components: (updatedNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
   }
@@ -554,7 +569,10 @@ const addNode = async (type) => {
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        naturalSize: newNode.data.naturalSize,
+        desc: newNode.data.desc || '',
+        parentNode: null,
+        naturalSize: newNode.data.naturalSize || null,
+        screenshot: getSafeScreenshot(newNode.data.screenshot),
         workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
@@ -608,7 +626,10 @@ const addChildNode = async () => {
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        naturalSize: newNode.data.naturalSize,
+        desc: newNode.data.desc || '',
+        parentNode: null,
+        naturalSize: newNode.data.naturalSize || null,
+        screenshot: getSafeScreenshot(newNode.data.screenshot),
         workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
@@ -654,7 +675,10 @@ const addParentNode = async () => {
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        naturalSize: newNode.data.naturalSize,
+        desc: newNode.data.desc || '',
+        parentNode: null,
+        naturalSize: newNode.data.naturalSize || null,
+        screenshot: getSafeScreenshot(newNode.data.screenshot),
         workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
@@ -701,7 +725,10 @@ const addSiblingNode = async () => {
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        naturalSize: newNode.data.naturalSize,
+        desc: newNode.data.desc || '',
+        parentNode: null,
+        naturalSize: newNode.data.naturalSize || null,
+        screenshot: getSafeScreenshot(newNode.data.screenshot),
         workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })

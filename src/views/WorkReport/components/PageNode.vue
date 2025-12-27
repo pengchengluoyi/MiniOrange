@@ -15,7 +15,7 @@
       <!-- 热区层 -->
       <div class="visual-wrapper" v-if="naturalSize.w && (data.interactions?.length || data.screenshot)">
         <!-- 图片层：让图片撑开高度，保证不被裁剪 -->
-        <img v-if="data.screenshot" :src="data.screenshot" class="node-screenshot" draggable="false" />
+        <img v-if="displayScreenshot" :src="displayScreenshot" class="node-screenshot" draggable="false" />
         
         <!-- 热区覆盖层：绝对定位，与图片完全重合 -->
         <div class="hotspots-overlay">
@@ -41,10 +41,11 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { Document, Cpu, Aim } from '@element-plus/icons-vue'
 import { ElIcon } from 'element-plus'
+import { wsGetFile } from '@/api/mWebSocket'
 
 const props = defineProps({
   id: String,
@@ -55,6 +56,31 @@ const props = defineProps({
   },
   selected: Boolean
 })
+
+const displayScreenshot = ref('')
+
+const loadScreenshot = async () => {
+  const src = props.data.screenshot
+  if (!src) {
+    displayScreenshot.value = ''
+    return
+  }
+
+  if (src.startsWith('data:image') || src.startsWith('http') || src.startsWith('https')) {
+    displayScreenshot.value = src
+  } else {
+    try {
+      const res = await wsGetFile(src)
+      if (res.code === 200) {
+        displayScreenshot.value = res.data
+      }
+    } catch (e) {
+      console.error('Failed to load node screenshot', e)
+    }
+  }
+}
+
+watch(() => props.data.screenshot, loadScreenshot, { immediate: true })
 
 const naturalSize = computed(() => props.data.naturalSize || { w: 375, h: 667 })
 
