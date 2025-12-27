@@ -75,12 +75,35 @@ export const fetchWorkflowDetail = (workflow_id) => {
 }
 
 /**
+ * 获取某个flow的简要详情 (name, desc)
+ */
+export const fetchWorkflowDetailSimple = (workflow_id) => {
+  return request({
+    url: `/workflow/detail_simple/${workflow_id}`,
+    method: 'get'
+  })
+}
+
+/**
  * 获取删除某个flow
  */
 export const fetchWorkflowDelete = (workflow_id) => {
   return request({
     url: `/workflow/delete/${workflow_id}`,
     method: 'get'
+  })
+}
+
+/**
+ * 简单保存 flow 信息 (只更新 name, desc)
+ */
+export const fetchWorkflowSaveSimple = (id, name, desc) => {
+  return request({
+    url: `/workflow/save_simple`,
+    method: 'post',
+    data: {
+      id, name, desc
+    }
   })
 }
 

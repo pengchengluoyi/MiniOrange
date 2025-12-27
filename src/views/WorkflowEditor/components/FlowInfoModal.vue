@@ -52,10 +52,13 @@
 
 <script setup>
 import {ref, watch, nextTick, onMounted} from 'vue'
+import { fetchWorkflowSaveSimple } from '@/api/workflow'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   flowName: String,
   flowDescription: String,
+  workflowId: [String, Number],
   // 传入 visible 控制显示，或者由父组件 v-if 控制，这里假设是 v-if 模式
   // 为了配合 transition，建议父组件传 visible 或者直接 v-if
 })
@@ -79,11 +82,23 @@ onMounted(() => {
   })
 })
 
-const handleSave = () => {
+const handleSave = async () => {
   if (!localName.value.trim()) {
-    alert('流程名称不能为空') // 这里可以换成你的 Message 组件
+    ElMessage.warning('流程名称不能为空')
     return
   }
+
+  // 如果有 ID，调用简单保存接口更新后端
+  if (props.workflowId) {
+    try {
+      await fetchWorkflowSaveSimple(props.workflowId, localName.value, localDesc.value)
+      ElMessage.success('信息更新成功')
+    } catch (e) {
+      console.error(e)
+      ElMessage.error('保存失败: ' + (e.message || '未知错误'))
+    }
+  }
+
   emit('update:flowName', localName.value)
   emit('update:flowDescription', localDesc.value)
   emit('close')

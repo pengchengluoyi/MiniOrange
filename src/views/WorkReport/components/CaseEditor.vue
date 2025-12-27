@@ -86,7 +86,7 @@ import { Delete, Refresh, ArrowLeft } from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
-import { fetchWorkflowAdd } from '@/api/workflow'
+import { fetchWorkflowAdd, fetchWorkflowDetailSimple } from '@/api/workflow'
 
 const isReady = ref(false)
 const nodes = ref([])
@@ -140,6 +140,7 @@ const loadGraphData = async () => {
           nodes.value = rawNodes.map(n => ({
             id: String(n.id),
             type: n.type || 'page', // 确保有默认类型
+            label: n.label || n.data?.label || '未命名', // 🔥 修复：确保 label 存在，否则 PageNode 无法显示标题
             position: { x: Number(n.position?.x) || 0, y: Number(n.position?.y) || 0 },
             data: {
               ...(n.data || {}),
@@ -150,12 +151,32 @@ const loadGraphData = async () => {
                 }
                 return i
               }),
-              type: n.type || 'page' // 🔥 确保 data.type 存在，用于 PageNode 样式判断
+              desc: n.desc || n.data?.desc || '', // 🔥 修复：确保 desc 存在，用于显示详情
+              type: n.type || 'page', // 🔥 确保 data.type 存在，用于 PageNode 样式判断
+              workflow_id: n.workflow_id || n.data?.workflow_id // 🔥 关键修复：从顶层字段读取 workflow_id，防止刷新后丢失
             },
             // 清除可能导致冲突的内部状态
             selected: false,
             dragging: false
           }))
+
+          // 🔥 补充：批量获取用例节点的最新详情 (Name, Desc)
+          const caseNodes = nodes.value.filter(n => n.type === 'case' && n.data.workflow_id)
+          if (caseNodes.length > 0) {
+            // 不阻塞主渲染，异步更新
+            Promise.all(caseNodes.map(async (node) => {
+              try {
+                const res = await fetchWorkflowDetailSimple(node.data.workflow_id)
+                if (res.code === 200 && res.data) {
+                  node.label = res.data.name
+                  node.data.label = res.data.name
+                  node.data.desc = res.data.desc || ''
+                }
+              } catch (e) {
+                console.error('Fetch workflow detail failed', e)
+              }
+            }))
+          }
 
           edges.value = rawEdges.map(e => ({
             ...e,
@@ -310,7 +331,8 @@ const onNodeDoubleClick = ({ node }) => {
       // 🔥 修复：优先使用 params 跳转，匹配 /report/editor/:id 路由结构
       router.push({ name: 'Editor', params: { id: targetId } })
     } else if (node.id.toString().startsWith('node-')) {
-      router.push({ name: 'Editor', query: { appId: route.query.appId } })
+      const appId = route.params.appId || route.query.appId
+      router.push({ name: 'Editor', query: { appId } })
     } else {
       // 旧数据兼容：如果没有 workflow_id 且不是临时节点，假设 node.id 就是 workflowId
       router.push({ name: 'Editor', params: { id: node.id } })
@@ -423,6 +445,7 @@ const onNodeUpdate = async (updatedNode) => {
     node_id: updatedNode.id,
     type: updatedNode.type || 'page',
     label: updatedNode.label,
+    desc: updatedNode.data.desc, // 🔥 保存描述信息
     parentNode: updatedNode.parentNode,
     naturalSize: updatedNode.data.naturalSize,
     screenshot: updatedNode.data.screenshot,

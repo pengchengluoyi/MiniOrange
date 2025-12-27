@@ -116,6 +116,7 @@
         v-if="showInfoModal"
         v-model:flowName="flowName"
         v-model:flowDescription="flowDescription"
+        :workflow-id="workflowId"
         @close="showInfoModal = false"
     />
 
