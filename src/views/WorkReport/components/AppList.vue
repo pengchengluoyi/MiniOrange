@@ -1,11 +1,11 @@
 <template>
   <div class="app-dashboard-vertical">
     <header class="dashboard-header">
-      <div class="title-meta">
+      <div class="title-meta" style="margin-left: 66px">
         <h1>项目与应用管理</h1>
         <p>Vertical Management System — v2.5</p>
       </div>
-      <el-button class="create-btn-orange" @click="openCreateProjectDialog">+ 新建项目集群</el-button>
+      <el-button class="create-btn-orange" style="margin-right: 66px" @click="openCreateProjectDialog">+ 新建项目集群</el-button>
     </header>
 
     <div class="vertical-scroll-view">
@@ -75,59 +75,90 @@
 
 <style scoped>
 .app-dashboard-vertical {
-  max-width: 1200px; /* 限制宽度，防止横向铺得太满 */
-  margin: 0 auto; padding: 40px 20px;
+  max-width: 1240px; margin: 0 auto; padding: 20px 40px;
   height: 100%; display: flex; flex-direction: column;
 }
 
+/* 顶部标题栏透明化 */
 .dashboard-header {
   display: flex; justify-content: space-between; align-items: flex-end;
-  margin-bottom: 40px; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px;
+  margin-bottom: 40px; padding-bottom: 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
 }
 .dashboard-header h1 { font-size: 32px; color: #111827; font-weight: 800; margin: 0; }
-.dashboard-header p { color: #9ca3af; font-size: 11px; letter-spacing: 1px; margin-top: 5px; }
+.dashboard-header p { color: #6b7280; font-size: 12px; letter-spacing: 1px; }
 
-.vertical-scroll-view { flex: 1; overflow-y: auto; padding-right: 10px; }
-.vertical-scroll-view::-webkit-scrollbar { width: 4px; }
-.vertical-scroll-view::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+.vertical-scroll-view { flex: 1; overflow-y: auto; padding-right: 15px; }
 
-.project-section-island { margin-bottom: 40px; }
-.island-head .label { font-size: 10px; color: #ff4d00; font-weight: 900; letter-spacing: 2px; }
-.head-main { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-.head-main h3 { font-size: 20px; color: #1f2937; margin: 0; }
-
+/* 卡片容器网格 */
 .apps-vertical-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 20px; margin-top: 20px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 24px; margin-top: 20px;
 }
 
+/* --- 核心玻璃卡片样式 --- */
 .app-vertical-card {
-  background: #ffffff; border: 1px solid #e5e7eb;
-  border-radius: 16px; overflow: hidden; transition: 0.3s;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+  /* 半透明白 */
+  background: rgba(255, 255, 255, 0.3) !important;
+  /* 模糊背景 */
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+
+  /* 玻璃边框：上方亮，下方暗，模拟光线折射 */
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  border-radius: 20px;
+  overflow: hidden;
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.08);
 }
-.app-vertical-card:hover { transform: translateY(-4px); border-color: #ff4d00; box-shadow: 0 10px 20px rgba(0,0,0,0.08); }
 
-.card-body { padding: 20px; display: flex; justify-content: space-between; cursor: pointer; }
-.card-body .name { font-size: 16px; font-weight: 700; color: #111827; display: block; }
-.card-body .platform { font-size: 11px; color: #9ca3af; font-family: monospace; }
+.app-vertical-card:hover {
+  transform: translateY(-8px);
+  background: rgba(255, 255, 255, 0.45) !important;
+  border-color: rgba(255, 77, 0, 0.4) !important;
+  box-shadow: 0 15px 45px rgba(255, 77, 0, 0.12);
+}
 
-/* 清晰的操作按钮 */
+.card-body { padding: 24px; cursor: pointer; }
+.card-body .name { font-size: 18px; font-weight: 700; color: #1f2937; margin-bottom: 4px; display: block; }
+.card-body .platform { font-size: 12px; color: #9ca3af; font-family: 'JetBrains Mono', monospace; }
+
+/* 卡片操作栏：更通透的分割 */
 .card-footer-actions {
-  display: flex; height: 42px; background: #fafafa; border-top: 1px solid #f3f4f6;
+  display: flex; height: 48px;
+  background: rgba(255, 255, 255, 0.2);
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
 }
+
 .action-btn {
   flex: 1; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600; color: #6b7280; cursor: pointer; transition: 0.2s;
+  font-size: 13px; font-weight: 600; color: #4b5563; cursor: pointer; transition: 0.2s;
 }
-.action-btn:hover { background: #f3f4f6; color: #111827; }
+.action-btn:hover { background: rgba(255, 255, 255, 0.4); color: #111827; }
 .action-btn.orange { color: #ff4d00; }
-.action-btn.orange:hover { background: #fff7ed; }
-.divider { width: 1px; height: 100%; background: #f3f4f6; }
+.action-btn.orange:hover { background: rgba(255, 77, 0, 0.08); }
 
+.divider { width: 1px; height: 100%; background: rgba(0, 0, 0, 0.05); }
+
+/* 橙色按钮优化：保持鲜亮但增加发光感 */
 .create-btn-orange {
   background: #ff4d00 !important; border: none !important; color: #fff !important;
-  font-weight: 700 !important; border-radius: 8px !important;
+  font-weight: 700 !important; border-radius: 12px !important;
+  box-shadow: 0 4px 15px rgba(255, 77, 0, 0.3);
+  transition: 0.3s;
+}
+.create-btn-orange:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(255, 77, 0, 0.4);
+}
+
+/* 覆盖 Element Plus 的弹窗，使其也具备玻璃感 */
+:deep(.el-dialog) {
+  background: rgba(255, 255, 255, 0.6) !important;
+  backdrop-filter: blur(30px) !important;
+  border-radius: 24px !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15) !important;
 }
 </style>
 

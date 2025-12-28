@@ -478,4 +478,56 @@ const getMiniMapNodeColor = (node) => {
 .slide-up-enter-from, .slide-up-leave-to { transform: translateY(100%); }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+/* 1. 画布整体透明 */
+.canvas-wrapper {
+  width: 100%; height: 100%;
+  position: relative;
+  background: transparent !important; /* 必须透明看穿到底层 */
+}
+
+/* 2. 浮动控件组：水滴感 */
+.control-group {
+  display: flex; align-items: center;
+  background: rgba(255, 255, 255, 0.4) !important;
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.07);
+}
+
+.float-btn {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.float-btn:hover {
+  background: rgba(255, 255, 255, 0.6);
+  transform: scale(1.1);
+}
+.float-btn.active {
+  background: #6366f1 !important;
+  color: white !important;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+/* 3. 缩略图 MiniMap 玻璃化 */
+:deep(.vue-flow__minimap) {
+  background: rgba(255, 255, 255, 0.3) !important;
+  backdrop-filter: blur(10px);
+  border-radius: 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+}
+
+/* 4. 节点选择器弹窗遮罩 */
+.selector-overlay {
+  background: rgba(255, 255, 255, 0.2) !important; /* 不再是黑色遮罩 */
+  backdrop-filter: blur(15px); /* 增强模糊感 */
+}
+
+/* 5. 拾取模式 Banner */
+.picking-banner {
+  background: rgba(99, 102, 241, 0.8) !important;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.3);
+}
 </style>

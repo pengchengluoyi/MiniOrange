@@ -6,17 +6,13 @@
       <div class="blob b2"></div>
     </div>
 
-    <aside class="side-nav">
-      <div class="nav-glass">
-        <div class="logo">M</div>
-        <nav class="menu">
-          <div class="item active"><el-icon><Grid /></el-icon></div>
-        </nav>
-        <div class="footer">
-          <el-avatar :size="32" src="https://cube.elemecdn.com/0/88/03b0d39583f48206768a7534e55bcpng.png" />
-        </div>
-      </div>
-    </aside>
+<!--    <aside class="side-nav">-->
+<!--      <div class="nav-glass">-->
+<!--        <nav class="menu">-->
+<!--          <div class="item active"><el-icon><Grid /></el-icon></div>-->
+<!--        </nav>-->
+<!--      </div>-->
+<!--    </aside>-->
 
     <main class="content-view">
       <router-view v-slot="{ Component }">
@@ -45,20 +41,65 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.light-liquid-shell { height: 100vh; width: 100vw; background: #fdfdfd; display: flex; position: relative; overflow: hidden; }
-.mouse-glow { position: fixed; width: 400px; height: 400px; z-index: 1; pointer-events: none; background: radial-gradient(circle, rgba(255, 77, 0, 0.05) 0%, transparent 70%); filter: blur(40px); }
-.liquid-bg { position: absolute; inset: 0; filter: blur(80px) contrast(1.2); opacity: 0.5; z-index: 0; }
-.blob { position: absolute; border-radius: 50%; animation: move 20s infinite alternate ease-in-out; }
-.b1 { width: 600px; height: 600px; background: #e0e7ff; top: -10%; left: -10%; }
-.b2 { width: 500px; height: 500px; background: #fff1f2; bottom: 5%; right: 5%; animation-delay: -5s; }
-@keyframes move { from { transform: translate(0,0); } to { transform: translate(100px, 50px) scale(1.1); } }
-.side-nav { width: 90px; z-index: 100; display: flex; align-items: center; justify-content: center; }
-.nav-glass { height: 90%; width: 56px; background: rgba(255,255,255,0.4); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.8); border-radius: 28px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 25px 0; }
-.logo { width: 36px; height: 36px; background: #ff4d00; border-radius: 12px; color: #fff; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(255, 77, 0, 0.2); }
-.item { width: 40px; height: 40px; margin: 15px 0; display: flex; align-items: center; justify-content: center; color: #94a3b8; cursor: pointer; border-radius: 14px; transition: 0.3s; }
-.item:hover, .item.active { background: #fff; color: #ff4d00; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+/* 核心容器：深浅交替的底色，方便玻璃折射 */
+.light-liquid-shell {
+  height: 100vh; width: 100vw;
+  background: #f0f2f5; /* 略带灰色的底色，能更好衬托白色玻璃 */
+  display: flex; position: relative; overflow: hidden;
+}
+
+/* 增强鼠标跟随光晕 */
+.mouse-glow {
+  position: fixed; width: 600px; height: 600px; z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 77, 0, 0.1) 0%, transparent 70%);
+  filter: blur(50px);
+}
+
+/* 水波背景：核心在于 blur(100px) 和 mix-blend-mode */
+.liquid-bg {
+  position: absolute; inset: 0;
+  filter: blur(100px); /* 极高模糊实现水乳交融感 */
+  opacity: 0.7; z-index: 0;
+}
+
+.blob {
+  position: absolute; border-radius: 50%;
+  animation: move 25s infinite alternate ease-in-out;
+}
+
+/* 蓝紫色块 - 水的主色调 */
+.b1 {
+  width: 800px; height: 800px;
+  background: linear-gradient(135deg, #dee7ff 0%, #94b9ff 100%);
+  top: -10%; left: -10%;
+}
+
+/* 暖橙/粉色块 - 增加灵动感 */
+.b2 {
+  width: 700px; height: 700px;
+  background: linear-gradient(135deg, #fff1f2 0%, #ffd0b5 100%);
+  bottom: -5%; right: -5%;
+  animation-delay: -7s;
+}
+
+/* 新增一个色块，让色彩更丰富 */
+.b1::after {
+  content: ''; position: absolute; width: 100%; height: 100%;
+  background: radial-gradient(circle, #e0e7ff 0%, transparent 70%);
+  animation: move 15s infinite alternate-reverse;
+}
+
+@keyframes move {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(150px, 80px) scale(1.1); }
+  100% { transform: translate(-50px, 120px) scale(0.9); }
+}
+
 .content-view { flex: 1; z-index: 10; position: relative; overflow: hidden; }
-.fade-slide-enter-active, .fade-slide-leave-active { transition: all 0.3s; }
-.fade-slide-enter-from { opacity: 0; transform: translateY(10px); }
-.fade-slide-leave-to { opacity: 0; transform: translateY(-10px); }
+
+/* 页面切换动画 */
+.fade-slide-enter-active, .fade-slide-leave-active { transition: all 0.4s ease; }
+.fade-slide-enter-from { opacity: 0; transform: translateY(20px); filter: blur(10px); }
+.fade-slide-leave-to { opacity: 0; transform: translateY(-20px); }
 </style>

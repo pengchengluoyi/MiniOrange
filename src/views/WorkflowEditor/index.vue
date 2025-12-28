@@ -1,6 +1,10 @@
 <template>
   <div class="editor-layout" :class="{ 'is-resizing': isResizing }">
-
+    <div class="liquid-bg">
+      <div class="blob b1"></div>
+      <div class="blob b2"></div>
+      <div class="blob b3"></div>
+    </div>
     <!-- 顶部导航 -->
     <EditorToolbar
         :flow-name="flowName"
@@ -27,13 +31,15 @@
     <main class="main-body">
       <!-- 录制面板 -->
       <transition name="panel-slide">
-        <div v-show="(isRecordOpen || isScrcpyOpen) && viewMode === 'canvas'" class="left-panel" :style="{ width: panelWidth + 'px' }">
+        <div v-show="(isRecordOpen || isScrcpyOpen) && viewMode === 'canvas'" class="left-panel"
+             :style="{ width: panelWidth + 'px' }">
           <div v-if="isResizing" class="resize-mask"></div>
-          <WebRecorder v-if="isRecordOpen" :show-url-input="true" />
-          <ScrcpyWindow v-else-if="isScrcpyOpen" />
+          <WebRecorder v-if="isRecordOpen" :show-url-input="true"/>
+          <ScrcpyWindow v-else-if="isScrcpyOpen"/>
         </div>
       </transition>
-      <div v-show="(isRecordOpen || isScrcpyOpen) && viewMode === 'canvas'" class="layout-resizer" @mousedown="startResize">
+      <div v-show="(isRecordOpen || isScrcpyOpen) && viewMode === 'canvas'" class="layout-resizer"
+           @mousedown="startResize">
         <div class="resizer-line"></div>
       </div>
 
@@ -188,6 +194,55 @@ const onMouseUp = () => {
   flex-direction: column;
   background: #f2f4f7;
   overflow: hidden;
+}
+/* 1. 基础布局透明化 */
+.editor-layout {
+  width: 100vw; height: 100vh;
+  display: flex; flex-direction: column;
+  background: #f8fafc; /* 降底色，作为保底 */
+  position: relative; overflow: hidden;
+}
+
+/* 2. 液态背景核心动画 */
+.liquid-bg {
+  position: absolute; inset: 0;
+  filter: blur(80px); /* 模糊度适中，确保性能 */
+  z-index: 0; opacity: 0.6;
+}
+.blob {
+  position: absolute; border-radius: 50%;
+  animation: move 20s infinite alternate ease-in-out;
+}
+.b1 { width: 600px; height: 600px; background: #dee7ff; top: -10%; left: -5%; }
+.b2 { width: 500px; height: 500px; background: #fff1f2; bottom: -5%; right: 10%; animation-delay: -5s; }
+.b3 { width: 450px; height: 450px; background: #f0fdf4; top: 40%; left: 30%; animation-delay: -10s; }
+
+@keyframes move {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(100px, 50px) scale(1.1); }
+}
+
+/* 3. 面板毛玻璃化 */
+.left-panel {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.4) !important; /* 透明度降低 */
+  backdrop-filter: blur(20px) saturate(160%); /* 毛玻璃核心 */
+  border-right: 1px solid rgba(255, 255, 255, 0.5);
+  z-index: 10;
+}
+
+.main-body {
+  flex: 1; display: flex;
+  position: relative; z-index: 1; /* 确保在背景之上 */
+}
+
+.canvas-container {
+  flex: 1; background: transparent !important;
+}
+
+/* 属性面板容器也要透明 */
+.prop-panel-wrapper {
+  background: transparent;
 }
 
 .main-body {
