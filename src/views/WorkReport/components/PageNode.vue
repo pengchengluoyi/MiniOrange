@@ -2,7 +2,7 @@
   <div class="page-node" :class="[data.type, { selected }]">
     <!-- 左侧输入连接点 -->
     <Handle type="target" position="left" class="io-handle handle-left" />
-    
+
     <div class="node-content">
       <div class="node-header">
         <ElIcon class="node-icon" :size="14">
@@ -11,12 +11,12 @@
         <span class="node-title">{{ label }}</span>
       </div>
       <div class="node-desc" v-if="data.desc">{{ data.desc }}</div>
-      
+
       <!-- 热区层 -->
       <div class="visual-wrapper" v-if="naturalSize.w && (data.interactions?.length || data.screenshot)">
         <!-- 图片层：让图片撑开高度，保证不被裁剪 -->
         <img v-if="displayScreenshot" :src="displayScreenshot" class="node-screenshot" draggable="false" />
-        
+
         <!-- 热区覆盖层：绝对定位，与图片完全重合 -->
         <div class="hotspots-overlay">
           <div v-for="(comp, i) in data.interactions" :key="i"

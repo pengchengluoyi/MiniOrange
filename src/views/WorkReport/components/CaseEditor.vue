@@ -197,8 +197,8 @@ const loadGraphData = async (retryCount = 0) => {
   }
 
   // 延迟渲染，等待路由动画结束且容器宽高计算完成
-  setTimeout(() => { 
-    isReady.value = true 
+  setTimeout(() => {
+    isReady.value = true
 
     // 检查是否有上次访问的节点记录，如果有则聚焦
     const lastVisitedId = sessionStorage.getItem('last_visited_case_id')
@@ -383,11 +383,11 @@ const ensureGraphId = async () => {
     return null;
   }
   try {
-    const createRes = await api.createAppGraph({ 
-      name: 'New Workflow ' + new Date().toLocaleString(), 
-      app_id: appId 
+    const createRes = await api.createAppGraph({
+      name: 'New Workflow ' + new Date().toLocaleString(),
+      app_id: appId
     })
-    
+
     if (createRes.code === 200) {
       graphId.value = createRes.data.id
       // 更新路由参数，但不刷新页面
@@ -411,8 +411,8 @@ const handleSaveLayout = async () => {
       }
     }
 
-    const saveNodes = nodes.value.map(n => ({ 
-      id: n.id, 
+    const saveNodes = nodes.value.map(n => ({
+      id: n.id,
       position: n.position,
       type: n.type,
       parentNode: n.parentNode,
@@ -454,7 +454,7 @@ const onEdgesChange = (changes) => {
 const onNodeUpdate = async (updatedNode) => {
   // 保存节点详情（Label, Screenshot, Interactions）
   if (!graphId.value) return
-  
+
   const payload = {
     graph_id: graphId.value,
     node_id: updatedNode.id,
@@ -467,7 +467,7 @@ const onNodeUpdate = async (updatedNode) => {
     workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null, // 🔥 保存关联的 workflow_id
     components: (updatedNode.data.interactions || []).map(c => ({ ...c, rect: { x: c.x, y: c.y, w: c.w, h: c.h } }))
   }
-  
+
   try {
     await api.saveNodeDetail(payload)
     triggerAutoSave() // 同时触发一次布局保存以防万一
@@ -508,11 +508,11 @@ const initWorkflowIfCase = async (node) => {
       console.log('正在自动创建关联流程:', node.label)
       // 🔥 修复：后端要求 nodes 字段必须是字典(Object)，同时为了兼容 VueFlow 数据结构，我们需要包裹一层
       const content = {
-        nodes: [{ 
-          id: `public-trigger-${Date.now()}`, 
-          type: 'custom', 
-          position: { x: 100, y: 200 }, 
-          data: { label: '开始', nodeCode: 'public/trigger', outputs: [] } 
+        nodes: [{
+          id: `public-trigger-${Date.now()}`,
+          type: 'custom',
+          position: { x: 100, y: 200 },
+          data: { label: '开始', nodeCode: 'public/trigger', outputs: [] }
         }],
         edges: []
       }
@@ -604,7 +604,7 @@ const addChildNode = async () => {
   const parent = selectedElements.value[0]
   const type = parent.type || 'page'
   const newNode = createNodeData(type, { x: parent.position.x + 300, y: parent.position.y })
-  
+
   // 🔥 新增：如果是用例节点，自动创建 Workflow
   await initWorkflowIfCase(newNode)
 
@@ -612,13 +612,13 @@ const addChildNode = async () => {
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ 
-        graph_id: gid, 
-        node_id: newNode.id, 
+      await api.addEmptyNode({
+        graph_id: gid,
+        node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        x: parseInt(newNode.position.x), 
-        y: parseInt(newNode.position.y) 
+        x: parseInt(newNode.position.x),
+        y: parseInt(newNode.position.y)
       })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({
@@ -653,7 +653,7 @@ const addParentNode = async () => {
   const child = selectedElements.value[0]
   const type = child.type || 'page'
   const newNode = createNodeData(type, { x: child.position.x - 300, y: child.position.y })
-  
+
   // 🔥 新增：如果是用例节点，自动创建 Workflow
   await initWorkflowIfCase(newNode)
 
@@ -661,13 +661,13 @@ const addParentNode = async () => {
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ 
-        graph_id: gid, 
-        node_id: newNode.id, 
+      await api.addEmptyNode({
+        graph_id: gid,
+        node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        x: parseInt(newNode.position.x), 
-        y: parseInt(newNode.position.y) 
+        x: parseInt(newNode.position.x),
+        y: parseInt(newNode.position.y)
       })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({
@@ -703,7 +703,7 @@ const addSiblingNode = async () => {
   // 简单处理：在下方添加
   const type = current.type || 'page'
   const newNode = createNodeData(type, { x: current.position.x, y: current.position.y + 150 })
-  
+
   // 🔥 新增：如果是用例节点，自动创建 Workflow
   await initWorkflowIfCase(newNode)
 
@@ -711,13 +711,13 @@ const addSiblingNode = async () => {
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({ 
-        graph_id: gid, 
-        node_id: newNode.id, 
+      await api.addEmptyNode({
+        graph_id: gid,
+        node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
-        x: parseInt(newNode.position.x), 
-        y: parseInt(newNode.position.y) 
+        x: parseInt(newNode.position.x),
+        y: parseInt(newNode.position.y)
       })
       // 🔥 立即保存节点详情
       await api.saveNodeDetail({

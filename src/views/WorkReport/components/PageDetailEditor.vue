@@ -268,18 +268,18 @@ const handleWheel = (e) => {
     const zoomFactor = 0.1
     const direction = e.deltaY < 0 ? 1 : -1
     const newScale = Math.max(0.1, Math.min(5, scale.value + direction * zoomFactor))
-    
+
     // 计算鼠标相对于容器的位置，实现以鼠标为中心的缩放
     const rect = visualPanelRef.value.$el.getBoundingClientRect()
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
-    
+
     const tx = translate.value.x
     const ty = translate.value.y
-    
+
     const newTx = mouseX - (mouseX - tx) * (newScale / scale.value)
     const newTy = mouseY - (mouseY - ty) * (newScale / scale.value)
-    
+
     scale.value = newScale
     translate.value = { x: newTx, y: newTy }
   } else {
@@ -332,7 +332,7 @@ const handleHotspotMouseDown = (e, index) => {
     e.preventDefault()
     return
   }
-  
+
   e.stopPropagation()
   selectComp(index)
 }
@@ -456,7 +456,7 @@ const fitToScreen = () => {
 const handleKeydown = (e) => {
   if (selectedCompIndex.value === -1) return
   if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return
-  
+
   const comp = localData.interactions[selectedCompIndex.value]
   if (!comp) return
 
@@ -465,7 +465,7 @@ const handleKeydown = (e) => {
   else if (e.key === 'ArrowDown') { comp.y += 1; handled = true }
   else if (e.key === 'ArrowLeft') { comp.x -= 1; handled = true }
   else if (e.key === 'ArrowRight') { comp.x += 1; handled = true }
-  
+
   if (handled) {
     e.preventDefault()
     updateNode()
@@ -476,7 +476,7 @@ onMounted(async () => {
   if (props.node) {
     localData.label = props.node.label
     localData.desc = props.node.desc || props.node.data?.desc || ''
-    
+
     // 🔥 修复：安全地获取截图路径字符串，防止因数据为对象而崩溃
     const screenshotData = props.node.data.screenshot
     let path = ''

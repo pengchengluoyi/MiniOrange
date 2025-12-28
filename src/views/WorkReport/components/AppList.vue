@@ -1,51 +1,37 @@
 <template>
-  <div class="page-container">
-    <div class="page-header">
-      <div class="left">
-        <h2>项目与应用管理</h2>
-        <p>管理测试项目及其包含的应用（支持多端覆盖）。</p>
+  <div class="app-dashboard-vertical">
+    <header class="dashboard-header">
+      <div class="title-meta">
+        <h1>项目与应用管理</h1>
+        <p>Vertical Management System — v2.5</p>
       </div>
-      <el-button type="primary" size="large" icon="Plus" @click="openCreateProjectDialog">新建项目</el-button>
-    </div>
+      <el-button class="create-btn-orange" @click="openCreateProjectDialog">+ 新建项目集群</el-button>
+    </header>
 
-    <div class="cards-grid" v-loading="loading">
-      <div 
-        v-for="project in projects" 
-        :key="project.id"
-        class="project-card"
-      >
-        <div class="project-header">
-          <div class="icon-wrapper">📂</div>
-          <div class="project-info">
+    <div class="vertical-scroll-view">
+      <div v-for="project in projects" :key="project.id" class="project-section-island">
+        <div class="island-head">
+          <div class="head-main">
             <h3>{{ project.name }}</h3>
-            <p>{{ project.description || '暂无描述' }}</p>
+            <el-button link class="add-sub-btn" icon="Plus" @click.stop="openCreateAppDialog(project)">添加应用</el-button>
           </div>
-          <el-button circle size="small" icon="Plus" @click.stop="openCreateAppDialog(project)" title="添加应用" />
         </div>
-        
-        <div class="apps-list">
-          <div 
-            v-for="app in project.apps" 
-            :key="app.id" 
-            class="app-item"
-            @click="enterApp(app)"
-          >
-            <div class="app-main">
-              <span class="app-name">{{ app.name }}</span>
-              <div class="platform-icons">
-                <span v-for="p in normalizePlatforms(app.platforms)" :key="p" class="platform-icon" :title="p">
-                  {{ getPlatformIcon(p) }}
-                </span>
+
+        <div class="apps-vertical-grid">
+          <div v-for="app in project.apps" :key="app.id" class="app-vertical-card">
+            <div class="card-body" @click="enterApp(app)">
+              <div class="info">
+                <span class="name">{{ app.name }}</span>
+                <span class="platform">ID: {{ app.id?.slice(0,8) }}</span>
               </div>
+              <div class="platform-indicator">{{ getPlatformIcon(normalizePlatforms(app.platforms)[0]) }}</div>
             </div>
-            <div class="app-actions">
-              <el-button link type="primary" size="small" @click.stop="enterApp(app)">任务</el-button>
-              <el-button link type="info" size="small" @click.stop="editCases(app)">用例</el-button>
+
+            <div class="card-footer-actions">
+              <div class="action-btn" @click.stop="enterApp(app)">任务中心</div>
+              <div class="divider"></div>
+              <div class="action-btn orange" @click.stop="editCases(app)">用例编排</div>
             </div>
-          </div>
-          
-          <div v-if="project.apps.length === 0" class="empty-apps">
-            暂无应用，请点击右上角添加
           </div>
         </div>
       </div>
@@ -86,6 +72,64 @@
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.app-dashboard-vertical {
+  max-width: 1200px; /* 限制宽度，防止横向铺得太满 */
+  margin: 0 auto; padding: 40px 20px;
+  height: 100%; display: flex; flex-direction: column;
+}
+
+.dashboard-header {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  margin-bottom: 40px; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px;
+}
+.dashboard-header h1 { font-size: 32px; color: #111827; font-weight: 800; margin: 0; }
+.dashboard-header p { color: #9ca3af; font-size: 11px; letter-spacing: 1px; margin-top: 5px; }
+
+.vertical-scroll-view { flex: 1; overflow-y: auto; padding-right: 10px; }
+.vertical-scroll-view::-webkit-scrollbar { width: 4px; }
+.vertical-scroll-view::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+
+.project-section-island { margin-bottom: 40px; }
+.island-head .label { font-size: 10px; color: #ff4d00; font-weight: 900; letter-spacing: 2px; }
+.head-main { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.head-main h3 { font-size: 20px; color: #1f2937; margin: 0; }
+
+.apps-vertical-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px; margin-top: 20px;
+}
+
+.app-vertical-card {
+  background: #ffffff; border: 1px solid #e5e7eb;
+  border-radius: 16px; overflow: hidden; transition: 0.3s;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+.app-vertical-card:hover { transform: translateY(-4px); border-color: #ff4d00; box-shadow: 0 10px 20px rgba(0,0,0,0.08); }
+
+.card-body { padding: 20px; display: flex; justify-content: space-between; cursor: pointer; }
+.card-body .name { font-size: 16px; font-weight: 700; color: #111827; display: block; }
+.card-body .platform { font-size: 11px; color: #9ca3af; font-family: monospace; }
+
+/* 清晰的操作按钮 */
+.card-footer-actions {
+  display: flex; height: 42px; background: #fafafa; border-top: 1px solid #f3f4f6;
+}
+.action-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: #6b7280; cursor: pointer; transition: 0.2s;
+}
+.action-btn:hover { background: #f3f4f6; color: #111827; }
+.action-btn.orange { color: #ff4d00; }
+.action-btn.orange:hover { background: #fff7ed; }
+.divider { width: 1px; height: 100%; background: #f3f4f6; }
+
+.create-btn-orange {
+  background: #ff4d00 !important; border: none !important; color: #fff !important;
+  font-weight: 700 !important; border-radius: 8px !important;
+}
+</style>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
@@ -177,65 +221,3 @@ const handleCreateApp = async () => {
   showAppDialog.value = false
 }
 </script>
-
-<style scoped>
-.page-container { padding: 30px; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
-.page-header h2 { margin: 0; color: #1e293b; }
-.page-header p { margin: 5px 0 0; color: #64748b; font-size: 14px; }
-
-.cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 24px;
-}
-
-.project-card {
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  transition: all 0.3s ease;
-}
-
-.project-card:hover {
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
-}
-
-.project-header {
-  padding: 16px;
-  background: #f8fafc;
-  border-bottom: 1px solid #f1f5f9;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.icon-wrapper { font-size: 24px; }
-.project-info { flex: 1; }
-.project-info h3 { margin: 0; font-size: 16px; color: #1e293b; }
-.project-info p { margin: 2px 0 0; font-size: 12px; color: #64748b; }
-
-.apps-list { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-
-.app-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid #f1f5f9;
-  cursor: pointer;
-}
-.app-item:hover { border-color: #6366f1; background: #f5f7ff; }
-
-.app-main { display: flex; flex-direction: column; gap: 4px; }
-.app-name { font-size: 14px; font-weight: 500; color: #334155; }
-.platform-icons { font-size: 12px; display: flex; gap: 4px; }
-
-.empty-apps { text-align: center; color: #94a3b8; font-size: 12px; padding: 20px 0; font-style: italic; }
-</style>

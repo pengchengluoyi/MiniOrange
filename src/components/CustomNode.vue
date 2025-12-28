@@ -1,7 +1,7 @@
 <template>
   <div
     class="custom-node"
-    :class="{ 'selected': selected, 'pick-disabled': data._pickDisabled }"
+    :class="{ 'selected': selected, 'pick-disabled': data._pickDisabled, [`border-status-${data.runStatus}`]: data.runStatus }"
   >
     <!-- 左侧输入点 -->
     <Handle
@@ -86,6 +86,8 @@
       <div v-if="!hasInputs && !hasOutputs" class="empty-state">无需配置参数</div>
     </div>
 
+    <ResultNode :data="data" />
+
     <!-- 右侧输出点 -->
     <Handle
       v-if="!isIfNode"
@@ -113,6 +115,7 @@ import { computed, ref, onMounted } from 'vue'
 import { Handle, useVueFlow } from '@vue-flow/core'
 import { getIcon } from '../config/iconMap'
 import {scanComponentsApi} from '@/api/workflow'
+import ResultNode from '@/views/WorkflowEditor/components/ResultNode.vue'
 
 const props = defineProps(['id', 'data', 'label', 'selected'])
 const { findNode } = useVueFlow()
@@ -467,4 +470,14 @@ const formatTooltip = (val) => {
 .handle-left { left: -6px !important; top: 50% !important; transform: translateY(-50%) !important; }
 .handle-right { right: -6px !important; top: 50% !important; transform: translateY(-50%) !important; }
 .handle-bottom { bottom: -6px !important; left: 50% !important; top: auto !important; transform: translateX(-50%) !important; }
+.border-status-running {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+.border-status-success {
+  border-color: #10b981 !important;
+}
+.border-status-failure {
+  border-color: #ef4444 !important;
+}
 </style>

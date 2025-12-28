@@ -135,6 +135,7 @@ import IfNode from '@/components/IfNode.vue'
 import LoopGroupNode from '@/components/LoopGroupNode.vue'
 import CustomEdge from '@/components/CustomEdge.vue'
 import NodeSelector from '@/components/NodeSelector.vue'
+import ResultNode from '@/views/WorkflowEditor/components/ResultNode.vue'
 
 import LogPanel from './LogPanel.vue'
 import VariablePicker from './VariablePicker.vue'
@@ -143,7 +144,7 @@ import FlowInfoModal from './FlowInfoModal.vue'
 import { scanComponentsApi } from '@/api/workflow'
 import { useGraphOperations } from '../composables/useGraphOperations'
 import { useFlowPersistence } from '../composables/useFlowPersistence'
-import { useFlowRun } from '../composables/useFlowRun'
+import { useFlowRun, resetNodeStatus } from '../composables/useFlowRun'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
 
 const props = defineProps({
@@ -159,6 +160,14 @@ const emit = defineEmits([
   'update:allNodes',
   'update:lastSavedTime'
 ])
+
+// 修改 nodeTypes
+const nodeTypes = {
+  custom: markRaw(CustomNode),
+  if: markRaw(IfNode),
+  group: markRaw(LoopGroupNode),
+  result: markRaw(ResultNode) // 注册新组件
+}
 
 const edgeTypes = { custom: markRaw(CustomEdge) }
 
@@ -206,9 +215,12 @@ watch(isModified, (val) => emit('update:isModified', val))
 watch(flowName, (val) => emit('update:flowName', val))
 watch(lastSavedTime, (val) => emit('update:lastSavedTime', val))
 
+
 const {
-  isRunning, logs, searchQuery, filteredLogs, handleRunCase, stopRun, clearLogs, setupRunListeners, removeRunListeners
-} = useFlowRun(performSave, workflowId, showLogPanel)
+  isRunning, logs, searchQuery, logBodyRef, filteredLogs,
+  handleRunCase, stopRun, clearLogs,
+  setupRunListeners, removeRunListeners
+} = useFlowRun(performSave, workflowId, showLogPanel, elements)
 
 watch(isRunning, (val) => emit('update:isRunning', val))
 
@@ -387,7 +399,11 @@ onMounted(async () => {
   dynamicSchema.value = await scanComponentsApi()
   if (props.flowId) {
     const loaded = await loadFlowFromId(props.flowId)
-    if(loaded) { await nextTick(); fitView({padding: 0.2}); layoutGraph('LR') }
+    if(loaded) {
+      resetNodeStatus(elements);
+      await nextTick();
+      fitView({padding: 0.2});
+      layoutGraph('LR') }
   } else {
     flowName.value = `flow_${Date.now()}`
     elements.value = [{ id: `public-trigger-${Date.now()}`, type: 'custom', position: {x:100, y:200}, data: { label:'开始-123', nodeCode:'public/trigger', outputs:[] } }]
