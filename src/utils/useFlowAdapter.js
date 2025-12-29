@@ -62,7 +62,7 @@ export function useFlowAdapter() {
       const backendNode = {
         id: node.id,
         nodeType: node.data.nodeType || 200,
-        nodeCode: nodeCode,
+        nodeCode: nodeCode || "public/trigger",
         displayName: node.label || '开始',
         lastCodes: connectionMap[node.id]?.last || [],
         nextCodes: connectionMap[node.id]?.next || [],
