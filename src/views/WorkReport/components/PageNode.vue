@@ -1,12 +1,12 @@
 <template>
   <div class="page-node" :class="[data.type, { selected }]">
-    <Handle type="target" :position="Position.Left" class="io-handle handle-left" />
+    <Handle type="target" :position="Position.Left" class="io-handle handle-left"/>
 
     <div class="node-shell">
       <div class="node-content">
         <div class="node-header">
           <ElIcon class="node-icon" :size="14">
-            <component :is="iconMap[data.type] || Document" />
+            <component :is="iconMap[data.type] || Document"/>
           </ElIcon>
           <span class="node-title">{{ label }}</span>
         </div>
@@ -15,47 +15,57 @@
 
         <div class="visual-wrapper" v-if="displayScreenshot">
           <img
-            :src="displayScreenshot"
-            class="node-screenshot"
-            draggable="false"
-            @load="onImageLoaded"
+              :src="displayScreenshot"
+              class="node-screenshot"
+              draggable="false"
+              @load="onImageLoaded"
           />
 
           <div class="hotspots-overlay">
             <div v-for="(comp, i) in data.interactions" :key="i"
                  class="mini-hotspot" :style="getHotspotStyle(comp)">
-              <Handle type="source" :id="`hotspot-${i}`" :position="Position.Right" class="hotspot-handle" />
+              <Handle type="source" :id="`hotspot-${i}`" :position="Position.Right" class="hotspot-handle"/>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <Handle type="source" :position="Position.Right" class="io-handle handle-right" />
+    <Handle type="source" :position="Position.Right" class="io-handle handle-right"/>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
-import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { Document, Cpu, Aim } from '@element-plus/icons-vue'
-import { ElIcon } from 'element-plus'
-import { wsGetFile } from '@/api/mWebSocket'
+import {computed, ref, watch, nextTick, onUnmounted} from 'vue'
+import {Handle, Position, useVueFlow} from '@vue-flow/core'
+import {Document, Cpu, Aim} from '@element-plus/icons-vue'
+import {ElIcon} from 'element-plus'
+import {wsGetFile} from '@/api/mWebSocket'
 
 const props = defineProps({
   id: String,
   label: String,
-  data: { type: Object, default: () => ({ type: 'page', desc: '', interactions: [] }) },
+  data: {type: Object, default: () => ({type: 'page', desc: '', interactions: []})},
   selected: Boolean
 })
 
-const { updateNodeInternals } = useVueFlow()
+const emit = defineEmits(['update-size'])
+
+const {updateNodeInternals} = useVueFlow()
 const displayScreenshot = ref('')
 
-const onImageLoaded = () => {
-  nextTick(() => {
-    updateNodeInternals([props.id])
-  })
+const onImageLoaded = (event) => {
+  const img = event.target;
+  const realW = img.naturalWidth;
+  const realH = img.naturalHeight;
+
+  // 核心逻辑：如果库里没存尺寸，或者存的是默认的 375，立即纠正
+  if (!props.data.naturalSize || props.data.naturalSize.w !== realW) {
+    console.log(`[Node ${props.id}] 检测到真实尺寸: ${realW}x${realH}，正在上报...`)
+    emit('update-size', { w: realW, h: realH });
+  }
+
+  nextTick(() => updateNodeInternals([props.id]));
 }
 
 // 辅助函数：将 DataURL 转换为 BlobURL
@@ -71,7 +81,7 @@ const dataURLtoBlobURL = (dataurl) => {
     while (n--) {
       u8arr[n] = bstr.charCodeAt(n)
     }
-    const blob = new Blob([u8arr], { type: mime })
+    const blob = new Blob([u8arr], {type: mime})
     return URL.createObjectURL(blob)
   } catch (e) {
     console.warn('DataURL conversion failed', e)
@@ -143,13 +153,15 @@ const loadScreenshot = async () => {
           finalSrc = dataURLtoBlobURL(dataUrl)
         }
       }
-    } catch (e) { console.error('Failed to load screenshot', e) }
+    } catch (e) {
+      console.error('Failed to load screenshot', e)
+    }
   }
-  
+
   displayScreenshot.value = finalSrc
 }
 
-watch(() => props.data.screenshot, loadScreenshot, { immediate: true })
+watch(() => props.data.screenshot, loadScreenshot, {immediate: true})
 
 onUnmounted(() => {
   if (displayScreenshot.value && displayScreenshot.value.startsWith('blob:')) {
@@ -158,7 +170,11 @@ onUnmounted(() => {
 })
 
 // 关键逻辑：确保 naturalSize 存在，否则百分比会计算错误导致偏移
-const naturalSize = computed(() => props.data.naturalSize || { w: 375, h: 667 })
+const naturalSize = computed(() => {
+  const size = props.data.naturalSize;
+  if (size && size.w > 0) return size;
+  return { w: 1920, h: 1080 }; // 默认给个大分母，防止红点跳出屏幕
+})
 
 const getHotspotStyle = (comp) => {
   // 这里的 x, y 必须是相对于截图左上角的原始像素坐标
@@ -170,18 +186,25 @@ const getHotspotStyle = (comp) => {
   }
 }
 
-const iconMap = { page: Document, component: Cpu, case: Aim }
+const iconMap = {page: Document, component: Cpu, case: Aim}
 </script>
 
 <style scoped>
-.page-node { width: 220px; position: relative; background: transparent; overflow: visible; }
+.page-node {
+  width: 220px;
+  position: relative;
+  background: transparent;
+  overflow: visible;
+}
 
 .node-shell {
   background: rgba(255, 255, 255, 0.45) !important;
   backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 14px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
 }
 
 .page-node:hover .node-shell {
@@ -189,18 +212,43 @@ const iconMap = { page: Document, component: Cpu, case: Aim }
   box-shadow: 0 12px 40px rgba(255, 77, 0, 0.15);
 }
 
-.page-node.selected .node-shell { border: 2px solid #ff4d00; }
+.page-node.selected .node-shell {
+  border: 2px solid #ff4d00;
+}
 
 .io-handle {
-  width: 12px; height: 12px; background: #fff !important;
-  border: 2px solid #94a3b8 !important; z-index: 100;
+  width: 12px;
+  height: 12px;
+  background: #fff !important;
+  border: 2px solid #94a3b8 !important;
+  z-index: 100;
   transition: none !important;
 }
-.handle-left { left: -6px; }
-.handle-right { right: -6px; }
 
-.node-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(245, 247, 250, 0.3); }
-.node-title { font-size: 14px; font-weight: 700; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.handle-left {
+  left: -6px;
+}
+
+.handle-right {
+  right: -6px;
+}
+
+.node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(245, 247, 250, 0.3);
+}
+
+.node-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 截图容器修复 */
 .visual-wrapper {
