@@ -189,7 +189,7 @@ const handleFileUpload = async (e) => {
         localData.screenshotPath = (res.data && typeof res.data === 'object' && res.data.path) ? res.data.path : res.data
         localData.screenshot = base64 // Use base64 for immediate display
         // 2. Perform OCR
-        await performOCR(base64)
+        await performOCR(localData.screenshotPath)
       } else {
         ElMessage.error(res.msg || '上传失败')
         ocrLoading.value = false
@@ -209,7 +209,7 @@ const performOCR = async (imageUrl) => {
     const results = await api.ocrRecognition(imageUrl)
     if (!localData.interactions) localData.interactions = []
 
-    results.forEach(item => {
+    results["data"]["ocr_result"].forEach(item => {
       // 将 OCR 的 box (4个点) 转换为 bounding box (x, y, w, h)
       const xs = item.coordinates.box.map(p => p[0])
       const ys = item.coordinates.box.map(p => p[1])
@@ -491,7 +491,37 @@ onMounted(async () => {
       try {
         const res = await wsGetFile(path)
         if (res.code === 200) {
-          localData.screenshot = res.data // Assuming res.data contains the base64 content
+          // 🔥 修复：处理 raw base64，补全前缀
+          const data = res.data
+          if (data && typeof data === 'object') {
+             // 处理二进制对象
+             if (data instanceof Blob) localData.screenshot = URL.createObjectURL(data)
+             else if (data instanceof ArrayBuffer) localData.screenshot = URL.createObjectURL(new Blob([data]))
+             else if (data.type === 'Buffer' && Array.isArray(data.data)) {
+               const u8 = new Uint8Array(data.data)
+               localData.screenshot = URL.createObjectURL(new Blob([u8]))
+             } else if (data.content && typeof data.content === 'string') {
+               // 🔥 新增：处理 { name, content } 结构
+               let rawStr = data.content
+               if (!rawStr.startsWith('data:')) {
+                  let mime = 'image/png'
+                  if (data.name) {
+                    const ext = data.name.split('.').pop().toLowerCase()
+                    if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
+                  }
+                  rawStr = `data:${mime};base64,${rawStr}`
+               }
+               localData.screenshot = rawStr
+             }
+          } else if (typeof data === 'string') {
+            if (data && !data.startsWith('data:')) {
+              const ext = path.split('.').pop().toLowerCase()
+              const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png'
+              localData.screenshot = `data:${mime};base64,${data}`
+            } else {
+              localData.screenshot = data
+            }
+          }
         }
       } catch (e) {
         console.error('Failed to load image via WS', e)
@@ -514,6 +544,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  if (localData.screenshot && localData.screenshot.startsWith('blob:')) {
+    URL.revokeObjectURL(localData.screenshot)
+  }
 })
 </script>
 

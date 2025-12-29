@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { Document, Cpu, Aim } from '@element-plus/icons-vue'
 import { ElIcon } from 'element-plus'
@@ -58,24 +58,104 @@ const onImageLoaded = () => {
   })
 }
 
+// 辅助函数：将 DataURL 转换为 BlobURL
+// 1. 提升性能：避免渲染进程反复解析巨大的 Base64 字符串
+// 2. 规避错误：减少 Opaque Origin Check 失败的概率
+const dataURLtoBlobURL = (dataurl) => {
+  try {
+    const arr = dataurl.split(',')
+    const mime = arr[0].match(/:(.*?);/)[1]
+    const bstr = atob(arr[1])
+    let n = bstr.length
+    const u8arr = new Uint8Array(n)
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n)
+    }
+    const blob = new Blob([u8arr], { type: mime })
+    return URL.createObjectURL(blob)
+  } catch (e) {
+    console.warn('DataURL conversion failed', e)
+    return dataurl // 转换失败则回退使用原字符串
+  }
+}
+
 const loadScreenshot = async () => {
-  const src = props.data.screenshot
+  // 清理旧的 BlobURL，防止内存泄漏
+  if (displayScreenshot.value && displayScreenshot.value.startsWith('blob:')) {
+    URL.revokeObjectURL(displayScreenshot.value)
+  }
+
+  // 🔥 1. 兼容处理：screenshot 可能是对象 { path: '...', url: '...' }
+  let src = props.data.screenshot
+  if (src && typeof src === 'object') {
+    src = src.path || src.url || ''
+  }
+
   if (!src) {
     displayScreenshot.value = ''
     nextTick(() => updateNodeInternals([props.id]))
     return
   }
+
+  let finalSrc = src
   if (src.startsWith('data:image') || src.startsWith('http')) {
-    displayScreenshot.value = src
+    if (src.startsWith('data:image')) finalSrc = dataURLtoBlobURL(src)
   } else {
     try {
       const res = await wsGetFile(src)
-      if (res.code === 200) displayScreenshot.value = res.data
+      if (res.code === 200 && res.data) {
+        // 🔥 2. 修复：如果返回的是 raw base64 (不带 data: 前缀)，手动补全
+        let dataUrl = res.data
+
+        // 🔥 3. 增强：处理非字符串数据 (Blob, ArrayBuffer, BufferJSON)
+        if (typeof dataUrl === 'object') {
+          if (dataUrl instanceof Blob) {
+            finalSrc = URL.createObjectURL(dataUrl)
+          } else if (dataUrl instanceof ArrayBuffer) {
+            finalSrc = URL.createObjectURL(new Blob([dataUrl]))
+          } else if (dataUrl.type === 'Buffer' && Array.isArray(dataUrl.data)) {
+            // 处理 Node.js Buffer 序列化后的 JSON
+            const u8 = new Uint8Array(dataUrl.data)
+            finalSrc = URL.createObjectURL(new Blob([u8]))
+          } else if (dataUrl.content && typeof dataUrl.content === 'string') {
+            // 🔥 新增：处理 { name, content } 结构
+            let rawStr = dataUrl.content
+            if (!rawStr.startsWith('data:')) {
+              let mime = 'image/png'
+              if (dataUrl.name) {
+                const ext = dataUrl.name.split('.').pop().toLowerCase()
+                if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
+              }
+              rawStr = `data:${mime};base64,${rawStr}`
+            }
+            finalSrc = dataURLtoBlobURL(rawStr)
+          } else {
+            console.warn('Unknown screenshot data object:', dataUrl)
+            return
+          }
+        } else if (typeof dataUrl === 'string') {
+          if (!dataUrl.startsWith('data:')) {
+            const ext = src.split('.').pop().toLowerCase()
+            const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png'
+            dataUrl = `data:${mime};base64,${dataUrl}`
+          }
+          // 统一转 BlobURL 以提升性能
+          finalSrc = dataURLtoBlobURL(dataUrl)
+        }
+      }
     } catch (e) { console.error('Failed to load screenshot', e) }
   }
+  
+  displayScreenshot.value = finalSrc
 }
 
 watch(() => props.data.screenshot, loadScreenshot, { immediate: true })
+
+onUnmounted(() => {
+  if (displayScreenshot.value && displayScreenshot.value.startsWith('blob:')) {
+    URL.revokeObjectURL(displayScreenshot.value)
+  }
+})
 
 // 关键逻辑：确保 naturalSize 存在，否则百分比会计算错误导致偏移
 const naturalSize = computed(() => props.data.naturalSize || { w: 375, h: 667 })
