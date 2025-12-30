@@ -188,6 +188,45 @@
                         </div>
                       </div>
 
+                      <div v-else-if="field.type === 'interaction_select'" class="form-group">
+                        <label class="field-label">{{ field.desc || '关联热区' }}</label>
+
+                        <div class="custom-select-container">
+                          <div
+                              class="custom-select-trigger"
+                              :class="{ active: activeSelectField === field.name }"
+                              @click="toggleSelect(field.name)"
+                          >
+                            <span class="selected-text">
+                              {{ getInteractionLabel(node.data[field.name]) || '请选择页面上的热区' }}
+                            </span>
+                            <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2">
+                              <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                          </div>
+
+                          <div v-if="activeSelectField === field.name" class="custom-options-list">
+                            <div
+                                v-for="item in (node.data.interactions || [])"
+                                :key="item.id"
+                                class="custom-option"
+                                :class="{ selected: node.data[field.name] === (item.id || item.uid) }"
+                                @click="handleInteractionSelect(field.name, item)"
+                            >
+                              <div class="opt-content">
+                                <span class="opt-label">{{ item.label }}</span>
+                                <span class="opt-sub">[{{ item.sub_type }}]</span>
+                              </div>
+                              <span v-if="node.data[field.name] === (item.id || item.uid)" class="check-mark">✓</span>
+                            </div>
+                            <div v-if="!(node.data.interactions || []).length" class="custom-option disabled">
+                              当前页面暂无定义热区
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
                       <!-- Sub-field: Input (str/int/text) -->
                       <div v-else class="input-wrapper">
                         <input v-if="!isVariable(item[subField.name])"
@@ -275,7 +314,9 @@
                            v-model="node.data[field.name]"
                            :placeholder="field.placeholder || '请选择文件...'"
                            class="panel-input" style="padding-right: 60px;"/>
-                    <button class="pick-btn" style="right: 34px;" @click="handleFileSelect(field.name)" title="浏览本地文件">📂</button>
+                    <button class="pick-btn" style="right: 34px;" @click="handleFileSelect(field.name)"
+                            title="浏览本地文件">📂
+                    </button>
                     <button class="pick-btn" @click="$emit('pick-var', field.name)" title="选择变量">🎯</button>
                   </div>
                 </template>
@@ -363,7 +404,7 @@ const handleFileSelect = async (fieldName) => {
   // 1. 尝试通过 IPC 调用原生文件选择框 (推荐，可获取完整路径)
   // 适配 preload.js 中暴露的 window.electronAPI
   const ipc = window.electronAPI
-  
+
   if (ipc && ipc.invoke) {
     try {
       const path = await ipc.invoke('select-file')
@@ -521,6 +562,21 @@ const isOptionSelected = (option, currentVal) => {
     return option.value === currentVal.value
   }
   return option === currentVal
+}
+
+// 获取 ID 对应的 Label 显示
+const getInteractionLabel = (id) => {
+  if (!id) return ''
+  // 查找 interactions 中匹配 id 或 uid 的项
+  const found = props.node?.data?.interactions?.find(i => (i.id === id || i.uid === id))
+  return found ? found.label : id
+}
+
+// 处理热区选择
+const handleInteractionSelect = (fieldName, item) => {
+  // 仅存储 ID，不存储 Label，确保数据解耦
+  props.node.data[fieldName] = item.id || item.uid
+  closeSelect()
 }
 </script>
 
