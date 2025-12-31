@@ -322,7 +322,11 @@ const selectComp = (index) => {
     selectedCompIndex.value = index
     nextTick(() => {
         const el = itemRefs.value[index]
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        if (el) {
+            // 🔥 修复：将 'center' 改为 'nearest'
+            // nearest 会自动判断方向，且只滚动最近的滚动父级（即 el-scrollbar）
+            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        }
     })
 }
 
@@ -552,7 +556,7 @@ onUnmounted(() => {
 
 <style scoped>
 .saas-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 2000; display: flex; align-items: center; justify-content: center; padding-top: 40px; }
-.saas-window { width: 95vw; height: 90vh; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.2); border: 1px solid #e2e8f0; }
+.saas-window { width: 95vw; height: 90vh; background: #fff; border-radius: 12px; overflow: hidden !important;; box-shadow: 0 20px 50px rgba(0,0,0,0.2); border: 1px solid #e2e8f0; }
 .h-full { height: 100%; }
 .saas-header { background: white; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
 .header-left, .header-center, .header-right { display: flex; align-items: center; gap: 12px; }
@@ -566,7 +570,7 @@ onUnmounted(() => {
 :deep(.saas-input-desc .el-input__inner) { font-size: 13px; color: #64748b; }
 
 .zoom-label { font-size: 12px; color: #64748b; margin-left: 4px; min-width: 40px; text-align: center; }
-.editor-body { overflow: hidden; }
+.editor-body { overflow: hidden !important; height: calc(100% - 60px);}
 .visual-container { flex: 1; background: #e2e8f0; position: relative; overflow: hidden; display: flex; flex-direction: column; padding: 0; }
 .canvas-wrapper { flex: 1; overflow: hidden; cursor: grab; position: relative; }
 .transform-layer { transform-origin: 0 0; }
@@ -577,7 +581,7 @@ onUnmounted(() => {
 .hotspot-box.selected { border-color: #ef4444; background: rgba(239,68,68, 0.15); z-index: 20; }
 .label-tag { position: absolute; top: -22px; left: -2px; background: #6366f1; color: white; font-size: 11px; padding: 2px 6px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 .drawing-box { position: absolute; border: 1px dashed #6366f1; background: rgba(99,102,241,0.1); pointer-events: none; z-index: 30; }
-.props-sidebar { background: white; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
+.props-sidebar { background: white; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; overflow: hidden; }
 .sidebar-header { height: 50px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #f1f5f9; }
 .sidebar-header .title { font-size: 14px; font-weight: 600; color: #1e293b; }
 .list-content { flex: 1; padding: 12px; }
