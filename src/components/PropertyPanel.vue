@@ -327,6 +327,45 @@
                           :placeholder="field.placeholder"
                           class="panel-input panel-textarea" rows="3"></textarea>
 
+                <!-- Interaction Select (Top Level) -->
+                <div v-else-if="field.type === 'interaction_select'" class="custom-select-container">
+                  <div
+                      class="custom-select-trigger"
+                      :class="{ active: activeSelectField === field.name }"
+                      @click="toggleSelect(field.name)"
+                      style="padding-right: 32px"
+                  >
+                    <span class="selected-text">
+                      {{ getInteractionLabel(node.data[field.name]) || '请选择页面上的热区' }}
+                    </span>
+                    <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </div>
+                  <!-- 🔥 关键：添加拾取按钮 -->
+                  <button class="pick-btn" @click="$emit('pick-var', field.name)" title="从上游节点选择">🎯</button>
+
+                  <div v-if="activeSelectField === field.name" class="custom-options-list">
+                    <div
+                        v-for="item in (node.data.interactions || [])"
+                        :key="item.id"
+                        class="custom-option"
+                        :class="{ selected: node.data[field.name] === (item.id || item.uid) }"
+                        @click="handleInteractionSelect(field.name, item)"
+                    >
+                      <div class="opt-content">
+                        <span class="opt-label">{{ item.label }}</span>
+                        <span class="opt-sub">[{{ item.sub_type }}]</span>
+                      </div>
+                      <span v-if="node.data[field.name] === (item.id || item.uid)" class="check-mark">✓</span>
+                    </div>
+                    <div v-if="!(node.data.interactions || []).length" class="custom-option disabled">
+                      当前页面暂无定义热区
+                    </div>
+                  </div>
+                </div>
+
                 <!-- 普通 Input -->
                 <input v-else
                        :type="['int', 'float', 'number'].includes(field.type) ? 'number' : 'text'"
@@ -991,6 +1030,16 @@ const handleInteractionSelect = (fieldName, item) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.opt-content {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.opt-label { font-weight: 500; }
+.opt-sub { font-size: 11px; color: #94a3b8; }
+
+.custom-option.disabled {
+  color: #cbd5e1; cursor: not-allowed; font-style: italic;
 }
 
 .custom-option:hover {

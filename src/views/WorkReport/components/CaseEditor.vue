@@ -1,6 +1,14 @@
 <template>
   <el-container class="editor-container">
-    <el-header height="60px" class="editor-toolbar-wrapper">
+    <el-header v-if="isPicker" height="60px" class="editor-toolbar-wrapper">
+      <div class="editor-toolbar-glass">
+        <span class="label">请点击画面中的热区进行选择</span>
+        <div class="toolbar-info" style="margin-left: auto">
+          <el-button size="small" @click="$emit('close')">取消</el-button>
+        </div>
+      </div>
+    </el-header>
+    <el-header v-else height="60px" class="editor-toolbar-wrapper">
       <div class="editor-toolbar-glass">
         <el-button :icon="ArrowLeft" circle size="small" @click="$router.back()"/>
 
@@ -34,6 +42,7 @@
     <el-main class="flow-wrapper">
       <div class="canvas-container">
         <VueFlow
+            id="case-editor-canvas"
             v-if="isReady"
             v-model:nodes="nodes"
             v-model:edges="edges"
@@ -42,6 +51,8 @@
             :max-zoom="4"
             fit-view-on-init
             class="flow-canvas"
+            :nodes-draggable="!isPicker"
+            :nodes-connectable="!isPicker"
             @connect="onConnect"
             @pane-ready="onPaneReady"
             @nodes-selection-change="onSelectionChange"
@@ -82,7 +93,7 @@
 
 <script setup>
 /* --- 以下完整保留你原始的所有业务逻辑 --- */
-import {ref, onMounted, onUnmounted, watch} from 'vue'
+import {ref, onMounted, onUnmounted, watch, shallowRef} from 'vue'
 import {useRouter, useRoute} from 'vue-router'
 import {VueFlow, useVueFlow} from '@vue-flow/core'
 import {Background} from '@vue-flow/background'
@@ -98,6 +109,13 @@ import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
 import {fetchWorkflowAdd, fetchWorkflowDetailSimple} from '@/api/workflow'
 
+const props = defineProps({
+  nodeData: { type: Object, default: () => ({}) },
+  isPicker: { type: Boolean, default: false },
+  appId: { type: [String, Number], default: '' }
+})
+const emit = defineEmits(['pick', 'close'])
+
 const isReady = ref(false)
 const nodes = ref([])
 const edges = ref([])
@@ -106,16 +124,34 @@ const route = useRoute()
 const graphId = ref(null)
 const saveStatus = ref('saved')
 let autoSaveTimer = null
-let flowInstance = null
+const flowInstance = shallowRef(null)
 
 const onPaneReady = (instance) => {
-  flowInstance = instance
+  flowInstance.value = instance
   instance.fitView()
 }
 
 // 1. 完整的数据加载与重试逻辑
 const loadGraphData = async (retryCount = 0) => {
-  const id = route.params.appId;
+  // 🔥 拾取模式 (单节点预览)：只有 nodeData 没有 appId 时才使用单节点预览
+  if (props.isPicker && props.nodeData && !props.appId && !route.params.appId) {
+    const n = props.nodeData
+    nodes.value = [{
+      id: n.id || 'preview',
+      type: 'page',
+      position: {x: 0, y: 0},
+      data: {
+        ...n,
+        interactions: n.interactions || []
+      }
+    }]
+    isReady.value = true
+    return
+  }
+
+  // 🔥 优先使用传入的 appId (拾取模式)，否则使用路由参数
+  const id = props.appId || route.params.appId || route.query.appId;
+
   if (id) {
     try {
       const isAppId = isNaN(Number(id))
@@ -142,10 +178,11 @@ const loadGraphData = async (retryCount = 0) => {
 
             // 2. 还原 interactions 结构
             const processedInteractions = rawComponents.map(c => {
+              const rect = c.rect || c
               if (c.rect) {
-                return {...c, x: c.rect.x, y: c.rect.y, w: c.rect.w, h: c.rect.h};
+                return {...c, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h)};
               }
-              return c;
+              return {...c, x: Number(c.x), y: Number(c.y), w: Number(c.w), h: Number(c.h)};
             });
 
             return {
@@ -167,6 +204,12 @@ const loadGraphData = async (retryCount = 0) => {
               dragging: false
             }
           })
+
+          // 🔥 拾取模式下，隐藏用例节点 (只允许选择页面/组件上的热区)
+          if (props.isPicker) {
+            nodes.value = nodes.value.filter(n => n.type !== 'case')
+          }
+
           const caseNodes = nodes.value.filter(n => n.type === 'case' && n.data.workflow_id)
           if (caseNodes.length > 0) {
             Promise.all(caseNodes.map(async (node) => {
@@ -182,7 +225,12 @@ const loadGraphData = async (retryCount = 0) => {
               }
             }))
           }
-          edges.value = rawEdges.map(e => ({...e, id: String(e.id)}))
+
+          // 🔥 修复：过滤掉孤立的连线 (因为部分节点可能被隐藏)
+          const validNodeIds = new Set(nodes.value.map(n => n.id))
+          edges.value = rawEdges
+              .filter(e => validNodeIds.has(String(e.source)) && validNodeIds.has(String(e.target)))
+              .map(e => ({...e, id: String(e.id)}))
         }
       }
     } catch (e) {
@@ -199,7 +247,7 @@ const loadGraphData = async (retryCount = 0) => {
     if (lastVisitedId) {
       sessionStorage.removeItem('last_visited_case_id')
       const targetNode = nodes.value.find(n => n.id === lastVisitedId)
-      if (targetNode) flowInstance?.fitView({nodes: [targetNode], padding: 0.2, duration: 800})
+      if (targetNode) flowInstance.value?.fitView({nodes: [targetNode], padding: 0.2, duration: 800})
     }
   }, 400)
 }
@@ -247,7 +295,10 @@ const getSafeScreenshot = (val) => {
 
 // 3. 完整的连线与 ParentNode 逻辑
 const onConnect = async (params) => {
-  flowInstance?.addEdges([params])
+  // 🔥 拾取模式下禁止连线操作
+  if (props.isPicker) return
+
+  flowInstance.value?.addEdges([params])
   const sourceNode = nodes.value.find(n => n.id === params.source)
   const targetNode = nodes.value.find(n => n.id === params.target)
   if (sourceNode && targetNode) {
@@ -276,7 +327,7 @@ const onConnect = async (params) => {
         naturalSize: childNode.data.naturalSize || null,
         screenshot: getSafeScreenshot(childNode.data.screenshot),
         workflow_id: childNode.data.workflow_id ? String(childNode.data.workflow_id) : null,
-        components: (childNode.data.interactions || []).map(c => ({...c, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
+        components: (childNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
       }
       try {
         await api.saveNodeDetail(payload)
@@ -291,20 +342,115 @@ const onConnect = async (params) => {
 const onSelectionChange = (elements) => {
   selectedElements.value = elements.nodes || []
 }
-const onNodeClick = () => {
+const onNodeClick = (e) => {
+  // 🔥 拾取模式：计算点击位置是否命中热区
+  if (props.isPicker) {
+    const {node, event} = e
+    
+    // 1. 尝试使用 DOM 元素计算 (最准确，所见即所得)
+    // 🔥 修复：限定在当前编辑器容器内查找节点，防止选中背景 FlowCanvas 中的同名节点
+    const container = document.querySelector('.editor-container')
+    const nodeEl = container?.querySelector(`[data-id="${node.id}"]`)
+    let checkX, checkY
+    
+    if (nodeEl) {
+      // 🔥 修复：优先定位图片元素，排除节点头部/边框的影响 (Header 高度会导致 Y 轴偏移)
+      const targetEl = nodeEl.querySelector('img') || nodeEl
+      const rect = targetEl.getBoundingClientRect()
+
+      // 计算点击在节点内的相对百分比位置
+      const percentX = (event.clientX - rect.left) / rect.width
+      const percentY = (event.clientY - rect.top) / rect.height
+      
+      // 映射到原始尺寸
+      const naturalW = node.data.naturalSize?.w || rect.width
+      const naturalH = node.data.naturalSize?.h || rect.height
+      
+      checkX = percentX * naturalW
+      checkY = percentY * naturalH
+
+      // 🔥 增加模糊匹配逻辑：如果未精准命中，尝试寻找最近的热区 (容错范围 20px)
+      const scale = naturalW / rect.width
+      const threshold = 20 * scale
+      const interactions = node.data.interactions || []
+
+      // 1. 精准命中
+      let hit = interactions.find(i =>
+          checkX >= i.x && checkX <= i.x + i.w &&
+          checkY >= i.y && checkY <= i.y + i.h
+      )
+
+      // 2. 模糊命中 (寻找最近的)
+      if (!hit) {
+        let minDesc = Infinity
+        let closest = null
+        for (const i of interactions) {
+          // 计算点到矩形的距离
+          const dx = Math.max(i.x - checkX, 0, checkX - (i.x + i.w))
+          const dy = Math.max(i.y - checkY, 0, checkY - (i.y + i.h))
+          const dist = Math.sqrt(dx * dx + dy * dy)
+
+          if (dist <= threshold && dist < minDesc) {
+            minDesc = dist
+            closest = i
+          }
+        }
+        if (closest) hit = closest
+      }
+
+      if (hit) {
+        emit('pick', hit)
+      } else {
+        ElMessage.info('未点击到热区，请点击标记框选区域')
+      }
+      return
+    } else {
+      // 2. 降级方案：使用 Vue Flow 坐标投影
+      if (!flowInstance.value) return
+      const flowPos = flowInstance.value.project({x: event.clientX, y: event.clientY})
+      const relX = flowPos.x - node.position.x
+      const relY = flowPos.y - node.position.y
+
+      const currentW = node.dimensions?.width || node.data.naturalSize?.w || 1
+      const currentH = node.dimensions?.height || node.data.naturalSize?.h || 1
+      const scaleX = (node.data.naturalSize?.w || currentW) / currentW
+      const scaleY = (node.data.naturalSize?.h || currentH) / currentH
+      
+      checkX = relX * scaleX
+      checkY = relY * scaleY
+
+      const hit = (node.data.interactions || []).find(i =>
+          checkX >= i.x && checkX <= i.x + i.w &&
+          checkY >= i.y && checkY <= i.y + i.h
+      )
+      if (hit) emit('pick', hit)
+    }
+    return
+  }
 }
 
 // 4. 完整的双击跳转逻辑
-const onNodeDoubleClick = ({node}) => {
+const onNodeDoubleClick = (e) => {
+  // 🔥 拾取模式：支持双击选中 (复用单击逻辑)
+  if (props.isPicker) {
+    onNodeClick(e)
+    return
+  }
+
+  const {node} = e
   if (node.type === 'case') {
     sessionStorage.setItem('last_visited_case_id', node.id)
     const targetId = node.data?.workflow_id
-    if (targetId) router.push({name: 'Editor', params: {id: targetId}})
-    else if (node.id.toString().startsWith('node-')) {
-      const appId = route.params.appId || route.query.appId
-      router.push({name: 'Editor', query: {appId}})
+    
+    // 🔥 关键修复：跳转时携带当前 AppID，确保流程编辑器知道上下文
+    const currentAppId = props.appId || route.params.appId || route.query.appId
+
+    if (targetId) {
+      router.push({name: 'Editor', params: {id: targetId}, query: {appId: currentAppId}})
+    } else if (node.id.toString().startsWith('node-')) {
+      router.push({name: 'Editor', query: {appId: currentAppId}})
     } else {
-      router.push({name: 'Editor', params: {id: node.id}})
+      router.push({name: 'Editor', params: {id: node.id}, query: {appId: currentAppId}})
     }
     return
   }
@@ -319,6 +465,9 @@ const clearSelection = () => {
 
 // 5. 完整的自动保存逻辑
 const triggerAutoSave = () => {
+  // 🔥 严重修复：拾取模式下绝对禁止触发自动保存，否则会覆盖掉被隐藏的节点(如用例节点)导致数据丢失
+  if (props.isPicker) return
+
   saveStatus.value = 'saving'
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(handleSaveLayout, 1000)
@@ -342,6 +491,9 @@ const ensureGraphId = async () => {
 }
 
 const handleSaveLayout = async () => {
+  // 🔥 严重修复：拾取模式下禁止保存布局
+  if (props.isPicker) return
+
   try {
     if (!graphId.value) {
       if (!await ensureGraphId()) {
@@ -379,6 +531,9 @@ const onEdgesChange = (changes) => {
 }
 
 const onNodeUpdate = async (updatedNode) => {
+  // 🔥 严重修复：拾取模式下禁止更新节点详情
+  if (props.isPicker) return
+
   if (!graphId.value) return
   const payload = {
     graph_id: graphId.value,
@@ -386,12 +541,11 @@ const onNodeUpdate = async (updatedNode) => {
     type: updatedNode.type || 'page',
     label: updatedNode.label,
     desc: updatedNode.data.desc || '',
-    naturalSize: updatedNode.data.naturalSize,
     parentNode: updatedNode.parentNode || null,
     naturalSize: updatedNode.data.naturalSize || null,
     screenshot: getSafeScreenshot(updatedNode.data.screenshot),
     workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
-    components: (updatedNode.data.interactions || []).map(c => ({...c, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
+    components: (updatedNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
   }
   try {
     await api.saveNodeDetail(payload);
@@ -480,7 +634,7 @@ const addNode = async (type) => {
 
   if (parentNode) {
     setTimeout(() => {
-      flowInstance?.addEdges([{
+      flowInstance.value?.addEdges([{
         id: `e-${parentNode.id}-${newNode.id}`,
         source: parentNode.id,
         target: newNode.id,
@@ -525,7 +679,7 @@ const addChildNode = async () => {
     return
   }
   setTimeout(() => {
-    flowInstance?.addEdges([{
+    flowInstance.value?.addEdges([{
       id: `e-${parent.id}-${newNode.id}`,
       source: parent.id,
       target: newNode.id,
@@ -569,7 +723,7 @@ const addParentNode = async () => {
     return
   }
   setTimeout(() => {
-    flowInstance?.addEdges([{
+    flowInstance.value?.addEdges([{
       id: `e-${newNode.id}-${child.id}`,
       source: newNode.id,
       target: child.id,
@@ -616,12 +770,12 @@ const addSiblingNode = async () => {
 }
 
 const removeSelected = () => {
-  if (flowInstance) flowInstance.removeNodes(selectedElements.value)
+  if (flowInstance.value) flowInstance.value.removeNodes(selectedElements.value)
   selectedElements.value = [];
   triggerAutoSave()
 }
 
-const fitView = () => flowInstance?.fitView()
+const fitView = () => flowInstance.value?.fitView()
 
 const handleNodeSizeUpdate = (nodeId, size) => {
   const node = nodes.value.find(n => n.id === nodeId)
@@ -641,8 +795,8 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 .editor-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
+  height: 100%; /* 🔥 修复：改为 100% 适应父容器(弹窗)，防止撑满全屏 */
+  width: 100%;
   background: transparent !important; /* 必须透明看到底层水波纹 */
 }
 

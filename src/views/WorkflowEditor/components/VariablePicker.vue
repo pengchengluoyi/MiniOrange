@@ -19,11 +19,25 @@
 <script setup>
 import { computed } from 'vue'
 
-const props = defineProps(['pickedNode', 'vars'])
+const props = defineProps(['pickedNode', 'vars', 'targetType'])
 defineEmits(['select', 'close'])
 
 // 统一标准化变量列表，兼容数组和对象格式
 const displayVars = computed(() => {
+  let list = []
+
+  // 0. 特殊模式：如果是 interaction_select，只显示热区
+  if (props.targetType === 'interaction_select') {
+    if (props.pickedNode?.data?.interactions && Array.isArray(props.pickedNode.data.interactions)) {
+      return props.pickedNode.data.interactions.map(i => ({
+        key: i.id || i.uid,
+        label: `[热区] ${i.label || '未命名'}`,
+        type: 'interaction'
+      }))
+    }
+    return []
+  }
+
   // 1. 尝试获取数据源：优先 props.vars，若为空则尝试从节点数据中获取 outputs
   let raw = props.vars
   const isVarsEmpty = !raw || (Array.isArray(raw) && raw.length === 0) || (typeof raw === 'object' && Object.keys(raw).length === 0)
@@ -43,24 +57,26 @@ const displayVars = computed(() => {
     }
   }
 
-  if (!raw) return []
-
-  if (Array.isArray(raw)) {
-    return raw.map(item => {
+  if (raw) {
+    if (Array.isArray(raw)) {
+      list = raw.map(item => {
       if (typeof item === 'string') return { key: item, label: item, type: 'string' }
       return {
         key: item.key || item.name || item.id || item.value,
         label: item.label || item.desc || item.description || item.name || '',
         type: item.type || 'any'
       }
-    }).filter(v => v.key)
+      }).filter(v => v.key)
+    } else {
+      list = Object.entries(raw).map(([k, v]) => ({
+        key: k,
+        label: v?.label || v?.desc || v?.description || k,
+        type: v?.type || 'any'
+      }))
+    }
   }
 
-  return Object.entries(raw).map(([k, v]) => ({
-    key: k,
-    label: v?.label || v?.desc || v?.description || k,
-    type: v?.type || 'any'
-  }))
+  return list
 })
 </script>
 

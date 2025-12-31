@@ -223,7 +223,7 @@ const handleSave = async () => {
   // 保存时打包成 rect
   try {
     const componentsPayload = localData.interactions.map(c => ({
-        uid: c.uid || null, label: c.label, category: c.category, sub_type: c.sub_type,
+        uid: c.uid || c.id || null, label: c.label, category: c.category, sub_type: c.sub_type,
         rect: { x: c.x, y: c.y, w: c.w, h: c.h },
         rules: c.rules, locators: c.locators
     }))

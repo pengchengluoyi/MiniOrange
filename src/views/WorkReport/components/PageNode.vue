@@ -61,7 +61,6 @@ const onImageLoaded = (event) => {
 
   // 核心逻辑：如果库里没存尺寸，或者存的是默认的 375，立即纠正
   if (!props.data.naturalSize || props.data.naturalSize.w !== realW) {
-    console.log(`[Node ${props.id}] 检测到真实尺寸: ${realW}x${realH}，正在上报...`)
     emit('update-size', { w: realW, h: realH });
   }
 
