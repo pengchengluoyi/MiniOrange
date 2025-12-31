@@ -102,7 +102,7 @@ export const fetchWorkflowSaveSimple = (id, name, desc) => {
         url: `/workflow/save_simple`,
         method: 'post',
         data: {
-            id, name, desc
+            id, name, desc: desc || ''
         }
     })
 }
@@ -127,4 +127,3 @@ export const fetchRunLog = (run_id) => {
     })
 
 }
-
