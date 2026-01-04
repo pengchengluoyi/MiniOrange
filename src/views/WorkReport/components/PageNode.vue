@@ -24,7 +24,14 @@
           <div class="hotspots-overlay">
             <div v-for="(comp, i) in data.interactions" :key="i"
                  class="mini-hotspot" :style="getHotspotStyle(comp)">
-              <Handle type="source" :id="`hotspot-${i}`" :position="Position.Right" class="hotspot-handle"/>
+              <!-- 🔥 修复：始终渲染 Handle，但在 isPicker 模式下通过样式隐藏，保证连线逻辑正常 -->
+              <Handle
+                type="source"
+                :id="`hotspot-${i}`"
+                :position="Position.Right"
+                class="hotspot-handle"
+                :class="{ 'hidden-handle': isPicker }"
+              />
             </div>
           </div>
         </div>
@@ -46,7 +53,8 @@ const props = defineProps({
   id: String,
   label: String,
   data: {type: Object, default: () => ({type: 'page', desc: '', interactions: []})},
-  selected: Boolean
+  selected: Boolean,
+  isPicker: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update-size'])
@@ -289,5 +297,14 @@ const iconMap = {page: Document, component: Cpu, case: Aim}
   height: 8px;
   background: #ff4d00 !important;
   border: 1px solid #fff !important;
+}
+
+/* 🔥 新增：隐藏 Handle 的样式 */
+.hidden-handle {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  border: none !important;
 }
 </style>

@@ -63,13 +63,13 @@
             @edges-change="onEdgesChange"
         >
           <template #node-page="props">
-            <PageNode v-bind="props" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
+            <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
           </template>
           <template #node-component="props">
-            <PageNode v-bind="props" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
+            <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
           </template>
           <template #node-case="props">
-            <PageNode v-bind="props" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
+            <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
           </template>
 
           <Background pattern-color="rgba(203, 213, 225, 0.4)" :gap="20"/>
