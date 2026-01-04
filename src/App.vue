@@ -46,7 +46,6 @@ const MAX_RETRIES = 30 // 30次 * 500ms = 15秒超时
 // 检查服务端健康状态
 const checkHealth = async () => {
   try {
-    // 这里使用 fetch 而不是 axios，避免被拦截器拦截导致报错弹窗
     // 假设你的健康检查接口是 http://127.0.0.1:10104/
     const response = await fetch('http://127.0.0.1:10104/', {
       method: 'GET',
