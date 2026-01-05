@@ -49,6 +49,40 @@ export function useFlowPersistence(getNodes, getEdges, setNodes, setEdges, flowN
                     if (node.data.inputs) delete node.data.inputs
                     if (node.data.outputs) delete node.data.outputs
 
+                    // 🔥 清理运行时状态字段 (不需要保存到数据库)
+                    delete node.data.runStatus
+                    delete node.data.runMessage
+                    delete node.data.code
+                    delete node.data.timestamp
+
+                    // 🔥 优化 interactions 存储：只保留被引用的热区，并精简字段 (用于显示缩略图)
+                    if (node.data.interactions && Array.isArray(node.data.interactions)) {
+                        // 1. 扫描所有已知字段，收集被引用的 interaction ID
+                        const usedIds = new Set()
+                        if (node.data.interaction_id) usedIds.add(node.data.interaction_id)
+                        if (node.data.anchor_interaction_id) usedIds.add(node.data.anchor_interaction_id)
+                        // 如果未来有更多引用字段，在这里添加
+
+                        // 2. 过滤并重构
+                        const keptInteractions = node.data.interactions
+                            .filter(i => (i.id && usedIds.has(i.id)) || (i.uid && usedIds.has(i.uid)))
+                            .map(i => ({
+                                // 🔥 只保留 UI 显示缩略图和标签所需的最少字段
+                                id: i.id || i.uid,
+                                label: i.label,
+                                x: i.x, y: i.y, w: i.w, h: i.h,
+                                screenshot: i.screenshot,
+                                naturalSize: i.naturalSize,
+                                sourceNodeId: i.sourceNodeId
+                            }))
+                        
+                        if (keptInteractions.length > 0) {
+                            node.data.interactions = keptInteractions
+                        } else {
+                            delete node.data.interactions
+                        }
+                    }
+
                     if (node.data.platform) {
                         node.platform = node.data.platform
                     }
