@@ -1,5 +1,5 @@
 <template>
-  <el-container class="editor-container">
+  <el-container class="editor-container" ref="editorContainerRef">
     <el-header v-if="isPicker" height="60px" class="editor-toolbar-wrapper">
       <div class="editor-toolbar-glass">
         <span class="label">请点击画面中的热区进行选择</span>
@@ -125,6 +125,7 @@ const graphId = ref(null)
 const saveStatus = ref('saved')
 let autoSaveTimer = null
 const flowInstance = shallowRef(null)
+const editorContainerRef = ref(null)
 
 const onPaneReady = (instance) => {
   flowInstance.value = instance
@@ -177,12 +178,17 @@ const loadGraphData = async (retryCount = 0) => {
             const rawComponents = n.components || n.data?.interactions || [];
 
             // 2. 还原 interactions 结构
-            const processedInteractions = rawComponents.map(c => {
+            const processedInteractions = rawComponents.map((c, idx) => {
               const rect = c.rect || c
+              
+              // 🔥 修复：确保 ID 存在。如果后端数据缺失 ID，使用确定性算法生成临时 ID
+              const effectiveId = c.id || c.uid || `gen-${n.id}-${idx}`
+              const base = { ...c, id: effectiveId, uid: effectiveId }
+
               if (c.rect) {
-                return {...c, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h)};
+                return {...base, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h)};
               }
-              return {...c, x: Number(c.x), y: Number(c.y), w: Number(c.w), h: Number(c.h)};
+              return {...base, x: Number(c.x), y: Number(c.y), w: Number(c.w), h: Number(c.h)};
             });
 
             return {
@@ -283,10 +289,12 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  Object.values(saveTimers).forEach(t => clearTimeout(t))
 })
 
 const selectedElements = ref([])
 const selectedNode = ref(null)
+const saveTimers = {}
 
 const getSafeScreenshot = (val) => {
   if (val && typeof val === 'object') return val.path || val.url
@@ -348,8 +356,8 @@ const onNodeClick = (e) => {
     const {node, event} = e
     
     // 1. 尝试使用 DOM 元素计算 (最准确，所见即所得)
-    // 🔥 修复：限定在当前编辑器容器内查找节点，防止选中背景 FlowCanvas 中的同名节点
-    const container = document.querySelector('.editor-container')
+    // 🔥 修复：使用 ref 获取当前容器，防止 document.querySelector 选中背景中其他编辑器的节点
+    const container = editorContainerRef.value?.$el || editorContainerRef.value
     const nodeEl = container?.querySelector(`[data-id="${node.id}"]`)
     let checkX, checkY
     
@@ -399,7 +407,12 @@ const onNodeClick = (e) => {
       }
 
       if (hit) {
-        emit('pick', hit)
+        // 🔥 携带上下文信息 (截图、尺寸)，以便接收方能显示缩略图
+        const payload = {
+          ...hit,
+          __context: { screenshot: node.data.screenshot, naturalSize: node.data.naturalSize, sourceNodeId: node.id }
+        }
+        emit('pick', payload)
       } else {
         ElMessage.info('未点击到热区，请点击标记框选区域')
       }
@@ -423,7 +436,14 @@ const onNodeClick = (e) => {
           checkX >= i.x && checkX <= i.x + i.w &&
           checkY >= i.y && checkY <= i.y + i.h
       )
-      if (hit) emit('pick', hit)
+      if (hit) {
+        // 🔥 携带上下文信息 (截图、尺寸)，以便接收方能显示缩略图
+        const payload = {
+          ...hit,
+          __context: { screenshot: node.data.screenshot, naturalSize: node.data.naturalSize }
+        }
+        emit('pick', payload)
+      }
     }
     return
   }
@@ -530,29 +550,36 @@ const onEdgesChange = (changes) => {
   if (changes.some(c => c.type === 'remove' || c.type === 'add')) triggerAutoSave()
 }
 
-const onNodeUpdate = async (updatedNode) => {
+const onNodeUpdate = (updatedNode) => {
   // 🔥 严重修复：拾取模式下禁止更新节点详情
   if (props.isPicker) return
 
   if (!graphId.value) return
-  const payload = {
-    graph_id: graphId.value,
-    node_id: updatedNode.id,
-    type: updatedNode.type || 'page',
-    label: updatedNode.label,
-    desc: updatedNode.data.desc || '',
-    parentNode: updatedNode.parentNode || null,
-    naturalSize: updatedNode.data.naturalSize || null,
-    screenshot: getSafeScreenshot(updatedNode.data.screenshot),
-    workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
-    components: (updatedNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
-  }
-  try {
-    await api.saveNodeDetail(payload);
-    triggerAutoSave()
-  } catch (error) {
-    ElMessage.error('保存失败')
-  }
+
+  const nodeId = updatedNode.id
+  if (saveTimers[nodeId]) clearTimeout(saveTimers[nodeId])
+
+  saveTimers[nodeId] = setTimeout(async () => {
+    const payload = {
+      graph_id: graphId.value,
+      node_id: updatedNode.id,
+      type: updatedNode.type || 'page',
+      label: updatedNode.label,
+      desc: updatedNode.data.desc || '',
+      parentNode: updatedNode.parentNode || null,
+      naturalSize: updatedNode.data.naturalSize || null,
+      screenshot: getSafeScreenshot(updatedNode.data.screenshot),
+      workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
+      components: (updatedNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
+    }
+    try {
+      await api.saveNodeDetail(payload);
+      triggerAutoSave()
+    } catch (error) {
+      ElMessage.error('保存失败')
+    }
+    delete saveTimers[nodeId]
+  }, 1000)
 }
 
 const createNodeData = (type, position, label) => {

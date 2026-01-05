@@ -399,12 +399,42 @@ const confirmVariable = (varKey) => {
 const handleVisualPick = (payload) => {
   const val = (typeof payload === 'object') ? (payload.id || payload.uid) : payload
 
+  if (!val) {
+    ElMessage.warning('选中的热区数据无效(缺少ID)，请尝试重新保存用例')
+    return
+  }
+
   // 🔥 直接赋值，不依赖 confirmVariable (因为它需要 pickedNode)
   if (selectedNodeForPick.value) {
     const currentNode = findNode(selectedNodeForPick.value.id)
     if (currentNode) {
       const newData = {...currentNode.data}
       newData[pickingTargetField.value] = val
+
+      // 🔥 如果 payload 包含上下文信息 (截图/尺寸)，同步保存到节点 data 中
+      // 这样 PropertyPanel 和 CustomNode 就能显示缩略图了
+      if (typeof payload === 'object' && payload.__context) {
+        newData.screenshot = payload.__context.screenshot
+        newData.naturalSize = payload.__context.naturalSize
+
+        // 将选中的热区信息合并到节点的 interactions 列表中
+        const interactions = newData.interactions ? [...newData.interactions] : []
+        const cleanPayload = { ...payload }
+        
+        // 🔥 保存截图路径和原始尺寸到热区对象中，支持多截图/多分辨率场景
+        cleanPayload.screenshot = payload.__context.screenshot
+        cleanPayload.naturalSize = payload.__context.naturalSize
+        cleanPayload.sourceNodeId = payload.__context.sourceNodeId
+        
+        delete cleanPayload.__context
+
+        const idx = interactions.findIndex(i => (i.id && i.id === cleanPayload.id) || (i.uid && i.uid === cleanPayload.uid))
+        if (idx > -1) interactions[idx] = cleanPayload
+        else interactions.push(cleanPayload)
+
+        newData.interactions = interactions
+      }
+
       currentNode.data = newData
     }
   }

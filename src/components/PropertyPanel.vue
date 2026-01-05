@@ -197,7 +197,11 @@
                               :class="{ active: activeSelectField === field.name }"
                               @click="toggleSelect(field.name)"
                           >
-                            <span class="selected-text">
+                            <div v-if="getSelectedInteraction(node.data[field.name])" class="selected-interaction-preview">
+                              <div class="mini-thumb" :style="getThumbStyle(getSelectedInteraction(node.data[field.name]))"></div>
+                              <span class="selected-text">{{ getInteractionLabel(node.data[field.name]) }}</span>
+                            </div>
+                            <span v-else class="selected-text">
                               {{ getInteractionLabel(node.data[field.name]) || '请选择页面上的热区' }}
                             </span>
                             <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -335,7 +339,11 @@
                       @click="toggleSelect(field.name)"
                       style="padding-right: 32px"
                   >
-                    <span class="selected-text">
+                    <div v-if="getSelectedInteraction(node.data[field.name])" class="selected-interaction-preview">
+                      <div class="mini-thumb" :style="getThumbStyle(getSelectedInteraction(node.data[field.name]))"></div>
+                      <span class="selected-text">{{ getInteractionLabel(node.data[field.name]) }}</span>
+                    </div>
+                    <span v-else class="selected-text">
                       {{ getInteractionLabel(node.data[field.name]) || '请选择页面上的热区' }}
                     </span>
                     <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -355,8 +363,11 @@
                         @click="handleInteractionSelect(field.name, item)"
                     >
                       <div class="opt-content">
-                        <span class="opt-label">{{ item.label }}</span>
-                        <span class="opt-sub">[{{ item.sub_type }}]</span>
+                        <div class="mini-thumb" :style="getThumbStyle(item)"></div>
+                        <div class="opt-text-col">
+                          <span class="opt-label">{{ item.label }}</span>
+                          <span class="opt-sub">[{{ item.sub_type }}]</span>
+                        </div>
                       </div>
                       <span v-if="node.data[field.name] === (item.id || item.uid)" class="check-mark">✓</span>
                     </div>
@@ -388,8 +399,9 @@
 </template>
 
 <script setup>
-import {computed, ref} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {getIcon} from '../config/iconMap'
+import { wsGetFile } from '@/api/mWebSocket'
 
 const props = defineProps(['show', 'node', 'schema', 'allNodes'])
 const emit = defineEmits(['close', 'pick-var'])
@@ -616,6 +628,87 @@ const handleInteractionSelect = (fieldName, item) => {
   // 仅存储 ID，不存储 Label，确保数据解耦
   props.node.data[fieldName] = item.id || item.uid
   closeSelect()
+}
+
+// --- 截图预览逻辑 ---
+const screenshotCache = ref({}) // path -> url
+
+const loadOneScreenshot = async (path) => {
+  if (!path) return
+  if (screenshotCache.value[path]) return // 已缓存
+
+  if (path.startsWith('data:') || path.startsWith('http')) {
+    screenshotCache.value[path] = path
+    return
+  }
+
+  try {
+    const res = await wsGetFile(path)
+    if (res.code === 200) {
+      const data = res.data
+      let url = ''
+      if (data instanceof Blob) url = URL.createObjectURL(data)
+      else if (data && typeof data === 'object' && data.content) {
+        let rawStr = data.content
+        if (!rawStr.startsWith('data:')) {
+          let mime = 'image/png'
+          if (data.name && (data.name.endsWith('.jpg') || data.name.endsWith('.jpeg'))) mime = 'image/jpeg'
+          rawStr = `data:${mime};base64,${rawStr}`
+        }
+        url = rawStr
+      } else if (typeof data === 'string') {
+        url = data.startsWith('data:') ? data : `data:image/png;base64,${data}`
+      }
+      if (url) screenshotCache.value[path] = url
+    }
+  } catch (e) {
+    console.error('Failed to load screenshot', e)
+  }
+}
+
+const updateScreenshots = async () => {
+  const mainShot = props.node?.data?.screenshot
+  if (mainShot) await loadOneScreenshot(mainShot)
+
+  const list = props.node?.data?.interactions || []
+  for (const item of list) {
+    if (item.screenshot) await loadOneScreenshot(item.screenshot)
+  }
+}
+
+watch(() => [props.node?.data?.screenshot, props.node?.data?.interactions], updateScreenshots, { deep: true, immediate: true })
+
+const getSelectedInteraction = (id) => {
+  if (!id) return null
+  return props.node?.data?.interactions?.find(i => (i.id === id || i.uid === id))
+}
+
+const getThumbStyle = (interaction) => {
+  const path = interaction?.screenshot || props.node?.data?.screenshot
+  const url = screenshotCache.value[path]
+  
+  if (!url || !interaction || !interaction.w || !interaction.h) return { display: 'none' }
+  
+  const naturalW = interaction?.naturalSize?.w || props.node.data.naturalSize?.w || 0
+  const naturalH = interaction?.naturalSize?.h || props.node.data.naturalSize?.h || 0
+  
+  if (!naturalW) return { display: 'none' }
+
+  const boxW = 32, boxH = 32
+  const scale = Math.min(boxW / interaction.w, boxH / interaction.h)
+  const bgW = naturalW * scale
+  const bgH = naturalH * scale
+  const bgX = -interaction.x * scale + (boxW - interaction.w * scale) / 2
+  const bgY = -interaction.y * scale + (boxH - interaction.h * scale) / 2
+
+  return {
+    backgroundImage: `url(${url})`,
+    backgroundSize: `${bgW}px ${bgH}px`,
+    backgroundPosition: `${bgX}px ${bgY}px`,
+    width: `${boxW}px`, height: `${boxH}px`,
+    backgroundRepeat: 'no-repeat',
+    border: '1px solid #e2e8f0', borderRadius: '4px', backgroundColor: '#f8fafc', flexShrink: 0
+  }
 }
 </script>
 
@@ -1033,8 +1126,18 @@ const handleInteractionSelect = (fieldName, item) => {
 }
 
 .opt-content {
+  display: flex; align-items: center; gap: 8px;
+}
+.opt-text-col {
   display: flex; flex-direction: column; gap: 2px;
 }
+.mini-thumb {
+  width: 32px; height: 32px;
+}
+.selected-interaction-preview {
+  display: flex; align-items: center; gap: 8px;
+}
+
 .opt-label { font-weight: 500; }
 .opt-sub { font-size: 11px; color: #94a3b8; }
 

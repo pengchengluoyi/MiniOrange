@@ -55,6 +55,15 @@
             </div>
           </div>
 
+          <!-- 🔥🔥 场景4: 热区选择 (显示缩略图) -->
+          <div v-else-if="field.type === 'interaction_select'" class="interaction-preview-box">
+            <div v-if="getSelectedInteraction(data[field.name])" class="interaction-content">
+              <div class="node-thumb" :style="getThumbStyle(getSelectedInteraction(data[field.name]))"></div>
+              <span class="val-text">{{ getInteractionLabel(data[field.name]) }}</span>
+            </div>
+            <span v-else class="empty-text">- 空</span>
+          </div>
+
           <!-- 🔥🔥 场景3: 普通文本/对象/空列表 (无数据时显示 - 空) -->
           <div v-else>
              <!-- 如果是空值，直接显示文字，不要外面的框 -->
@@ -111,10 +120,11 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { Handle, useVueFlow } from '@vue-flow/core'
 import { getIcon } from '../config/iconMap'
 import {scanComponentsApi} from '@/api/workflow'
+import { wsGetFile } from '@/api/mWebSocket'
 import ResultNode from '@/views/WorkflowEditor/components/ResultNode.vue'
 
 const props = defineProps(['id', 'data', 'label', 'selected'])
@@ -299,6 +309,92 @@ const formatTooltip = (val) => {
   if (typeof val === 'object') return JSON.stringify(val, null, 2)
   return val
 }
+
+// --- 截图预览逻辑 ---
+const screenshotCache = ref({}) // path -> url
+
+const loadOneScreenshot = async (path) => {
+  if (!path) return
+  if (screenshotCache.value[path]) return
+
+  if (path.startsWith('data:') || path.startsWith('http')) {
+    screenshotCache.value[path] = path
+    return
+  }
+
+  try {
+    const res = await wsGetFile(path)
+    if (res.code === 200) {
+      const data = res.data
+      let url = ''
+      if (data instanceof Blob) url = URL.createObjectURL(data)
+      else if (data && typeof data === 'object' && data.content) {
+        let rawStr = data.content
+        if (!rawStr.startsWith('data:')) {
+          let mime = 'image/png'
+          if (data.name && (data.name.endsWith('.jpg') || data.name.endsWith('.jpeg'))) mime = 'image/jpeg'
+          rawStr = `data:${mime};base64,${rawStr}`
+        }
+        url = rawStr
+      } else if (typeof data === 'string') {
+        url = data.startsWith('data:') ? data : `data:image/png;base64,${data}`
+      }
+      if (url) screenshotCache.value[path] = url
+    }
+  } catch (e) {
+    // console.error('Failed to load screenshot in CustomNode', e)
+  }
+}
+
+const updateScreenshots = async () => {
+  const mainShot = props.data?.screenshot
+  if (mainShot) await loadOneScreenshot(mainShot)
+
+  const list = props.data?.interactions || []
+  for (const item of list) {
+    if (item.screenshot) await loadOneScreenshot(item.screenshot)
+  }
+}
+
+watch(() => [props.data?.screenshot, props.data?.interactions], updateScreenshots, { deep: true, immediate: true })
+
+const getSelectedInteraction = (id) => {
+  if (!id) return null
+  return props.data?.interactions?.find(i => (i.id === id || i.uid === id))
+}
+
+const getInteractionLabel = (id) => {
+  const item = getSelectedInteraction(id)
+  return item ? item.label : id
+}
+
+const getThumbStyle = (interaction) => {
+  const path = interaction?.screenshot || props.data?.screenshot
+  const url = screenshotCache.value[path]
+
+  if (!url || !interaction || !interaction.w || !interaction.h) return { display: 'none' }
+  
+  const naturalW = interaction?.naturalSize?.w || props.data.naturalSize?.w || 0
+  const naturalH = interaction?.naturalSize?.h || props.data.naturalSize?.h || 0
+  
+  if (!naturalW) return { display: 'none' }
+
+  const boxW = 32, boxH = 32
+  const scale = Math.min(boxW / interaction.w, boxH / interaction.h)
+  const bgW = naturalW * scale
+  const bgH = naturalH * scale
+  const bgX = -interaction.x * scale + (boxW - interaction.w * scale) / 2
+  const bgY = -interaction.y * scale + (boxH - interaction.h * scale) / 2
+
+  return {
+    backgroundImage: `url(${url})`,
+    backgroundSize: `${bgW}px ${bgH}px`,
+    backgroundPosition: `${bgX}px ${bgY}px`,
+    width: `${boxW}px`, height: `${boxH}px`,
+    backgroundRepeat: 'no-repeat',
+    border: '1px solid #e2e8f0', borderRadius: '4px', backgroundColor: '#f8fafc', flexShrink: 0
+  }
+}
 </script>
 
 <style scoped>
@@ -452,6 +548,19 @@ const formatTooltip = (val) => {
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
+}
+
+.interaction-preview-box {
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  border-radius: 4px;
+  padding: 4px;
+}
+.interaction-content {
+  display: flex; align-items: center; gap: 8px;
+}
+.node-thumb {
+  width: 32px; height: 32px;
 }
 
 .var-name { color: #059669; font-weight: 500; font-family: monospace; }
