@@ -667,13 +667,13 @@ const loadOneScreenshot = async (path) => {
 }
 
 const updateScreenshots = async () => {
-  const mainShot = props.node?.data?.screenshot
-  if (mainShot) await loadOneScreenshot(mainShot)
+  const paths = new Set()
+  if (props.node?.data?.screenshot) paths.add(props.node.data.screenshot)
 
-  const list = props.node?.data?.interactions || []
-  for (const item of list) {
-    if (item.screenshot) await loadOneScreenshot(item.screenshot)
-  }
+  const interactions = props.node?.data?.interactions || []
+  interactions.forEach(i => i.screenshot && paths.add(i.screenshot))
+
+  await Promise.all(Array.from(paths).map(p => loadOneScreenshot(p)))
 }
 
 watch(() => [props.node?.data?.screenshot, props.node?.data?.interactions], updateScreenshots, { deep: true, immediate: true })

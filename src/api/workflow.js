@@ -1,5 +1,6 @@
 // src/api/componentService.js
 import request from '@/utils/request'
+import managementWsService from './managementWebSocket'
 
 // 辅助函数：确保 content 是对象格式
 const parseContent = (content) => {
@@ -108,12 +109,33 @@ export const fetchWorkflowSaveSimple = (id, name, desc) => {
 }
 
 /**
- * 运行某个flow
+ * 运行某个flow (通过 WebSocket)
  */
 export const fetchWorkflowRun = (workflow_id) => {
-    return request({
-        url: `/workflow/${workflow_id}/run`,
-        method: 'get'
+    return new Promise((resolve, reject) => {
+        // 1. 定义一个一次性的响应处理器
+        const handler = (data) => {
+            // 假设服务器响应的消息类型是 'workflow_run_started'
+            // 并且响应数据里包含了 run_id 和原始的 workflow_id
+            if (data && String(data.workflow_id) === String(workflow_id)) {
+                managementWsService.removeListener('workflow_run_started', handler);
+                clearTimeout(timeout);
+                // 模拟 axios 的响应结构
+                resolve({ data: { run_id: data.run_id } });
+            }
+        };
+
+        // 2. 设置一个超时，防止后端不响应
+        const timeout = setTimeout(() => {
+            managementWsService.removeListener('workflow_run_started', handler);
+            reject(new Error('触发工作流运行超时'));
+        }, 10000); // 10秒超时
+
+        // 3. 注册监听器
+        managementWsService.addListener('workflow_run_started', handler);
+
+        // 4. 发送运行指令, 假设后端的 action 是 'run_workflow'
+        managementWsService.sendMessage('run_workflow', { workflow_id });
     })
 }
 

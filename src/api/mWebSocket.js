@@ -27,6 +27,14 @@ export const initWebSocket = () => {
     console.log('[WS] Disconnected')
     isConnected = false
     ws = null
+    
+    // 🔥 Reject all pending requests on disconnect
+    pendingRequests.forEach(({ reject, timer }) => {
+      clearTimeout(timer)
+      reject(new Error('WebSocket disconnected'))
+    })
+    pendingRequests.clear()
+
     // Auto reconnect
     reconnectTimer = setTimeout(() => {
       initWebSocket()
@@ -114,7 +122,7 @@ export const wsUploadFile = (filename, content) => {
 }
 
 export const wsGetFile = (path) => {
-  return sendWsRequest('get_file', { name: path })
+  return sendWsRequest('get_file', path)
 }
 
 export const addMessageListener = (fn) => messageListeners.add(fn)
