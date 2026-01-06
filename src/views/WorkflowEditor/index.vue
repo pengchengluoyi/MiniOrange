@@ -146,7 +146,7 @@ let startX = 0, startWidth = 0
 
 const goBack = () => router.back()
 
-const handleRun = () => flowCanvasRef.value?.handleRunCase()
+const handleRun = (sn) => flowCanvasRef.value?.handleRunCase(sn)
 const handleStop = () => flowCanvasRef.value?.stopRun()
 const handleToggleSelector = () => flowCanvasRef.value?.toggleSelector()
 const handleEditInfo = () => flowCanvasRef.value?.openInfoModal()

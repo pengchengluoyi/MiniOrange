@@ -42,7 +42,7 @@ const fetchList = () => {
   loading.value = true
   managementWsService.sendMessage('get_device_list')
   // 设置一个超时，以防万一收不到响应
-  setTimeout(() => { loading.value = false }, 3000)
+  setTimeout(() => { loading.value = false }, 2000)
 }
 
 // 打开指令弹窗
@@ -105,10 +105,13 @@ const handleDeviceListUpdate = (data) => {
 
 onMounted(() => {
   managementWsService.connect()
+  managementWsService.addListener('get_device_list', handleDeviceListUpdate)
   managementWsService.addListener('device_list_update', handleDeviceListUpdate)
+  fetchList()
 })
 
 onUnmounted(() => {
+  managementWsService.removeListener('get_device_list', handleDeviceListUpdate)
   managementWsService.removeListener('device_list_update', handleDeviceListUpdate)
 })
 </script>

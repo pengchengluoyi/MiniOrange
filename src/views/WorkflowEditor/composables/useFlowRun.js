@@ -1,5 +1,5 @@
 import { ref, computed, nextTick } from 'vue'
-import { fetchWorkflowRun, fetchRunLog } from '@/api/workflow'
+import { fetchRunLog, fetchWorkflowRun } from '@/api/workflow'
 import { fetchRunReport } from '@/api/workflow_run'
 
 export const resetNodeStatus = (elements) => {
@@ -90,10 +90,12 @@ export function useFlowRun(performSave, workflowId, showLogPanel, elements) {
 
     const startStatusPolling = (runId) => {
         if (!runId || runId === 'undefined') return
+        let retryCount = 0
         const timer = setInterval(async () => {
             if (!isRunning.value) return clearInterval(timer)
             try {
                 const res = await fetchRunReport(runId)
+                retryCount = 0 // 成功获取响应（哪怕是404以外的错误）则重置计数
                 if (res?.code === 200) {
                     const summary = res.data?.result_summary || {}
                     elements.value = elements.value.map(node => {
@@ -120,12 +122,33 @@ export function useFlowRun(performSave, workflowId, showLogPanel, elements) {
                             window.electronAPI.invoke('set-app-badge', res.data.success === "success" ? 'success' : 'fail');
                         }
                     }
+                } else if (res?.code === 404) {
+                    // 🔥 修复：如果 404，说明任务可能还没创建好或者已经清理，暂时忽略，不要报错停止
+                    // 但如果连续多次 404，可能需要停止轮询。这里简单处理：不停止，等待下一次
+                    console.warn(`Run report not found for ${runId}, retrying...`)
                 }
-            } catch (err) { console.error('状态轮询失败', err) }
+            } catch (err) { 
+                // 🔥 修复：捕获 404 错误，避免控制台刷屏
+                if (err.response && err.response.status === 404) {
+                     retryCount++
+                     if (retryCount > 10) {
+                         console.error(`Run report not found (404) for ${runId} after timeout. Stopping.`)
+                         clearInterval(timer)
+                         isRunning.value = false
+                         return
+                     }
+                     console.warn(`Run report not found (404) for ${runId}, retrying (${retryCount}/10)...`)
+                } else {
+                    console.error('状态轮询失败', err) 
+                }
+            }
         }, 1500)
     }
 
-    const handleRunCase = async () => {
+    const handleRunCase = async (sn) => {
+        if (!sn) {
+            console.warn('handleRunCase called without SN!')
+        }
         if (isRunning.value) return
         resetNodeStatus(elements)
         const saved = await performSave()
@@ -137,7 +160,7 @@ export function useFlowRun(performSave, workflowId, showLogPanel, elements) {
         addLog('info', '正在请求服务端运行...')
 
         try {
-            const res = await fetchWorkflowRun(workflowId.value)
+            const res = await fetchWorkflowRun(workflowId.value, sn)
             if (res.code === 200 && res.run_id) {
                 addLog('info', `✅ 任务已启动 (ID: ${res.run_id})`)
                 pollLogs(res.run_id)

@@ -97,7 +97,7 @@
           <span>停止</span>
         </button>
 
-        <button class="run-btn" :class="{ 'is-running': isRunning }" @click="$emit('run')" :disabled="isRunning">
+        <button class="run-btn" :class="{ 'is-running': isRunning }" @click="handleRunClick" :disabled="isRunning">
           <svg v-if="!isRunning" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           <span v-if="!isRunning">运行</span>
           <div v-else class="running-state">
@@ -108,11 +108,34 @@
       </div>
     </div>
   </header>
+
+  <!-- 设备选择弹窗 -->
+  <el-dialog v-model="deviceDialogVisible" title="选择执行设备" width="600px" append-to-body>
+    <el-table :data="deviceList" v-loading="loadingDevices" @row-click="confirmSelection" highlight-current-row style="cursor: pointer">
+      <el-table-column property="sn" label="SN" width="180" show-overflow-tooltip />
+      <el-table-column property="model" label="型号" width="120" />
+      <el-table-column property="status" label="状态" width="100">
+        <template #default="{ row }">
+          <el-tag :type="row.status === 'online' ? 'success' : 'info'">{{ row.status === 'online' ? '在线' : '离线' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="100" align="center">
+        <template #default="{ row }">
+          <el-button link type="primary" :disabled="row.status !== 'online'">选择</el-button>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <el-empty description="暂无在线设备" :image-size="80" />
+      </template>
+    </el-table>
+  </el-dialog>
 </template>
 
 <script setup>
-import {computed} from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import WindowControls from '@/components/WindowControls.vue'
+import managementWsService from '@/api/managementWebSocket'
+import { ElDialog, ElTable, ElTableColumn, ElTag, ElButton, ElEmpty, ElMessage, vLoading } from 'element-plus'
 
 const props = defineProps({
   flowName: String,
@@ -125,10 +148,52 @@ const props = defineProps({
   viewMode: String // 🔥🔥 新增：接收当前视图模式 ('canvas' | 'app')
 })
 
-const emit = defineEmits(['back', 'edit-info', 'toggle-selector', 'run', 'toggle-webpage', 'toggle-scrcpy', 'toggle-log', 'change-view'])
+const emit = defineEmits(['back', 'edit-info', 'toggle-selector', 'run', 'toggle-webpage', 'toggle-scrcpy', 'toggle-log', 'change-view', 'stop', 'openAppView'])
 
 const saveStatusText = computed(() => props.isSaving ? '保存中...' : (props.isModified ? '未保存' : '已保存'))
 const saveStatusClass = computed(() => props.isSaving ? 'status-saving' : (props.isModified ? 'status-modified' : 'status-saved'))
+
+// --- 设备选择逻辑 ---
+const deviceDialogVisible = ref(false)
+const deviceList = ref([])
+const loadingDevices = ref(false)
+
+const handleDeviceListUpdate = (data) => {
+  deviceList.value = Array.isArray(data) ? data : []
+  loadingDevices.value = false
+}
+
+const handleRunClick = () => {
+  if (props.isRunning) return
+  deviceDialogVisible.value = true
+  loadingDevices.value = true
+  deviceList.value = []
+  managementWsService.sendMessage('get_device_list')
+  // 超时兜底
+  setTimeout(() => { loadingDevices.value = false }, 2000)
+}
+
+const confirmSelection = (row) => {
+  if (row.status !== 'online') {
+    ElMessage.warning('设备离线，无法执行任务')
+    return
+  }
+  if (!row.sn) {
+    ElMessage.error('设备SN缺失，无法执行')
+    return
+  }
+  deviceDialogVisible.value = false
+  console.log('Selected device SN:', row.sn)
+  emit('run', row.sn)
+}
+
+onMounted(() => {
+  managementWsService.connect()
+  managementWsService.addListener('get_device_list', handleDeviceListUpdate)
+})
+onUnmounted(() => {
+  managementWsService.removeListener('get_device_list', handleDeviceListUpdate)
+})
 </script>
 
 <style scoped>
