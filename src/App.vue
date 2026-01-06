@@ -45,21 +45,28 @@ const MAX_RETRIES = 30 // 30次 * 500ms = 15秒超时
 
 // 检查服务端健康状态
 const checkHealth = async () => {
-  try {
-    // 假设你的健康检查接口是 http://127.0.0.1:10104/
-    const response = await fetch('http://127.0.0.1:10104/', {
-      method: 'GET',
-      // 设置较短的超时，避免 fetch 自身卡住太久
-      signal: AbortSignal.timeout(2000) 
-    })
+  // 兼容主进程逻辑：同时检查本地和局域网地址
+  const urls = ['http://127.0.0.1:10104/', 'http://miniorange.local:10104/']
+  let success = false
 
-    if (response.ok) {
-      // ✅ 连接成功！
-      finishLoading()
-    } else {
-      throw new Error('Status not ok')
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000)
+      })
+      if (response.ok) {
+        success = true
+        break
+      }
+    } catch (e) {
+      // ignore
     }
-  } catch (e) {
+  }
+
+  if (success) {
+    finishLoading()
+  } else {
     handleError()
   }
 }

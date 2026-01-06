@@ -85,10 +85,17 @@ export const sendWsRequest = (action, data = {}) => {
 
       pendingRequests.set(req_id, { resolve, reject, timer })
 
+      // 🔥 适配服务端协议：data 字段直接作为参数
+      // 如果 data 是字符串（如 get_file 的 path），则包装成对象
+      let payloadData = data
+      if (typeof data !== 'object' || data === null) {
+        payloadData = { value: data }
+      }
+
       ws.send(JSON.stringify({
         action,
         req_id,
-        data
+        data: payloadData
       }))
     }
 
@@ -122,7 +129,8 @@ export const wsUploadFile = (filename, content) => {
 }
 
 export const wsGetFile = (path) => {
-  return sendWsRequest('get_file', path)
+  // 🔥 修复：get_file 动作，服务端期望 data 中包含 path
+  return sendWsRequest('get_file', { path })
 }
 
 export const addMessageListener = (fn) => messageListeners.add(fn)

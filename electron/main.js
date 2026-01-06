@@ -10,6 +10,7 @@ const fs = require('fs')
 const {spawn} = require('child_process')
 const {WebSocketServer} = require('ws') // 需要 npm install ws
 const net = require('net')                  // Node.js 内置 TCP 库
+const http = require('http')
 
 // --- 串流配置 ---
 let currentStreamingProcess = null      // scrcpy server shell 进程
@@ -93,6 +94,35 @@ const killPythonProcess = () => {
 };
 
 const startPythonService = async () => {
+    // 🔥 新增：检查 http://127.0.0.1:10104 是否已启动
+    // 如果已启动，则跳过本地服务启动，直接使用现有服务
+    // 优先检查 127.0.0.1，其次检查 miniorange.local
+    const checkUrls = ['http://127.0.0.1:10104', 'http://miniorange.local:10104'];
+    let isServiceRunning = false;
+
+    for (const url of checkUrls) {
+        const alive = await new Promise((resolve) => {
+            const req = http.get(url, (res) => {
+                resolve(true);
+                res.resume();
+            });
+            req.on('error', () => resolve(false));
+            req.setTimeout(1000, () => {
+                req.destroy();
+                resolve(false);
+            });
+        });
+        if (alive) {
+            console.log(`[Main] 检测到 ${url} 已启动，跳过本地 Python 服务启动。`);
+            isServiceRunning = true;
+            break;
+        }
+    }
+
+    if (isServiceRunning) {
+        return;
+    }
+
     console.log('[Main] 准备启动 Python 服务...');
     // 防止重复启动，先清理旧进程
     await killPythonProcess();

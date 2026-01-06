@@ -37,9 +37,10 @@ class ManagementWebSocket {
     this.ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-        const eventType = message.type
+        // 🔥 适配服务端返回格式：action 作为事件类型
+        const eventType = message.action
         if (this.listeners.has(eventType)) {
-          this.listeners.get(eventType).forEach(callback => callback(message.data, message.msg))
+          this.listeners.get(eventType).forEach(callback => callback(message.data || message, message.msg))
         }
       } catch (e) {
         console.error('[Mgmt-WS] Error parsing message:', e)
