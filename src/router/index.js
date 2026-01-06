@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import ResourceList from '../views/ResourceList.vue'
 import WorkflowEditor from '../views/WorkflowEditor/index.vue'
 import WorkReport from '../views/WorkReport/index.vue'
+import DeviceManage from '../views/DeviceManage/index.vue'
 
 // 懒加载组件
 const AppList = () => import('../views/WorkReport/components/AppList.vue')
@@ -11,7 +12,7 @@ const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap
 const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
 
-const routes = [,
+const routes = [
   // {
   //   path: '/',
   //   name: 'ResourceList',
@@ -51,6 +52,16 @@ const routes = [,
         name: 'CaseEditor',
         component: CaseEditor,
         meta: { title: '用例编辑' }
+      },
+      {
+        path: 'resources',
+        name: 'ResourceList',
+        component: ResourceList
+      },
+      {
+        path: 'device',
+        name: 'DeviceManage',
+        component: DeviceManage
       }
     ]
   },

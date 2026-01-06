@@ -6,13 +6,14 @@
       <div class="blob b2"></div>
     </div>
 
-<!--    <aside class="side-nav">-->
-<!--      <div class="nav-glass">-->
-<!--        <nav class="menu">-->
-<!--          <div class="item active"><el-icon><Grid /></el-icon></div>-->
-<!--        </nav>-->
-<!--      </div>-->
-<!--    </aside>-->
+    <aside class="side-nav">
+      <div class="nav-glass">
+        <nav class="menu">
+          <div class="item" :class="{ active: currentRoute === 'AppList' }" @click="$router.push({ name: 'AppList' })" title="应用管理"><el-icon><Grid /></el-icon></div>
+          <div class="item" :class="{ active: currentRoute === 'DeviceManage' }" @click="$router.push({ name: 'DeviceManage' })" title="设备管理"><el-icon><Monitor /></el-icon></div>
+        </nav>
+      </div>
+    </aside>
 
     <main class="content-view">
       <router-view v-slot="{ Component }">
@@ -26,14 +27,17 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElIcon, ElAvatar, ElDivider } from 'element-plus'
 import { Grid, Menu, Monitor, Files, Setting } from '@element-plus/icons-vue'
 
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import 'element-plus/dist/index.css'
 
+const route = useRoute()
 const mouse = ref({ x: 0, y: 0 })
 const glowStyle = computed(() => ({ transform: `translate(${mouse.value.x - 200}px, ${mouse.value.y - 200}px)` }))
+const currentRoute = computed(() => route.name)
 
 onMounted(() => {
   window.addEventListener('mousemove', (e) => { mouse.value = { x: e.clientX, y: e.clientY } })
@@ -102,4 +106,30 @@ onMounted(() => {
 .fade-slide-enter-active, .fade-slide-leave-active { transition: all 0.4s ease; }
 .fade-slide-enter-from { opacity: 0; transform: translateY(20px); filter: blur(10px); }
 .fade-slide-leave-to { opacity: 0; transform: translateY(-20px); }
+
+/* 侧边栏样式 */
+.side-nav {
+  width: 80px; height: 100%; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.nav-glass {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 16px;
+  padding: 20px 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
+}
+
+.menu { display: flex; flex-direction: column; gap: 16px; }
+
+.item {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; color: #64748b; cursor: pointer;
+  transition: all 0.3s;
+}
+.item:hover { background: rgba(255, 255, 255, 0.8); color: #6366f1; transform: translateY(-2px); }
+.item.active { background: #6366f1; color: white; box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3); }
 </style>
