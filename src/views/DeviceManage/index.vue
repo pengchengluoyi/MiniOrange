@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, reactive } from 'vue'
 import managementWsService from '@/api/managementWebSocket'
+import { setDevicePassword, getDeviceList } from '@/api/device'
 import QRCode from 'qrcode'
 import { 
   ElMessage,
@@ -15,9 +16,10 @@ import {
   ElFormItem,
   ElInput,
   ElIcon,
+  ElAlert,
   vLoading
 } from 'element-plus'
-import { Refresh, VideoPlay, Monitor, Plus } from '@element-plus/icons-vue'
+import { Refresh, VideoPlay, Monitor, Plus, Lock } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const deviceList = ref([])
@@ -37,12 +39,24 @@ const qrCodeUrl = ref('')
 const serverAddress = ref('')
 const isLocalhost = ref(false)
 
+// 密码设置弹窗
+const passwordDialogVisible = ref(false)
+const passwordForm = reactive({
+  sn: '',
+  password: ''
+})
+const settingPassword = ref(false)
+
 // 获取设备列表
-const fetchList = () => {
+const fetchList = async () => {
   loading.value = true
-  managementWsService.sendMessage('get_device_list')
-  // 设置一个超时，以防万一收不到响应
-  setTimeout(() => { loading.value = false }, 2000)
+  try {
+    const res = await getDeviceList()
+    handleDeviceListUpdate(res)
+  } catch (e) {
+    console.error(e)
+    loading.value = false
+  }
 }
 
 // 打开指令弹窗
@@ -97,9 +111,53 @@ const showAddDeviceDialog = async () => {
   }
 }
 
+// 打开设置密码弹窗
+const handleSetPassword = (row) => {
+  passwordForm.sn = row.sn
+  passwordForm.password = row.password || ''
+  passwordDialogVisible.value = true
+}
+
+// 提交密码
+const submitPassword = async () => {
+  settingPassword.value = true
+  try {
+    const res = await setDevicePassword({ ...passwordForm })
+    if (res.code === 200) {
+      ElMessage.success('密码设置成功')
+      passwordDialogVisible.value = false
+      
+      // 手动更新本地列表，确保UI即时刷新
+      const target = deviceList.value.find(d => d.sn === passwordForm.sn)
+      if (target) {
+        target.password = passwordForm.password
+      }
+    } else {
+      ElMessage.error(res.msg || '设置失败')
+    }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    settingPassword.value = false
+  }
+}
+
 // WebSocket 消息处理器
 const handleDeviceListUpdate = (data) => {
-  deviceList.value = Array.isArray(data) ? data : []
+  // 兼容直接返回数组或返回 { code: 200, data: [...] } 的情况
+  const list = Array.isArray(data) ? data : (data?.data || [])
+  const newList = Array.isArray(list) ? list : []
+
+  // 🔥 防御性编程：如果 WebSocket 推送的数据中缺失 password 字段（可能是后端 WS handler 没更新），
+  // 则尝试保留本地已有的密码，防止 UI 上密码消失。
+  deviceList.value = newList.map(newItem => {
+    const oldItem = deviceList.value.find(old => old.sn === newItem.sn)
+    if ((newItem.password === undefined || newItem.password === null) && oldItem?.password) {
+      return { ...newItem, password: oldItem.password }
+    }
+    return newItem
+  })
+  
   loading.value = false
 }
 
@@ -140,6 +198,14 @@ onUnmounted(() => {
             <el-tag :type="row.status === 'online' ? 'success' : 'info'" effect="dark">
               {{ row.status === 'online' ? '在线' : '离线' }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="password" label="锁屏密码" width="160">
+          <template #default="{ row }">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: monospace;">{{ row.password ? '******' : '未设置' }}</span>
+              <el-button link type="primary" :icon="Lock" @click="handleSetPassword(row)" title="修改密码" />
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="last_online" label="最后在线时间" min-width="180" />
@@ -210,6 +276,30 @@ onUnmounted(() => {
           当前地址为本地地址，仅本机可访问。请使用局域网 IP 访问此页面，以便其他设备扫码连接。
         </el-alert>
       </div>
+    </el-dialog>
+
+    <!-- 设置密码弹窗 -->
+    <el-dialog
+      v-model="passwordDialogVisible"
+      title="设置锁屏密码"
+      width="400px"
+    >
+      <el-form :model="passwordForm" label-width="80px" @submit.prevent>
+        <el-form-item label="设备SN">
+          <el-input v-model="passwordForm.sn" disabled />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="passwordForm.password" placeholder="请输入设备锁屏密码" clearable />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="passwordDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitPassword" :loading="settingPassword">
+            保存
+          </el-button>
+        </span>
+      </template>
     </el-dialog>
 
   </div>

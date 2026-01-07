@@ -16,3 +16,12 @@ export const sendCommand = (data) => {
     data
   })
 }
+
+// 设置设备密码
+export const setDevicePassword = (data) => {
+  return request({
+    url: '/device/set_password',
+    method: 'post',
+    data
+  })
+}
