@@ -1,73 +1,100 @@
 import {ElMessage} from 'element-plus'
-
-// Default to local Python service port 10104
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:10104/ws'
+import { getWsUrl } from '@/utils/config'
 
 let ws = null
 let isConnected = false
 const pendingRequests = new Map()
 let reconnectTimer = null
 const messageListeners = new Set() // 🔥 Listeners for push messages
+let isInitializing = false
 
-export const initWebSocket = () => {
-    if (ws) return
+const checkUrl = async (url) => {
+    try {
+        const controller = new AbortController()
+        const id = setTimeout(() => controller.abort(), 800)
+        const httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://').replace('/ws', '/docs')
+        await fetch(httpUrl, { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
+        clearTimeout(id)
+        return true
+    } catch {
+        return false
+    }
+}
 
-    ws = new WebSocket(WS_URL)
+export const initWebSocket = async () => {
+    if (ws || isInitializing) return
+    isInitializing = true
 
-    ws.onopen = () => {
-        console.log('[WS] Connected')
-        isConnected = true
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer)
-            reconnectTimer = null
+    try {
+        let url = getWsUrl()
+        // 自动探测：如果默认是本地，尝试探测 miniorange.local
+        if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1') && !await checkUrl(url)) {
+             const remote = url.replace('127.0.0.1', 'miniorange.local')
+             if (await checkUrl(remote)) url = remote
         }
-    }
+        
+        console.log('[WS] Connecting to:', url)
+        ws = new WebSocket(url)
 
-    ws.onclose = () => {
-        console.log('[WS] Disconnected')
-        isConnected = false
-        ws = null
-
-        // 🔥 Reject all pending requests on disconnect
-        pendingRequests.forEach(({reject, timer}) => {
-            clearTimeout(timer)
-            reject(new Error('WebSocket disconnected'))
-        })
-        pendingRequests.clear()
-
-        // Auto reconnect
-        reconnectTimer = setTimeout(() => {
-            initWebSocket()
-        }, 3000)
-    }
-
-    ws.onerror = (e) => {
-        console.error('[WS] Error', e)
-        isConnected = false
-    }
-
-    ws.onmessage = (e) => {
-        try {
-            const res = JSON.parse(e.data)
-
-            // 🔥 Notify global listeners (e.g. for Scrcpy DOM updates)
-            messageListeners.forEach(fn => fn(res))
-
-            // Handle request-response by req_id
-            if (res.req_id && pendingRequests.has(res.req_id)) {
-                const {resolve, reject, timer} = pendingRequests.get(res.req_id)
-                clearTimeout(timer)
-                pendingRequests.delete(res.req_id)
-
-                if (res.code === 200) {
-                    resolve(res)
-                } else {
-                    reject(res)
-                }
+        ws.onopen = () => {
+            console.log('[WS] Connected')
+            isConnected = true
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer)
+                reconnectTimer = null
             }
-        } catch (err) {
-            console.error('[WS] Message parse error', err)
         }
+
+        ws.onclose = () => {
+            console.log('[WS] Disconnected')
+            isConnected = false
+            ws = null
+
+            // 🔥 Reject all pending requests on disconnect
+            pendingRequests.forEach(({reject, timer}) => {
+                clearTimeout(timer)
+                reject(new Error('WebSocket disconnected'))
+            })
+            pendingRequests.clear()
+
+            // Auto reconnect
+            reconnectTimer = setTimeout(() => {
+                initWebSocket()
+            }, 3000)
+        }
+
+        ws.onerror = (e) => {
+            console.error('[WS] Error', e)
+            isConnected = false
+        }
+
+        ws.onmessage = (e) => {
+            try {
+                const res = JSON.parse(e.data)
+
+                // 🔥 Notify global listeners (e.g. for Scrcpy DOM updates)
+                messageListeners.forEach(fn => fn(res))
+
+                // Handle request-response by req_id
+                if (res.req_id && pendingRequests.has(res.req_id)) {
+                    const {resolve, reject, timer} = pendingRequests.get(res.req_id)
+                    clearTimeout(timer)
+                    pendingRequests.delete(res.req_id)
+
+                    if (res.code === 200) {
+                        resolve(res)
+                    } else {
+                        reject(res)
+                    }
+                }
+            } catch (err) {
+                console.error('[WS] Message parse error', err)
+            }
+        }
+    } catch (e) {
+        console.error('[WS] Init failed', e)
+    } finally {
+        isInitializing = false
     }
 }
 
@@ -115,7 +142,7 @@ export const sendWsRequest = (action, data = {}) => {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     clearInterval(interval)
                     executeSend()
-                } else if (checks > 30) {
+                } else if (checks > 60) {
                     clearInterval(interval)
                     reject(new Error('WebSocket not connected'))
                 }

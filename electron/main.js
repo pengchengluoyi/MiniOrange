@@ -1,9 +1,9 @@
 // electron/main.js - 完整的 Electron 主进程代码 (使用纯 JS 实现 scrcpy 转发)
 
-const {app, BrowserWindow, ipcMain, nativeImage, Notification, dialog} = require('electron')
+const {app, BrowserWindow, ipcMain, nativeImage, Notification, dialog, Tray, Menu} = require('electron')
 const path = require('path')
 
-const { autoUpdater } = require('electron-updater')
+const {autoUpdater} = require('electron-updater')
 const {AdbDaemonWebSocket} = require('@yume-chan/adb');
 const {ScrcpyClient} = require('@yume-chan/scrcpy');
 const fs = require('fs')
@@ -19,6 +19,7 @@ let wsServer = null                     // WebSocket 服务器实例
 let scrcpySocket = null                 // 用于接收 H264 数据的 TCP Socket
 let controlSocket = null                // 🔥 新增：用于发送控制指令的 TCP Socket
 let mainWindow = null                   // 🔥 全局主窗口引用
+let tray = null                         // 🔥 新增：系统托盘实例
 let wsClient = null                     // 🔥 新增：当前活跃的 WebSocket 客户端
 let connectionTimeout = null            // 🔥 新增：连接延迟定时器
 let badgeTimeout = null                 // 🔥 新增：状态清除定时器
@@ -26,7 +27,7 @@ const STREAM_PORT = 8888                // ADB 转发使用的本地端口
 const WS_PORT = 8080                    // WebSocket 服务器使用的端口 (8000)
 const SCRCPY_VERSION = '3.3.3'            // 根据你下载的 jar 包版本修改
 // !!! 请确保该路径下的文件存在 !!!
-const SCRCPY_SERVER_PATH = app.isPackaged 
+const SCRCPY_SERVER_PATH = app.isPackaged
     ? path.join(process.resourcesPath, 'tools', `scrcpy-server-v${SCRCPY_VERSION}.jar`)
     : path.join(__dirname, `../tools/scrcpy-server-v${SCRCPY_VERSION}.jar`);
 
@@ -34,12 +35,12 @@ const SCRCPY_SERVER_PATH = app.isPackaged
 const getAdbPath = () => {
     const isWin = process.platform === 'win32';
     const execName = isWin ? 'adb.exe' : 'adb';
-    
+
     if (app.isPackaged) {
         // 生产环境：resources/platform-tools/adb(.exe)
         return path.join(process.resourcesPath, 'platform-tools', execName);
     }
-    
+
     // 开发环境：尝试查找本地 tools 目录，如果没有则回退到全局 adb
     const localDevPath = path.join(__dirname, '../tools/platform-tools', isWin ? 'win' : 'mac', execName);
     if (fs.existsSync(localDevPath)) return localDevPath;
@@ -64,7 +65,7 @@ const killPythonProcess = () => {
             try {
                 if (process.platform === 'win32') {
                     // Windows: 使用 taskkill 强制杀掉进程树 (/T)
-                    const killer = spawn('taskkill', ['/pid', pyProc.pid, '/f', '/t'], { stdio: 'ignore' });
+                    const killer = spawn('taskkill', ['/pid', pyProc.pid, '/f', '/t'], {stdio: 'ignore'});
                 } else {
                     // Unix: 发送 SIGKILL
                     pyProc.kill('SIGKILL');
@@ -79,9 +80,9 @@ const killPythonProcess = () => {
         // 解决 "应用关闭后进程未退出" 导致的端口占用和下次启动慢的问题
         const isWin = process.platform === 'win32';
         const procName = isWin ? 'main.exe' : 'main';
-        
+
         if (isWin) {
-            const k = spawn('taskkill', ['/IM', procName, '/F'], { stdio: 'ignore' });
+            const k = spawn('taskkill', ['/IM', procName, '/F'], {stdio: 'ignore'});
             k.on('close', () => resolve());
             k.on('error', () => resolve());
         } else {
@@ -93,36 +94,22 @@ const killPythonProcess = () => {
     });
 };
 
-const startPythonService = async () => {
-    // 🔥 新增：检查 http://127.0.0.1:10104 是否已启动
-    // 如果已启动，则跳过本地服务启动，直接使用现有服务
-    // 优先检查 127.0.0.1，其次检查 miniorange.local
-    const checkUrls = ['http://127.0.0.1:10104', 'http://miniorange.local:10104'];
-    let isServiceRunning = false;
-
-    for (const url of checkUrls) {
-        const alive = await new Promise((resolve) => {
-            const req = http.get(url, (res) => {
-                resolve(true);
-                res.resume();
-            });
-            req.on('error', () => resolve(false));
-            req.setTimeout(1000, () => {
-                req.destroy();
-                resolve(false);
-            });
+// 🔥 新增：检查 URL 是否可访问
+const checkUrl = (url) => {
+    return new Promise((resolve) => {
+        const req = http.get(url, (res) => {
+            resolve(true);
+            res.resume();
         });
-        if (alive) {
-            console.log(`[Main] 检测到 ${url} 已启动，跳过本地 Python 服务启动。`);
-            isServiceRunning = true;
-            break;
-        }
-    }
+        req.on('error', () => resolve(false));
+        req.setTimeout(1000, () => {
+            req.destroy();
+            resolve(false);
+        });
+    });
+};
 
-    if (isServiceRunning) {
-        return;
-    }
-
+const startPythonService = async () => {
     console.log('[Main] 准备启动 Python 服务...');
     // 防止重复启动，先清理旧进程
     await killPythonProcess();
@@ -140,7 +127,7 @@ const startPythonService = async () => {
         try {
             if (!fs.existsSync(baseDir)) return null;
             const isWin = process.platform === 'win32';
-            
+
             // 定义我们要找的文件名模式
             // 1. MiniOrangeServer.exe (新版)
             // 2. main.exe (旧版兼容)
@@ -158,9 +145,9 @@ const startPythonService = async () => {
                     });
                     if (candidates.length > 0) {
                         // 找到了！返回完整路径和所在的目录(cwd)
-                        return { 
-                            exe: path.join(dir, candidates[0]), 
-                            cwd: dir 
+                        return {
+                            exe: path.join(dir, candidates[0]),
+                            cwd: dir
                         };
                     }
                 }
@@ -171,13 +158,13 @@ const startPythonService = async () => {
             let result = checkDir(baseDir);
             if (result) return result;
 
-            // 2. 如果没找到，检查是否有 "MiniOrangeServer_v*" 这样的子文件夹
-            const subDirs = fs.readdirSync(baseDir, { withFileTypes: true })
-                .filter(d => d.isDirectory() && d.name.startsWith('MiniOrangeServer_v'));
-            
-            if (subDirs.length > 0) {
-                // 进入第一个匹配的子文件夹查找
-                const versionDir = path.join(baseDir, subDirs[0].name);
+            // 2. 🔥 修复：如果没找到，遍历所有子文件夹，兼容构建脚本输出不确定的情况
+            const subDirs = fs.readdirSync(baseDir, {withFileTypes: true})
+                .filter(d => d.isDirectory());
+
+            // 循环查找，直到在某个子文件夹里找到为止
+            for (const subDir of subDirs) {
+                const versionDir = path.join(baseDir, subDir.name);
                 result = checkDir(versionDir);
                 if (result) return result;
             }
@@ -204,7 +191,7 @@ const startPythonService = async () => {
 
     // 执行查找
     const found = findBackend(basePath);
-    
+
     if (found) {
         executablePath = found.exe;
         cwdPath = found.cwd; // 🔥 关键：将工作目录设置为 exe 所在的子文件夹，否则找不到 _internal
@@ -218,8 +205,33 @@ const startPythonService = async () => {
 
     if (!fs.existsSync(executablePath)) {
         console.error(`❌ Python 服务可执行文件不存在: ${executablePath}`);
-        const helpMsg = app.isPackaged 
-            ? '找不到 Python 服务文件，请尝试重新安装。' 
+
+        // 🔥🔥 新增调试代码：列出 services 目录下的实际内容，确认到底打包进去了什么
+        try {
+            if (fs.existsSync(basePath)) {
+                console.log(`[Debug] 📂 services 目录路径: ${basePath}`);
+                const files = fs.readdirSync(basePath);
+                console.log(`[Debug] 📄 services 目录文件列表:`, files);
+                
+                // 遍历一级子目录看看里面有什么，方便排查是否多套了一层文件夹
+                files.forEach(file => {
+                    const fullPath = path.join(basePath, file);
+                    try {
+                        if (fs.statSync(fullPath).isDirectory()) {
+                            console.log(`  ➡️ 子目录 [${file}] 内容:`, fs.readdirSync(fullPath));
+                        }
+                    } catch (e) {}
+                });
+            } else {
+                console.error(`[Debug] ❌ services 目录根本不存在! 路径: ${basePath}`);
+                console.log(`[Debug] process.resourcesPath: ${process.resourcesPath}`);
+            }
+        } catch (e) {
+            console.error('[Debug] 目录检查失败:', e);
+        }
+
+        const helpMsg = app.isPackaged
+            ? '找不到 Python 服务文件，请尝试重新安装。'
             : '开发环境缺失后端服务，请执行: node scripts/download-backend.js';
         sendUiAlert('error', '核心服务缺失', `${helpMsg}\n路径: ${executablePath}`)
         return;
@@ -246,14 +258,14 @@ const startPythonService = async () => {
         console.log('Py Log:', msg);
         // 转发日志到前端控制台，方便调试
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('py-service-log', { type: 'stdout', text: msg });
+            mainWindow.webContents.send('py-service-log', {type: 'stdout', text: msg});
         }
     });
     pyProc.stderr.on('data', (data) => {
         const msg = data.toString();
         console.error('Py Err:', msg);
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('py-service-log', { type: 'stderr', text: msg });
+            mainWindow.webContents.send('py-service-log', {type: 'stderr', text: msg});
         }
     });
     pyProc.on('error', (err) => {
@@ -264,6 +276,43 @@ const startPythonService = async () => {
         console.log(`Python 服务退出，代码: ${code}`);
     });
 };
+
+// 🔥 新增：macOS 开机自启 + 崩溃重启 (LaunchAgent)
+const setupMacAutoStart = () => {
+    if (process.platform !== 'darwin' || !app.isPackaged) return;
+
+    const plistPath = path.join(app.getPath('home'), 'Library/LaunchAgents', 'com.miniorange.server.plist');
+    const execPath = process.execPath;
+
+    // KeepAlive: { SuccessfulExit: false } 允许通过 app.quit() (exit 0) 正常退出不重启
+    // RunAtLoad: true 登录时启动
+    const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
+     <key>Label</key>
+     <string>com.miniorange.server</string>
+     <key>ProgramArguments</key>
+     <array>
+         <string>${execPath}</string>
+     </array>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <dict>
+         <key>SuccessfulExit</key>
+         <false/>
+     </dict>
+ </dict>
+ </plist>`;
+
+    try {
+        fs.writeFileSync(plistPath, plistContent);
+    } catch (e) {
+        console.error('[Main] 写入 macOS LaunchAgent 失败:', e);
+    }
+};
+
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -297,10 +346,11 @@ function createWindow() {
 
     // 🔥 macOS 专属：强制设置 Dock 图标
     if (process.platform === 'darwin') {
-        const iconPath = app.isPackaged 
-            ? path.join(process.resourcesPath, 'icon.icns')
-            : path.join(__dirname, '../public/icon.icns');
-        
+        app.dock.show(); // 确保 Dock 图标显示 (从托盘模式恢复时需要)
+        const iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, 'icon.png')
+            : path.join(__dirname, '../public/icon.png');
+
         // 确保文件存在再设置，避免报错
         if (fs.existsSync(iconPath)) {
             try {
@@ -312,10 +362,62 @@ function createWindow() {
     }
 }
 
+// 🔥 新增：创建系统托盘
+function createTray() {
+    if (tray) return;
+
+    let iconPath;
+    if (process.platform === 'darwin') {
+        // macOS 优先使用 icns
+        iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, 'icon.icns')
+            : path.join(__dirname, '../public/icon.icns');
+    } else {
+        // Windows 使用 ico
+        iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, 'icon.ico')
+            : path.join(__dirname, '../public/icon.ico');
+    }
+
+    let icon = nativeImage.createFromPath(iconPath);
+
+    // 🔥 关键修复：macOS 顶部菜单栏图标必须 resize 到很小 (推荐 22x22)
+    // 否则会导致图标不显示或显示错位
+    if (process.platform === 'darwin') {
+        icon = icon.resize({ width: 22, height: 22 });
+        icon.setTemplateImage(true); // 设置为模板图像，自动适配 macOS 深色/浅色模式
+    }
+
+    tray = new Tray(icon);
+
+    const contextMenu = Menu.buildFromTemplate([
+        {
+            label: '显示主窗口', click: () => {
+                if (mainWindow) mainWindow.show();
+                else createWindow();
+            }
+        },
+        {
+            label: '退出', click: () => {
+                isQuitting = true;
+                app.quit();
+            }
+        }
+    ]);
+
+    tray.setToolTip('MiniOrange Server');
+    tray.setContextMenu(contextMenu);
+
+    tray.on('double-click', () => {
+        if (mainWindow) mainWindow.show();
+        else createWindow();
+    });
+}
+
 // 🔥 辅助函数：发送 UI 弹窗指令 (替代 dialog.showMessageBox)
 const sendUiAlert = (type, title, message) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('show-alert', { type, title, message })
+        mainWindow.webContents.send('show-alert', {type, title, message})
     }
 }
 
@@ -345,10 +447,10 @@ function initAutoUpdater() {
     // 4. 错误处理
     autoUpdater.on('error', (err) => {
         console.error('❌ [AutoUpdater] 发生错误:', err)
-        
+
         // 🔥 修复：忽略网络连接错误 (如 GitHub 连接重置)，避免每次启动都弹窗骚扰用户
         const msg = err.message || '';
-        if (msg.includes('ERR_CONNECTION_RESET') || 
+        if (msg.includes('ERR_CONNECTION_RESET') ||
             msg.includes('ERR_CONNECTION_TIMED_OUT') ||
             msg.includes('ERR_INTERNET_DISCONNECTED') ||
             msg.includes('HttpError: 404') ||             // 🔥 新增：忽略 404 文件未找到错误
@@ -381,7 +483,11 @@ if (!gotTheLock) {
         // 当运行第二个实例时，焦点切换回主窗口
         if (mainWindow) {
             if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.show()
             mainWindow.focus()
+        } else {
+            // 如果当前是托盘模式，用户再次打开应用时，创建窗口
+            createWindow();
         }
     })
 }
@@ -389,7 +495,7 @@ if (!gotTheLock) {
 // ----------------------------------------------------
 // IPC 处理器 (只保留与串流相关的部分，其他保持不变)
 // ----------------------------------------------------
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     // 6. 🔥🔥 运行测试用例 (修复模块导入问题) 🔥🔥
 // 6. 🔥🔥 运行测试用例 (修复：优先使用 .venv 虚拟环境) 🔥🔥
     ipcMain.on('run-case', (event, {rootPath, filename}) => {
@@ -417,7 +523,7 @@ app.whenReady().then(() => {
         // 🔥 修复：默认回退逻辑优化
         // 如果用户电脑没有 Python，这里必须尝试寻找我们随包分发的独立 Python (如果有的话)
         // 否则在 Windows 上 'python3' 通常不存在，应该是 'python'
-        let pythonExecutable = isWin ? 'python' : 'python3' 
+        let pythonExecutable = isWin ? 'python' : 'python3'
         let envSource = 'System Global'
 
         // 1. 优先检测项目内的 .venv (开发者模式)
@@ -433,12 +539,15 @@ app.whenReady().then(() => {
                 envSource = 'Bundled Runtime';
             } else {
                 // 3. 最后尝试系统环境变量
-                event.reply('run-case-log', {type: 'info', text: `⚠️ 未检测到 .venv 或内置运行时，尝试使用系统 ${pythonExecutable}...`})
+                event.reply('run-case-log', {
+                    type: 'info',
+                    text: `⚠️ 未检测到 .venv 或内置运行时，尝试使用系统 ${pythonExecutable}...`
+                })
             }
         }
 
         event.reply('run-case-log', {type: 'info', text: `🐍 Python 环境: ${envSource}`})
-        
+
         // 🔥 警告：如果 envSource 是 System Global 且用户没安装 Python，下面的 spawn 会报错
         event.reply('run-case-log', {
             type: 'info',
@@ -484,8 +593,32 @@ app.whenReady().then(() => {
         autoUpdater.quitAndInstall()
     })
 
-    createWindow()
-    startPythonService() // 🔥 移到窗口创建之后，确保报错时能弹出 Vue 提示
+    // 🔥 新增：开机自启配置
+    if (app.isPackaged) {
+        if (process.platform === 'darwin') {
+            setupMacAutoStart();
+        } else {
+            app.setLoginItemSettings({
+                openAtLogin: true,
+                path: process.execPath
+            });
+        }
+    }
+
+    // 🔥 新增：检查 miniorange.local 是否已被注册
+    const isMiniOrangeRegistered = await checkUrl('http://miniorange.local:10104');
+
+    if (isMiniOrangeRegistered) {
+        console.log('[Main] 检测到 miniorange.local 已注册，启动托盘模式 (Server Mode)');
+        createTray();
+        if (process.platform === 'darwin') app.dock.hide(); // macOS 隐藏 Dock 图标
+        await startPythonService(); // 确保服务逻辑 (虽然 checkUrl 为真时 startPythonService 会跳过启动)
+    } else {
+        createWindow();
+        createTray(); // 正常模式也显示托盘
+        startPythonService(); // 🔥 移到窗口创建之后，确保报错时能弹出 Vue 提示
+    }
+
     initAutoUpdater() // 🔥 启动自动更新检查
 
     app.on('activate', () => {
@@ -495,7 +628,7 @@ app.whenReady().then(() => {
 
 // 🔥 新增：处理文件选择 (解决渲染进程无法获取文件全路径的问题)
 ipcMain.handle('select-file', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
+    const {canceled, filePaths} = await dialog.showOpenDialog({
         properties: ['openFile']
     })
     if (canceled) return null
@@ -560,7 +693,8 @@ ipcMain.handle('start-stream', async (event, deviceId) => {
                 killProc.on('close', resolve);
                 killProc.on('error', resolve);
             });
-        } catch (e) {}
+        } catch (e) {
+        }
 
         // 🔥 生成随机 SCID (防止 Address already in use)
         // Scrcpy 使用 scid 生成 socket 名称: scrcpy_%08x
@@ -571,7 +705,7 @@ ipcMain.handle('start-stream', async (event, deviceId) => {
 
         // 1. ADB 端口转发
         console.log(`[Main] 启动 ADB 端口转发: local:${STREAM_PORT} -> remote:localabstract:${socketName}`);
-        
+
         // 🔥 显式清理旧规则 (防止端口占用导致 "ADB 端口转发失败")
         try {
             await new Promise(resolve => {
@@ -579,11 +713,12 @@ ipcMain.handle('start-stream', async (event, deviceId) => {
                 p.on('close', resolve);
                 p.on('error', resolve);
             });
-        } catch (e) {}
+        } catch (e) {
+        }
 
         await new Promise((resolve, reject) => {
             const forwardProcess = spawn(getAdbPath(), ['-s', deviceId, 'forward', `tcp:${STREAM_PORT}`, `localabstract:${socketName}`]);
-            
+
             // 🔥 捕获错误输出，方便调试
             let stderr = '';
             forwardProcess.stderr.on('data', d => stderr += d.toString());
@@ -686,8 +821,14 @@ ipcMain.handle('start-stream', async (event, deviceId) => {
             // 延迟连接 TCP，给 scrcpy server 启动时间
             connectionTimeout = setTimeout(() => {
                 // 清理旧的 TCP 连接
-                if (scrcpySocket) { scrcpySocket.destroy(); scrcpySocket = null; }
-                if (controlSocket) { controlSocket.destroy(); controlSocket = null; }
+                if (scrcpySocket) {
+                    scrcpySocket.destroy();
+                    scrcpySocket = null;
+                }
+                if (controlSocket) {
+                    controlSocket.destroy();
+                    controlSocket = null;
+                }
 
                 // 1. 连接视频流 Socket
                 scrcpySocket = net.connect(STREAM_PORT, '127.0.0.1', () => {
@@ -745,8 +886,14 @@ ipcMain.handle('start-stream', async (event, deviceId) => {
                 if (ws === wsClient) {
                     wsClient = null;
                     if (connectionTimeout) clearTimeout(connectionTimeout);
-                    if (scrcpySocket) { scrcpySocket.destroy(); scrcpySocket = null; }
-                    if (controlSocket) { controlSocket.destroy(); controlSocket = null; }
+                    if (scrcpySocket) {
+                        scrcpySocket.destroy();
+                        scrcpySocket = null;
+                    }
+                    if (controlSocket) {
+                        controlSocket.destroy();
+                        controlSocket = null;
+                    }
                 }
             });
 
@@ -789,7 +936,9 @@ ipcMain.on('stop-stream', (event, targetWindow) => {
     // 🔥 移除 if (currentAdbForwardProcess) 判断，直接清理，确保端口释放
     try {
         spawn(getAdbPath(), ['forward', '--remove', `tcp:${STREAM_PORT}`]);
-    } catch (e) { console.error('清理转发规则失败', e); }
+    } catch (e) {
+        console.error('清理转发规则失败', e);
+    }
     currentAdbForwardProcess = null;
 
     // 3. 关闭 WebSocket 服务器
@@ -800,8 +949,14 @@ ipcMain.on('stop-stream', (event, targetWindow) => {
 
     // 4. 清理资源
     if (connectionTimeout) clearTimeout(connectionTimeout);
-    if (scrcpySocket) { scrcpySocket.destroy(); scrcpySocket = null; }
-    if (controlSocket) { controlSocket.destroy(); controlSocket = null; }
+    if (scrcpySocket) {
+        scrcpySocket.destroy();
+        scrcpySocket = null;
+    }
+    if (controlSocket) {
+        controlSocket.destroy();
+        controlSocket = null;
+    }
     if (wsClient) {
         wsClient.close();
         wsClient = null;
@@ -815,7 +970,7 @@ ipcMain.on('stop-stream', (event, targetWindow) => {
 });
 
 // 🔥 新增: 处理控制指令 (暂时留空，防止前端报错)
-ipcMain.on('device-control', (event, { deviceId, params }) => {
+ipcMain.on('device-control', (event, {deviceId, params}) => {
     if (!controlSocket || controlSocket.destroyed) return;
 
     try {
@@ -831,7 +986,7 @@ ipcMain.on('device-control', (event, { deviceId, params }) => {
             buffer.writeUInt8(2, 0);
 
             // 2. Action (1 byte): 0=down, 1=up, 2=move
-            const actionMap = { 'down': 0, 'up': 1, 'move': 2 };
+            const actionMap = {'down': 0, 'up': 1, 'move': 2};
             const actionCode = actionMap[params.action] ?? 1;
             buffer.writeUInt8(actionCode, 1);
 
@@ -863,7 +1018,7 @@ ipcMain.on('device-control', (event, { deviceId, params }) => {
             const buffer = Buffer.alloc(14);
 
             buffer.writeUInt8(0, 0); // Type: INJECT_KEYCODE = 0
-            const actionMap = { 'down': 0, 'up': 1 };
+            const actionMap = {'down': 0, 'up': 1};
             buffer.writeUInt8(actionMap[params.action] ?? 1, 1); // Action
             buffer.writeInt32BE(params.keycode, 2); // Keycode
             buffer.writeInt32BE(0, 6); // Repeat
@@ -883,14 +1038,14 @@ ipcMain.on('device-control', (event, { deviceId, params }) => {
             buffer.writeInt32BE(Math.round(params.y), 13); // Y
             buffer.writeUInt16BE(Math.round(params.width), 17); // Width
             buffer.writeUInt16BE(Math.round(params.height), 19); // Height
-            
+
             // 🔥 修正: Scrcpy 滚动值使用 16.16 定点数 (float * 65536)
             // 前端传来的值通常是 "ticks" (1.0 = 1 滚轮刻度)
             buffer.writeInt32BE(Math.round(params.hScroll * 0x10000), 21); // hScroll
             buffer.writeInt32BE(Math.round(params.vScroll * 0x10000), 25); // vScroll
-            
+
             buffer.writeInt32BE(0, 29); // Buttons (0 for none)
-            
+
             controlSocket.write(buffer);
 
         } else if (params.type === 'text') {
@@ -902,7 +1057,7 @@ ipcMain.on('device-control', (event, { deviceId, params }) => {
             // 🚨 修正: INJECT_TEXT type code is 1, not 5
             header.writeUInt8(1, 0); // Type: INJECT_TEXT = 1
             header.writeInt32BE(len, 1); // Length
-            
+
             controlSocket.write(Buffer.concat([header, textBuffer]));
         } else if (params.type === 'swipe') {
             // 🔥 新增：滑动事件 (ADB Shell Input Swipe)
@@ -941,15 +1096,23 @@ const createOverlayIcon = (type) => {
     for (let i = 0; i < buffer.length; i += 4) {
         if (type === 'success') {
             // Green (RGBA)
-            buffer[i] = 0; buffer[i+1] = 255; buffer[i+2] = 0; buffer[i+3] = 255;
+            buffer[i] = 0;
+            buffer[i + 1] = 255;
+            buffer[i + 2] = 0;
+            buffer[i + 3] = 255;
         } else {
             // Red (RGBA)
-            buffer[i] = 255; buffer[i+1] = 0; buffer[i+2] = 0; buffer[i+3] = 255;
+            buffer[i] = 255;
+            buffer[i + 1] = 0;
+            buffer[i + 2] = 0;
+            buffer[i + 3] = 255;
         }
     }
     try {
-        return nativeImage.createFromBitmap(buffer, { width: size, height: size });
-    } catch (e) { return null; }
+        return nativeImage.createFromBitmap(buffer, {width: size, height: size});
+    } catch (e) {
+        return null;
+    }
 };
 
 // 🔥 新增：设置应用 Dock/任务栏 状态 (进度条/角标)
@@ -961,25 +1124,25 @@ ipcMain.handle('set-app-badge', (event, state) => {
         clearTimeout(badgeTimeout);
         badgeTimeout = null;
     }
-    
+
     // state: 'running' | 'success' | 'fail' | 'idle'
     // console.log(`[Main] 设置应用状态: ${state}`);
 
     if (state === 'running') {
         // Windows: 2 = Indeterminate (任务栏图标转圈/流动)
         // macOS: 显示进度条 (Electron 在 macOS 上不支持 Indeterminate，通常显示满条，但能表示正在运行)
-        mainWindow.setProgressBar(2); 
-        
+        mainWindow.setProgressBar(2);
+
         if (process.platform === 'darwin') {
             // macOS 运行时清除之前的角标
-            app.dock.setBadge(''); 
+            app.dock.setBadge('');
         }
     } else if (state === 'success') {
         // Windows: 进度条设为 1 (100%)，mode 默认为 normal (通常是绿色/主题色)
-        mainWindow.setProgressBar(1, { mode: 'normal' });
+        mainWindow.setProgressBar(1, {mode: 'normal'});
 
         // 🔥 全平台通用：显示系统通知 (Mac 在屏幕右上角，Win 在右下角)
-        new Notification({ title: 'MiniOrange', body: '✅ 运行成功完成' }).show();
+        new Notification({title: 'MiniOrange', body: '✅ 运行成功完成'}).show();
 
         if (process.platform === 'darwin') {
             // macOS: 恢复 ✅ 角标 (用户反馈需要看到明确的成功标识)
@@ -988,7 +1151,7 @@ ipcMain.handle('set-app-badge', (event, state) => {
         } else if (process.platform === 'win32') {
             // Windows 任务栏图标闪烁提示
             mainWindow.flashFrame(true);
-            
+
             // 🔥 Windows Overlay Icon (右下角角标)
             const img = createOverlayIcon('success');
             if (img) mainWindow.setOverlayIcon(img, '运行成功');
@@ -1009,10 +1172,10 @@ ipcMain.handle('set-app-badge', (event, state) => {
 
     } else if (state === 'fail') {
         // Windows: 进度条设为 1 (100%)，mode 为 error (红色)
-        mainWindow.setProgressBar(1, { mode: 'error' });
+        mainWindow.setProgressBar(1, {mode: 'error'});
 
         // 🔥 全平台通用：显示系统通知
-        new Notification({ title: 'MiniOrange', body: '❌ 运行失败' }).show();
+        new Notification({title: 'MiniOrange', body: '❌ 运行失败'}).show();
 
         if (process.platform === 'darwin') {
             app.dock.setBadge('!');
@@ -1020,7 +1183,7 @@ ipcMain.handle('set-app-badge', (event, state) => {
         } else if (process.platform === 'win32') {
             // Windows 显示红色错误状态
             mainWindow.flashFrame(true);
-            
+
             // 🔥 Windows Overlay Icon
             const img = createOverlayIcon('fail');
             if (img) mainWindow.setOverlayIcon(img, '运行失败');
@@ -1071,7 +1234,8 @@ ipcMain.on('window-max', () => {
 ipcMain.on('window-close', () => mainWindow?.close())
 
 app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    // 🔥 修改：如果托盘存在，关闭窗口不退出应用
+    if (process.platform !== 'darwin' && !tray) app.quit()
 })
 
 let isQuitting = false;
@@ -1080,12 +1244,12 @@ app.on('before-quit', async (event) => {
     if (!gotTheLock) return;
 
     if (isQuitting) return;
-    
+
     // 🔥 关键修复：阻止默认退出，等待异步清理完成
     // 解决 "关闭应用后后台进程仍然存活" 的问题
     event.preventDefault();
     isQuitting = true;
-    
+
     console.log('[Main] 应用退出中，正在清理后台进程...');
     ipcMain.emit('stop-stream');
     await killPythonProcess();

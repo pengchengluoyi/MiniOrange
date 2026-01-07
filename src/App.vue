@@ -35,6 +35,7 @@
 import { ref, onMounted } from 'vue'
 import UpdatePrompt from './components/UpdatePrompt.vue'
 import GlobalAlert from './components/GlobalAlert.vue'
+import { getBaseUrl } from '@/utils/config'
 
 const isServerReady = ref(false)
 const showRetryBtn = ref(false)
@@ -45,23 +46,20 @@ const MAX_RETRIES = 30 // 30次 * 500ms = 15秒超时
 
 // 检查服务端健康状态
 const checkHealth = async () => {
-  // 兼容主进程逻辑：同时检查本地和局域网地址
-  const urls = ['http://127.0.0.1:10104/', 'http://miniorange.local:10104/']
+  // 动态获取当前配置的 Base URL
+  const url = getBaseUrl() + '/'
   let success = false
 
-  for (const url of urls) {
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        signal: AbortSignal.timeout(2000)
-      })
-      if (response.ok) {
-        success = true
-        break
-      }
-    } catch (e) {
-      // ignore
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    })
+    if (response.ok || response.status === 404) { // 只要能连通即可
+      success = true
     }
+  } catch (e) {
+    // ignore
   }
 
   if (success) {

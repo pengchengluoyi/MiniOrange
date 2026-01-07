@@ -3,7 +3,8 @@ import { ref, onMounted, onUnmounted, reactive } from 'vue'
 import managementWsService from '@/api/managementWebSocket'
 import { setDevicePassword, getDeviceList } from '@/api/device'
 import QRCode from 'qrcode'
-import { 
+import { getWsUrl, LOCAL_HOST } from '@/utils/config'
+import {
   ElMessage,
   ElCard,
   ElTable,
@@ -94,12 +95,12 @@ const submitCommand = () => {
 
 // 显示添加设备弹窗
 const showAddDeviceDialog = async () => {
-  const hostname = window.location.hostname
-  const port = '10104' // 根据你的后端配置
-  const address = `ws://${hostname}:${port}/ws`
+  // 动态获取当前使用的 WS 地址
+  const address = getWsUrl()
   
   serverAddress.value = address
-  isLocalhost.value = (hostname === 'localhost' || hostname === '127.0.0.1')
+  // 简单判断是否是 localhost
+  isLocalhost.value = address.includes('localhost') || address.includes('127.0.0.1')
 
   try {
     // 使用 qrcode 库生成 DataURL

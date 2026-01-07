@@ -1,11 +1,5 @@
 import { ElMessage } from 'element-plus'
-
-// 动态获取 WebSocket URL
-const getWsUrl = () => {
-  return 'ws://127.0.0.1:10104/ws'
-}
-
-const SERVER_URL = getWsUrl()
+import { getWsUrl } from '@/utils/config'
 
 class ManagementWebSocket {
   constructor() {
@@ -22,7 +16,9 @@ class ManagementWebSocket {
       return
     }
 
-    this.ws = new WebSocket(SERVER_URL)
+    const url = getWsUrl()
+    console.log('[Mgmt-WS] Connecting to:', url)
+    this.ws = new WebSocket(url)
 
     this.ws.onopen = () => {
       console.log('[Mgmt-WS] Connected to server.')
