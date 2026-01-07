@@ -1,6 +1,21 @@
 import { ElMessage } from 'element-plus'
 import { getWsUrl } from '@/utils/config'
 
+// 🔥 辅助函数：探测 URL 可用性
+const checkUrl = async (url) => {
+  try {
+    const controller = new AbortController()
+    const id = setTimeout(() => controller.abort(), 3000)
+    let httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://')
+    httpUrl = httpUrl.includes('/ws') ? httpUrl.replace('/ws', '/docs') : (httpUrl.endsWith('/') ? `${httpUrl}docs` : `${httpUrl}/docs`)
+    await fetch(httpUrl, { method: 'GET', mode: 'no-cors', signal: controller.signal })
+    clearTimeout(id)
+    return true
+  } catch {
+    return false
+  }
+}
+
 class ManagementWebSocket {
   constructor() {
     this.ws = null
@@ -9,16 +24,36 @@ class ManagementWebSocket {
     this.reconnectAttempts = 0
     this.reconnectInterval = 5000 // 5秒重连
     this.messageQueue = []
+    this.targetUrl = null // 🔥 缓存最终确定的 URL
   }
 
-  connect() {
+  // 🔥 允许外部设置 URL (例如 App.vue 探测完成后)
+  setUrl(url) {
+    this.targetUrl = url
+  }
+
+  async connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return
     }
 
-    const url = getWsUrl()
-    console.log('[Mgmt-WS] Connecting to:', url)
-    this.ws = new WebSocket(url)
+    // 🔥 如果没有设置 URL，则尝试自动探测
+    if (!this.targetUrl) {
+      let url = getWsUrl()
+      if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1')) {
+        if (!await checkUrl(url)) {
+          console.log('[Mgmt-WS] Local 127.0.0.1 unreachable, probing miniorange.local...')
+          const remote = url.replace('127.0.0.1', 'miniorange.local')
+          if (await checkUrl(remote)) {
+            url = remote
+          }
+        }
+      }
+      this.targetUrl = url
+    }
+
+    console.log('[Mgmt-WS] Connecting to:', this.targetUrl)
+    this.ws = new WebSocket(this.targetUrl)
 
     this.ws.onopen = () => {
       console.log('[Mgmt-WS] Connected to server.')

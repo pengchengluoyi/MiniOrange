@@ -35,7 +35,8 @@
 import { ref, onMounted } from 'vue'
 import UpdatePrompt from './components/UpdatePrompt.vue'
 import GlobalAlert from './components/GlobalAlert.vue'
-import { getBaseUrl } from '@/utils/config'
+import { setGlobalBaseUrl } from '@/utils/request'
+import managementWsService from '@/api/managementWebSocket'
 
 const isServerReady = ref(false)
 const showRetryBtn = ref(false)
@@ -46,20 +47,31 @@ const MAX_RETRIES = 30 // 30次 * 500ms = 15秒超时
 
 // 检查服务端健康状态
 const checkHealth = async () => {
-  // 动态获取当前配置的 Base URL
-  const url = getBaseUrl() + '/'
+  const candidates = ['http://127.0.0.1:10104', 'http://miniorange.local:10104']
   let success = false
 
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: AbortSignal.timeout(2000)
-    })
-    if (response.ok || response.status === 404) { // 只要能连通即可
-      success = true
+  for (const url of candidates) {
+    try {
+      const controller = new AbortController()
+      const id = setTimeout(() => controller.abort(), 2000)
+      const response = await fetch(`${url}/docs`, {
+        method: 'GET',
+        signal: controller.signal
+      })
+      clearTimeout(id)
+      if (response.ok || response.status === 404 || response.status === 405) { // 只要能连通即可
+        setGlobalBaseUrl(url)
+        
+        // 🔥 同步设置 ManagementWebSocket 的地址，避免它再次探测或连接失败
+        const wsUrl = url.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws'
+        managementWsService.setUrl(wsUrl)
+        
+        success = true
+        break
+      }
+    } catch (e) {
+      // ignore
     }
-  } catch (e) {
-    // ignore
   }
 
   if (success) {

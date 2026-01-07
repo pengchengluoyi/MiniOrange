@@ -11,9 +11,14 @@ let isInitializing = false
 const checkUrl = async (url) => {
     try {
         const controller = new AbortController()
-        const id = setTimeout(() => controller.abort(), 800)
-        const httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://').replace('/ws', '/docs')
-        await fetch(httpUrl, { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
+        const id = setTimeout(() => controller.abort(), 3000) // 🔥 增加超时时间
+        
+        // 🔥 修复：构造探测 URL
+        let httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://')
+        // 确保探测的是 /docs 接口 (FastAPI 默认文档路径)，避免请求根路径 / 导致 404 或 405
+        httpUrl = httpUrl.includes('/ws') ? httpUrl.replace('/ws', '/docs') : (httpUrl.endsWith('/') ? `${httpUrl}docs` : `${httpUrl}/docs`)
+
+        await fetch(httpUrl, { method: 'GET', mode: 'no-cors', signal: controller.signal })
         clearTimeout(id)
         return true
     } catch {
@@ -29,6 +34,7 @@ export const initWebSocket = async () => {
         let url = getWsUrl()
         // 自动探测：如果默认是本地，尝试探测 miniorange.local
         if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1') && !await checkUrl(url)) {
+             console.log('[WS] Local 127.0.0.1 not reachable, probing miniorange.local...')
              const remote = url.replace('127.0.0.1', 'miniorange.local')
              if (await checkUrl(remote)) url = remote
         }

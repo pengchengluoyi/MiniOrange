@@ -8,8 +8,8 @@ let checkPromise = null
 const checkUrl = async (url) => {
   try {
     const controller = new AbortController()
-    const id = setTimeout(() => controller.abort(), 800)
-    await fetch(`${url}/docs`, { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
+    const id = setTimeout(() => controller.abort(), 3000) // 🔥 增加超时时间，防止 mDNS 解析慢导致误判
+    await fetch(`${url}/docs`, { method: 'GET', mode: 'no-cors', signal: controller.signal })
     clearTimeout(id)
     return true
   } catch {
@@ -39,8 +39,13 @@ service.interceptors.request.use(
         checkPromise = (async () => {
           const candidates = ['http://127.0.0.1:10104', 'http://miniorange.local:10104']
           for (const url of candidates) {
-            if (await checkUrl(url)) return url
+            console.log(`[API] Probing ${url}...`)
+            if (await checkUrl(url)) {
+                console.log(`[API] Found active server: ${url}`)
+                return url
+            }
           }
+          console.warn('[API] No active server found, falling back to default.')
           return getBaseUrl() // 兜底
         })()
       }
@@ -65,5 +70,9 @@ service.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+export const setGlobalBaseUrl = (url) => {
+  determinedBaseUrl = url
+}
 
 export default service
