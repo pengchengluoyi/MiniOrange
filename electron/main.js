@@ -335,6 +335,10 @@ function createWindow() {
             webviewTag: true,        // 【关键】：必须设置为 true
         }
     })
+    
+    // 🔥 修复 Issue 2: 窗口关闭时清理引用，防止 Object has been destroyed 错误
+    win.on('closed', () => { mainWindow = null })
+    
     mainWindow = win // 🔥 保存引用
 
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -366,18 +370,11 @@ function createWindow() {
 function createTray() {
     if (tray) return;
 
-    let iconPath;
-    if (process.platform === 'darwin') {
-        // macOS 优先使用 icns
-        iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, 'icon.icns')
-            : path.join(__dirname, '../public/icon.icns');
-    } else {
-        // Windows 使用 ico
-        iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, 'icon.ico')
-            : path.join(__dirname, '../public/icon.ico');
-    }
+    // 🔥 修复 Issue 3: macOS 托盘图标建议统一使用 png 以确保 resize 生效
+    // icns 在 Tray 模块中有时会导致尺寸计算错误而不显示
+    const iconPath = app.isPackaged
+        ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'icon.png')
+        : path.join(__dirname, process.platform === 'win32' ? '../public/icon.ico' : '../public/icon.png');
 
     let icon = nativeImage.createFromPath(iconPath);
 
@@ -414,6 +411,61 @@ function createTray() {
     });
 }
 
+// 🔥 新增：将下载好的更新包同步到局域网共享目录 (供从端下载)
+function copyUpdateToLocalServer(info) {
+    try {
+        // 1. 目标目录：resources/updates
+        // ⚠️ 注意：请确保 Python 后端已配置将此目录暴露为静态资源 (例如 /static/updates/)
+        const updateDir = path.join(process.resourcesPath, 'updates');
+        if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
+
+        // 🔥 优化：清理旧版本文件，防止磁盘占用无限增长
+        // 策略：每次更新前清空 updates 目录，只保留当前最新的版本
+        try {
+            const files = fs.readdirSync(updateDir);
+            for (const file of files) {
+                // 删除旧的安装包、yml 配置和 blockmap
+                if (['.exe', '.zip', '.dmg', '.yml', '.blockmap'].some(ext => file.endsWith(ext))) {
+                    fs.unlinkSync(path.join(updateDir, file));
+                }
+            }
+        } catch (e) {
+            console.warn('[AutoUpdater] 清理旧文件失败 (非致命错误):', e);
+        }
+
+        // 2. 获取 electron-updater 下载好的缓存文件路径
+        const sourcePath = info.downloadedFile;
+        if (!sourcePath || !fs.existsSync(sourcePath)) return;
+
+        // 3. 复制安装包 (例如 MiniOrange-Setup-1.0.1.exe)
+        const fileName = path.basename(sourcePath);
+        const destPath = path.join(updateDir, fileName);
+        fs.copyFileSync(sourcePath, destPath);
+        console.log('[AutoUpdater] 更新包已同步到局域网目录:', destPath);
+
+        // 4. 生成 latest.yml (从端检查更新需要此文件)
+        // 我们根据 info 信息重构一个简单的 yaml 文件
+        let yaml = `version: ${info.version}\n`;
+        yaml += `path: ${fileName}\n`;
+        // sha512 是校验关键，必须存在
+        if (info.sha512) yaml += `sha512: ${info.sha512}\n`;
+        if (info.releaseDate) yaml += `releaseDate: ${info.releaseDate}\n`;
+        
+        if (info.files && Array.isArray(info.files) && info.files.length > 0) {
+            yaml += `files:\n`;
+            const f = info.files[0]; 
+            yaml += `  - url: ${fileName}\n`;
+            if (f.sha512) yaml += `    sha512: ${f.sha512}\n`;
+            if (f.size) yaml += `    size: ${f.size}\n`;
+        }
+
+        fs.writeFileSync(path.join(updateDir, 'latest.yml'), yaml);
+        console.log('[AutoUpdater] latest.yml 已生成');
+    } catch (e) {
+        console.error('[AutoUpdater] 同步局域网更新失败:', e);
+    }
+}
+
 // 🔥 辅助函数：发送 UI 弹窗指令 (替代 dialog.showMessageBox)
 const sendUiAlert = (type, title, message) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -422,7 +474,7 @@ const sendUiAlert = (type, title, message) => {
 }
 
 // --- 自动更新逻辑 ---
-function initAutoUpdater() {
+function initAutoUpdater(isClientMode = false) {
     // 配置不自动下载，交由用户决定
     autoUpdater.autoDownload = false
 
@@ -441,6 +493,13 @@ function initAutoUpdater() {
     // 3. 下载完成
     autoUpdater.on('update-downloaded', (info) => {
         console.log('✅ [AutoUpdater] 下载完成')
+        
+        // 🔥 新增：如果是主端 (Host)，下载完成后自动复制到静态目录
+        // 这样局域网内的从端就可以通过 http://miniorange.local:10104/static/updates/ 访问到了
+        if (app.isPackaged && !isClientMode) {
+            copyUpdateToLocalServer(info);
+        }
+        
         if (mainWindow) mainWindow.webContents.send('update-downloaded', info)
     })
 
@@ -463,12 +522,20 @@ function initAutoUpdater() {
         sendUiAlert('error', '自动更新出错', msg || '网络连接失败或未知错误')
     })
 
-    // 生产环境才检查更新
+    // 🔥 修复 Issue 1: 局域网分发更新
     if (app.isPackaged) {
-        // 🔥 修复：macOS 如果没有 Apple 开发者证书签名 (identity: null)，自动更新会校验失败
-        // 报错: Code signature at URL ... did not pass validation
-        // 除非配置了 Apple 证书，否则在 Mac 上禁用自动更新以避免报错
-        if (process.platform !== 'darwin') {
+        if (isClientMode) {
+            // 从端模式：指向主端的局域网更新服务
+            // 注意：需要在 Python 后端开启静态文件服务，将 updates 目录暴露在 /static/updates/ 下
+            console.log('[AutoUpdater] 启用局域网更新模式');
+            autoUpdater.setFeedURL({
+                provider: 'generic',
+                url: 'http://miniorange.local:10104/static/updates/' // 假设主端在此路径提供 latest.yml 和 exe
+            });
+            autoUpdater.checkForUpdates();
+        } else if (process.platform !== 'darwin') {
+            // 主端模式：走默认配置 (GitHub/S3)
+            // macOS 无证书时禁用自动更新
             autoUpdater.checkForUpdates()
         }
     }
@@ -619,7 +686,7 @@ app.whenReady().then(async () => {
         startPythonService(); // 🔥 移到窗口创建之后，确保报错时能弹出 Vue 提示
     }
 
-    initAutoUpdater() // 🔥 启动自动更新检查
+    initAutoUpdater(isMiniOrangeRegistered) // 🔥 传入当前是否为从端模式
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1231,7 +1298,15 @@ ipcMain.on('window-max', () => {
         mainWindow.maximize()
     }
 })
-ipcMain.on('window-close', () => mainWindow?.close())
+
+// 🔥 修复 Issue 2: 托盘模式下，点击关闭按钮应隐藏窗口而不是销毁
+ipcMain.on('window-close', () => {
+    if (tray && !isQuitting) {
+        mainWindow?.hide()
+    } else {
+        mainWindow?.close()
+    }
+})
 
 app.on('window-all-closed', () => {
     // 🔥 修改：如果托盘存在，关闭窗口不退出应用
