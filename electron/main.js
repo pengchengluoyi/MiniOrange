@@ -338,6 +338,16 @@ function createWindow() {
     
     // 🔥 修复 Issue 2: 窗口关闭时清理引用，防止 Object has been destroyed 错误
     win.on('closed', () => { mainWindow = null })
+
+    // 🔥 核心修复：拦截原生关闭事件 (如 macOS 红点或任务栏关闭)，改为隐藏窗口
+    // 这样可以保持页面状态 (路由、表单等)，不会重置回默认页面
+    win.on('close', (event) => {
+        // 如果不是正在退出应用 (isQuitting)，则取消关闭操作，改为隐藏
+        if (!isQuitting) {
+            event.preventDefault();
+            win.hide();
+        }
+    });
     
     mainWindow = win // 🔥 保存引用
 
@@ -374,7 +384,7 @@ function createTray() {
     // icns 在 Tray 模块中有时会导致尺寸计算错误而不显示
     const iconPath = app.isPackaged
         ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'icon.png')
-        : path.join(__dirname, process.platform === 'win32' ? '../public/icon.ico' : '../public/icon.png');
+        : path.join(__dirname, process.platform === 'win32' ? '../public/icon.ico' : '../public/icon_dock.png');
 
     let icon = nativeImage.createFromPath(iconPath);
 
@@ -394,6 +404,31 @@ function createTray() {
                 else createWindow();
             }
         },
+        {
+            label: '设备管理', click: () => {
+                if (mainWindow) {
+                    if (mainWindow.isMinimized()) mainWindow.restore();
+                    mainWindow.show();
+                    mainWindow.webContents.executeJavaScript('window.location.hash = "#/device"');
+                } else {
+                    createWindow();
+                    mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.executeJavaScript('window.location.hash = "#/device"'));
+                }
+            }
+        },
+        {
+            label: '定时任务', click: () => {
+                if (mainWindow) {
+                    if (mainWindow.isMinimized()) mainWindow.restore();
+                    mainWindow.show();
+                    mainWindow.webContents.executeJavaScript('window.location.hash = "#/schedule"');
+                } else {
+                    createWindow();
+                    mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.executeJavaScript('window.location.hash = "#/schedule"'));
+                }
+            }
+        },
+        { type: 'separator' },
         {
             label: '退出', click: () => {
                 isQuitting = true;
@@ -689,7 +724,13 @@ app.whenReady().then(async () => {
     initAutoUpdater(isMiniOrangeRegistered) // 🔥 传入当前是否为从端模式
 
     app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow()
+        // 🔥 修复：点击 Dock 图标时，如果窗口只是隐藏了，需要显示出来
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+        } else if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
+        }
     })
 })
 

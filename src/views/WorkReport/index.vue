@@ -11,6 +11,8 @@
         <nav class="menu">
           <div class="item" :class="{ active: currentRoute === 'AppList' }" @click="$router.push({ name: 'AppList' })" title="应用管理"><el-icon><Grid /></el-icon></div>
           <div class="item" :class="{ active: currentRoute === 'DeviceManage' }" @click="$router.push({ name: 'DeviceManage' })" title="设备管理"><el-icon><Monitor /></el-icon></div>
+          <div class="item" :class="{ active: currentRoute === 'Schedule' }" @click="$router.push({ name: 'Schedule' })" title="定时任务"><el-icon><Timer /></el-icon></div>
+          <div class="item" :class="{ active: currentRoute === 'Timeline' }" @click="$router.push({ name: 'Timeline' })" title="时间线"><el-icon><DataLine /></el-icon></div>
         </nav>
       </div>
     </aside>
@@ -29,7 +31,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElIcon, ElAvatar, ElDivider } from 'element-plus'
-import { Grid, Menu, Monitor, Files, Setting } from '@element-plus/icons-vue'
+import { Grid, Menu, Monitor, Files, Setting, Timer, DataLine } from '@element-plus/icons-vue'
 
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import 'element-plus/dist/index.css'
