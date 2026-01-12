@@ -1,8 +1,8 @@
 <script setup>
-import { ref, onMounted, reactive, computed } from 'vue'
-import { ElMessage, ElCard, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElIcon, ElEmpty, vLoading } from 'element-plus'
-import { Refresh, Back, Check, VideoPlay, Aim, Mouse, Reading, Close, Connection } from '@element-plus/icons-vue'
-import { getTimelineList, getTimelineDetail } from '@/api/timeline'
+import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
+import { ElMessage, ElCard, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElIcon, ElEmpty, vLoading, ElSlider } from 'element-plus'
+import { Refresh, Back, Check, VideoPlay, VideoPause, Aim, Mouse, Reading, Close, Connection } from '@element-plus/icons-vue'
+import { getTimelineList, getTimelineDetail, getTimelineFile } from '@/api/timeline'
 
 // ================== 列表页状态 ==================
 const loading = ref(false)
@@ -15,6 +15,10 @@ const detailLoading = ref(false)
 const detailList = ref([]) // 所有步骤
 const currentRunId = ref('')
 const activeStepIndex = ref(0) // 当前选中的步骤索引
+const screenshotUrlMap = reactive({}) // path -> url
+const currentImgNaturalSize = ref({ w: 0, h: 0 })
+const isPlaying = ref(false)
+let playTimer = null
 
 // 当前选中的步骤数据
 const currentStep = computed(() => {
@@ -22,17 +26,213 @@ const currentStep = computed(() => {
   return detailList.value[activeStepIndex.value]
 })
 
+// 解析步骤数据的通用方法
+const parseStepData = (data) => {
+  if (!data) return {}
+  try {
+    const res = typeof data === 'string' ? JSON.parse(data) : data
+    // 如果解析出来是字符串，或者原始数据就是字符串(catch块)，都视为截图路径
+    if (typeof res === 'string') return { screenshot: res, raw: res }
+    return res || {}
+  } catch (e) { return { screenshot: data, raw: data } }
+}
+
 // 解析当前步骤的 Data (JSON字符串 -> 对象)
 const currentStepData = computed(() => {
   if (!currentStep.value || !currentStep.value.data) return {}
-  try {
-    return typeof currentStep.value.data === 'string'
-      ? JSON.parse(currentStep.value.data)
-      : currentStep.value.data
-  } catch (e) {
-    return { raw: currentStep.value.data }
+  return parseStepData(currentStep.value.data)
+})
+
+// 辅助：获取截图路径字符串
+const getScreenshotPath = (val) => {
+  if (!val) return ''
+  if (typeof val === 'string') return val
+  if (typeof val === 'object') return val.path || val.url || ''
+  return ''
+}
+
+// 🔥 新增：过滤出仅包含截图的步骤用于顶部时间轴 (Midscene 风格)
+const filmstripItems = computed(() => {
+  return detailList.value.map((step, index) => {
+    const d = parseStepData(step.data)
+    const path = getScreenshotPath(d?.screenshot)
+    return { step, index, path }
+  }).filter(item => !!item.path)
+})
+
+const currentScreenshotUrl = computed(() => {
+  // 1. 尝试获取当前步骤的截图
+  let data = currentStepData.value
+  let path = getScreenshotPath(data?.screenshot)
+
+  // 2. 如果当前步骤没有截图，则向前回溯寻找最近的截图 (Context)
+  if (!path && detailList.value.length) {
+    for (let i = activeStepIndex.value - 1; i >= 0; i--) {
+      const step = detailList.value[i]
+      // 这里需要手动解析一下，因为 currentStepData 只针对 activeStepIndex
+      const d = parseStepData(step.data)
+      const p = getScreenshotPath(d?.screenshot)
+      if (p) {
+        path = p
+        break
+      }
+    }
+  }
+
+  return path ? screenshotUrlMap[path] : ''
+})
+
+const highlightStyle = computed(() => {
+  const data = currentStepData.value
+  if (!data || !currentImgNaturalSize.value.w) return { display: 'none' }
+
+  // 仅针对 click/tap 类型显示高亮，或者如果有 bbox/center 数据就显示
+  const type = currentStep.value?.type?.toLowerCase() || ''
+  // if (!type.includes('click') && !type.includes('tap')) return { display: 'none' }
+
+  let x, y, w, h
+  // 1. 优先使用 bbox [x, y, w, h]
+  if (Array.isArray(data.bbox) && data.bbox.length === 4) {
+    [x, y, w, h] = data.bbox
+  }
+  // 2. 其次使用 center [x, y]
+  else if (Array.isArray(data.center) && data.center.length === 2) {
+    [x, y] = data.center
+    w = 30; h = 30; // 默认点击区域大小
+    x -= w/2; y -= h/2;
+  }
+  // 3. 🔥 新增：支持直接的 x, y 坐标 (常见于 click/tap 事件)
+  else if (typeof data.x === 'number' && typeof data.y === 'number') {
+    x = data.x
+    y = data.y
+    w = 30; h = 30;
+    x -= w/2; y -= h/2;
+  }
+  // 4. 🔥 新增：支持直接的 [x, y] 数组 (常见于 click 自带 Data Detail)
+  else if (Array.isArray(data) && data.length === 2) {
+    [x, y] = data
+    w = 30; h = 30;
+    x -= w/2; y -= h/2;
+  }
+  else {
+    return { display: 'none' }
+  }
+
+  const left = (x / currentImgNaturalSize.value.w) * 100
+  const top = (y / currentImgNaturalSize.value.h) * 100
+  const width = (w / currentImgNaturalSize.value.w) * 100
+  const height = (h / currentImgNaturalSize.value.h) * 100
+
+  return {
+    left: `${left}%`,
+    top: `${top}%`,
+    width: `${width}%`,
+    height: `${height}%`,
+    position: 'absolute',
+    border: '2px solid #F56C6C',
+    backgroundColor: 'rgba(245, 108, 108, 0.3)',
+    borderRadius: '50%', // 圆形更像点击
+    boxShadow: '0 0 8px rgba(245, 108, 108, 0.6)', // 增加发光效果
+    pointerEvents: 'none',
+    zIndex: 10
   }
 })
+
+// 🔥 新增：箭头样式 (指向点击位置)
+const arrowStyle = computed(() => {
+  const data = currentStepData.value
+  if (!data || !currentImgNaturalSize.value.w) return { display: 'none' }
+
+  const type = currentStep.value?.type?.toLowerCase() || ''
+  if (!type.includes('click') && !type.includes('tap')) return { display: 'none' }
+
+  let x, y
+  if (Array.isArray(data) && data.length === 2) {
+    [x, y] = data
+  } else if (Array.isArray(data.center) && data.center.length === 2) {
+    [x, y] = data.center
+  } else if (typeof data.x === 'number' && typeof data.y === 'number') {
+    x = data.x
+    y = data.y
+  } else if (Array.isArray(data.bbox) && data.bbox.length === 4) {
+    x = data.bbox[0] + data.bbox[2]/2
+    y = data.bbox[1] + data.bbox[3]/2
+  } else {
+    return { display: 'none' }
+  }
+
+  const left = (x / currentImgNaturalSize.value.w) * 100
+  const top = (y / currentImgNaturalSize.value.h) * 100
+
+  return {
+    left: `${left}%`,
+    top: `${top}%`,
+    position: 'absolute',
+    zIndex: 20,
+    pointerEvents: 'none',
+    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))'
+  }
+})
+
+const getStepScreenshot = (step) => {
+  const data = parseStepData(step.data)
+  const path = getScreenshotPath(data?.screenshot)
+  return path ? screenshotUrlMap[path] : null
+}
+
+// 🔥 新增：监听当前步骤变化，如果截图未加载则立即请求
+watch(currentStep, (newStep) => {
+  if (newStep) {
+    const d = parseStepData(newStep.data)
+    if (d && d.screenshot) loadScreenshot(d.screenshot)
+  }
+})
+
+// ================== 播放控制 ==================
+const togglePlay = () => {
+  if (isPlaying.value) pause()
+  else play()
+}
+
+const play = () => {
+  if (activeStepIndex.value >= detailList.value.length - 1) {
+    activeStepIndex.value = 0
+  }
+  isPlaying.value = true
+  playNext()
+}
+
+const pause = () => {
+  isPlaying.value = false
+  if (playTimer) clearTimeout(playTimer)
+  playTimer = null
+}
+
+const playNext = () => {
+  if (!isPlaying.value) return
+  // 默认每步播放间隔 1000ms
+  playTimer = setTimeout(() => {
+    if (activeStepIndex.value < detailList.value.length - 1) {
+      activeStepIndex.value++
+      playNext()
+    } else {
+      pause()
+    }
+  }, 1000)
+}
+
+const formatTime = (ms) => {
+  if (!ms || ms < 0) return '00:00'
+  const totalSeconds = Math.floor(ms / 1000)
+  const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0')
+  const s = (totalSeconds % 60).toString().padStart(2, '0')
+  return `${m}:${s}`
+}
+
+const startTime = computed(() => detailList.value.length ? detailList.value[0].timestamp : 0)
+const endTime = computed(() => detailList.value.length ? detailList.value[detailList.value.length - 1].timestamp : 0)
+const currentProgressTime = computed(() => currentStep.value ? formatTime(currentStep.value.timestamp - startTime.value) : '00:00')
+const totalDurationTime = computed(() => formatTime(endTime.value - startTime.value))
 
 // ================== API 方法 ==================
 const fetchData = async () => {
@@ -64,6 +264,13 @@ const handleDetail = async (row) => {
       detailList.value = res.data
       // 默认选中第一个
       if (detailList.value.length > 0) activeStepIndex.value = 0
+
+      pause() // 重置播放状态
+      // 预加载截图
+      detailList.value.forEach(step => {
+        const d = parseStepData(step.data)
+        if (d && d.screenshot) loadScreenshot(d.screenshot)
+      })
     }
   } catch (e) {
     ElMessage.error('获取详情失败')
@@ -72,9 +279,81 @@ const handleDetail = async (row) => {
   }
 }
 
+// 辅助函数：将 DataURL 转换为 BlobURL 以提升性能
+const dataURLtoBlobURL = (dataurl) => {
+  try {
+    const arr = dataurl.split(',')
+    const mime = arr[0].match(/:(.*?);/)[1]
+    const bstr = atob(arr[1])
+    let n = bstr.length
+    const u8arr = new Uint8Array(n)
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n)
+    }
+    const blob = new Blob([u8arr], {type: mime})
+    return URL.createObjectURL(blob)
+  } catch (e) {
+    console.warn('DataURL conversion failed', e)
+    return dataurl // 转换失败则回退使用原字符串
+  }
+}
+
+const loadScreenshot = async (rawPath) => {
+  const path = getScreenshotPath(rawPath)
+  if (!path) return
+  if (screenshotUrlMap[path]) return
+
+  // 如果已经是 base64 或 http 链接，直接使用
+  if (path.startsWith('data:') || path.startsWith('http')) {
+    if (path.startsWith('data:')) {
+      screenshotUrlMap[path] = dataURLtoBlobURL(path)
+    } else {
+      screenshotUrlMap[path] = path
+    }
+    return
+  }
+
+  try {
+    const res = await getTimelineFile(path)
+    if (res.code === 200) {
+      const data = res.data
+      let url = ''
+      if (data instanceof Blob) url = URL.createObjectURL(data)
+      else if (data instanceof ArrayBuffer) url = URL.createObjectURL(new Blob([data]))
+      else if (data.type === 'Buffer' && Array.isArray(data.data)) {
+        const u8 = new Uint8Array(data.data)
+        url = URL.createObjectURL(new Blob([u8]))
+      } else if (data.content && typeof data.content === 'string') {
+        let rawStr = data.content
+        if (!rawStr.startsWith('data:')) {
+          let mime = 'image/png'
+          if (data.name) {
+            const ext = data.name.split('.').pop().toLowerCase()
+            if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
+          }
+          rawStr = `data:${mime};base64,${rawStr}`
+        }
+        url = dataURLtoBlobURL(rawStr)
+      } else if (typeof data === 'string') {
+        let dataUrl = data
+        if (data && !data.startsWith('data:')) {
+          const ext = path.split('.').pop().toLowerCase()
+          const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png'
+          dataUrl = `data:${mime};base64,${data}`
+        } else {
+          dataUrl = data
+        }
+        url = dataURLtoBlobURL(dataUrl)
+      }
+      screenshotUrlMap[path] = url
+    }
+  } catch (e) { console.error(e) }
+}
+
 // 返回列表视图
 const goBack = () => {
   showDetailDashboard.value = false
+  pause()
   detailList.value = []
 }
 
@@ -92,8 +371,16 @@ const getDuration = (item) => {
   return item.duration ? `${item.duration}ms` : '0.5s' // 占位
 }
 
+const onImgLoad = (e) => {
+  currentImgNaturalSize.value = { w: e.target.naturalWidth, h: e.target.naturalHeight }
+}
+
 onMounted(() => {
   fetchData()
+})
+
+onUnmounted(() => {
+  pause()
 })
 </script>
 
@@ -171,22 +458,47 @@ onMounted(() => {
         </div>
 
         <div class="panel-center">
+          <!-- 播放控制栏 -->
+          <div class="timeline-controls">
+            <el-button circle :icon="isPlaying ? VideoPause : VideoPlay" @click="togglePlay" type="primary" plain />
+            <div class="progress-container">
+              <el-slider
+                v-model="activeStepIndex"
+                :max="Math.max(0, detailList.length - 1)"
+                :format-tooltip="(val) => `Step ${val + 1}`"
+                @change="pause"
+              />
+            </div>
+            <div class="time-label">{{ currentProgressTime }} / {{ totalDurationTime }}</div>
+          </div>
+
           <div class="filmstrip-bar">
-            <div class="film-frame" v-for="i in 5" :key="i">
-              <div class="frame-time">{{ i * 2 }}s</div>
-              <div class="frame-img-placeholder"></div>
+            <div class="film-frame"
+                 v-for="(item, i) in filmstripItems"
+                 :key="i"
+                 :class="{ active: activeStepIndex === item.index }"
+                 @click="activeStepIndex = item.index">
+              <div class="frame-img-placeholder">
+                 <img v-if="screenshotUrlMap[item.path]" :src="screenshotUrlMap[item.path]" class="thumb-img" />
+                 <div v-else class="img-loading-skeleton"></div>
+              </div>
+              <div class="frame-time">{{ new Date(item.step.timestamp).toLocaleTimeString([], {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'}) }}</div>
             </div>
           </div>
 
           <div class="canvas-area">
             <div class="device-mockup">
-              <div class="device-header">19:03 <el-icon><Connection /></el-icon></div>
               <div class="screen-content">
-                <el-empty description="No Screenshot" :image-size="100" />
-
-                <div v-if="currentStepData.center || currentStepData.bbox" class="highlight-box" style="left: 50%; top: 40%;">
-                  <div class="pointer-cursor"></div>
+                <div v-if="currentScreenshotUrl" class="img-wrapper">
+                   <img :src="currentScreenshotUrl" @load="onImgLoad" class="main-screenshot" />
+                   <div v-if="highlightStyle.display !== 'none'" class="highlight-box" :style="highlightStyle"></div>
+                   <div v-if="arrowStyle.display !== 'none'" :style="arrowStyle">
+                     <svg viewBox="0 0 24 24" width="32" height="32" fill="#F56C6C" style="display: block; transform: translate(-3px, -2px);">
+                       <path d="M5.5 3.5l12 12-5.5 1.5 3.5 6-2.5 1.5-3.5-6-4 4z"></path>
+                     </svg>
+                   </div>
                 </div>
+                <el-empty v-else description="No Screenshot" :image-size="100" />
               </div>
             </div>
           </div>
@@ -312,25 +624,61 @@ onMounted(() => {
   flex-direction: column;
   position: relative;
 }
-.filmstrip-bar {
-  height: 80px;
+.timeline-controls {
+  padding: 10px 20px;
   background: #fff;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid #ebeef5;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+.progress-container { flex: 1; padding: 0 10px; }
+.time-label {
+  font-size: 12px; color: #909399; font-family: monospace; min-width: 80px; text-align: right;
+}
+.filmstrip-bar {
+  height: 130px;
+  background: #ffffff;
+  border-bottom: 1px solid #ebeef5;
   display: flex;
   align-items: center;
   overflow-x: auto;
-  padding: 0 10px;
-  gap: 10px;
+  padding: 0 16px;
+  gap: 16px;
 }
+/* 隐藏滚动条 */
+.filmstrip-bar::-webkit-scrollbar { height: 6px; }
+.filmstrip-bar::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+
 .film-frame {
   flex-shrink: 0;
-  width: 50px;
-  text-align: center;
+  width: 140px;
+  height: 90px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #f2f3f5;
+  position: relative;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
 }
-.frame-time { font-size: 10px; color: #999; margin-bottom: 4px; }
+.film-frame:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+.film-frame.active {
+  border-color: #409EFF;
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
+}
+
+.frame-time {
+  position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; padding: 2px 6px; text-align: right; z-index: 2;
+}
 .frame-img-placeholder {
-  width: 40px; height: 60px; background: #ddd; margin: 0 auto; border-radius: 2px;
+  width: 100%; height: 60px; background: #ddd; margin: 0 auto; border-radius: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
+.thumb-img { width: 100%; height: 100%; object-fit: cover; }
+
 .canvas-area {
   flex: 1;
   display: flex;
@@ -340,34 +688,33 @@ onMounted(() => {
   overflow: hidden;
 }
 .device-mockup {
-  width: 320px;
-  height: 600px;
-  background: #fff;
-  border-radius: 20px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-  border: 8px solid #333;
+  width: auto;
+  height: 100%;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
-}
-.device-header {
-  height: 24px; background: #fff; font-size: 10px; display: flex; justify-content: space-between; padding: 0 10px; align-items: center;
+  align-items: center;
+  justify-content: center;
 }
 .screen-content {
-  flex: 1;
-  position: relative;
-  background: #fafafa;
+  height: auto;
+  max-height: 100%;
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+  overflow: hidden;
+  background: #fff;
   display: flex; align-items: center; justify-content: center;
 }
-/* 模拟点击的绿框 */
+.img-wrapper { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.main-screenshot { max-width: 100%; max-height: 100%; display: block; }
 .highlight-box {
-  position: absolute;
-  width: 20px; height: 20px;
-  border: 2px solid #67C23A;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(103, 194, 58, 0.2);
+  /* style computed */
 }
 
 /* === 右侧面板 (Info) === */
@@ -405,4 +752,12 @@ onMounted(() => {
 .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .meta-item { display: flex; flex-direction: column; font-size: 12px; }
 .meta-item strong { margin-top: 4px; font-size: 13px; color: #333; }
+
+.img-loading-skeleton {
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: loading 1.5s infinite;
+}
+@keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 </style>

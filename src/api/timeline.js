@@ -133,3 +133,37 @@ export function getTimelineDetail(runId) {
     })
   })
 }
+
+export function getTimelineFile(path) {
+  if (!path) return Promise.reject(new Error('Path is required'))
+
+  return connect().then(socket => {
+    return new Promise((resolve, reject) => {
+      const req_id = Date.now().toString() + Math.random().toString(36).substr(2, 9)
+      
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(req_id)) {
+          pendingRequests.delete(req_id)
+          reject(new Error('Request timeout (10s)'))
+        }
+      }, 10000)
+
+      pendingRequests.set(req_id, { resolve, reject, timeout })
+      
+      try {
+        socket.send(JSON.stringify({
+          action: 'get_file', 
+          req_id,
+          data: {
+            req_id,
+            name: path
+          }
+        }))
+      } catch (e) {
+        clearTimeout(timeout)
+        pendingRequests.delete(req_id)
+        reject(e)
+      }
+    })
+  })
+}
