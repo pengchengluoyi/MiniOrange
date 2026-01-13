@@ -1,6 +1,6 @@
 <script setup>
 import {ref, onMounted, onUnmounted, reactive, computed} from 'vue'
-import {initWebSocket, addMessageListener, removeMessageListener} from '@/api/mWebSocket'
+import {initWebSocket, addMessageListener, removeMessageListener, sendWsRequest, getConnectedUrl} from '@/api/mWebSocket'
 import {setDevicePassword, getDeviceList, sendCommand} from '@/api/device'
 import QRCode from 'qrcode'
 import {getWsUrl, LOCAL_HOST} from '@/utils/config'
@@ -146,7 +146,7 @@ const submitCommand = () => {
 // 显示添加设备弹窗
 const showAddDeviceDialog = async () => {
   // 动态获取当前使用的 WS 地址
-  const address = getWsUrl()
+  const address = getConnectedUrl()
 
   serverAddress.value = address
   // 简单判断是否是 localhost
@@ -219,15 +219,14 @@ const openFileBrowser = (mode) => {
 
 const fetchFileList = (sn, path) => {
   browserLoading.value = true
-  // 发送指令获取文件列表
-  // 注意：这里假设后端/客户端已实现 list_dir 指令并会通过 WebSocket 返回 dir_list 消息
-  sendCommand({
+  browserFiles.value = []
+  // 发送请求，但不等待 Promise 结果（因为后端返回的 dir_list 消息不带 req_id，无法匹配 Promise）
+  sendWsRequest('list_dir', {
     sn: sn,
-    command: 'list_dir',
-    params: {path}
-  }).catch(e => {
-    browserLoading.value = false
-    ElMessage.error('获取文件列表失败: ' + e.message)
+    target_sn: sn,
+    path: path
+  }).catch(() => {
+    // 忽略超时错误，数据通过 handleWsMessage 接收
   })
 }
 
@@ -261,6 +260,11 @@ const goUpDir = () => {
   } else {
     browserPath.value = p.substring(0, lastSep) || '/'
   }
+  fetchFileList(browserContext.sn, browserPath.value)
+}
+
+const handlePathEnter = () => {
+  if (!browserPath.value) return
   fetchFileList(browserContext.sn, browserPath.value)
 }
 
@@ -366,7 +370,6 @@ const handleWsMessage = (res) => {
     }
   } else if (action === 'dir_list') {
     // 处理文件列表返回
-    // data: { sn: '...', path: '...', files: [{name, is_dir, size, time}, ...] }
     browserFiles.value = data.files || []
     if (data.path) browserPath.value = data.path
     browserLoading.value = false
@@ -641,7 +644,7 @@ onUnmounted(() => {
     >
       <div class="browser-header">
         <el-button :icon="Back" circle size="small" @click="goUpDir" :disabled="!browserPath || browserPath === '/'"/>
-        <el-input v-model="browserPath" size="small" readonly style="flex: 1"/>
+        <el-input v-model="browserPath" size="small" style="flex: 1" @keyup.enter="handlePathEnter" placeholder="输入路径按回车跳转" />
         <el-button type="primary" size="small" v-if="browserContext.mode === 'target'" @click="confirmSelection">
           选择当前目录
         </el-button>

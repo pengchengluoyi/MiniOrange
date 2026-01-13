@@ -7,11 +7,14 @@ const pendingRequests = new Map()
 let reconnectTimer = null
 const messageListeners = new Set() // 🔥 Listeners for push messages
 let isInitializing = false
+let currentConnectedUrl = '' // 🔥 保存实际连接成功的 URL
 
-const checkUrl = async (url) => {
+export const getConnectedUrl = () => currentConnectedUrl || getWsUrl()
+
+const checkUrl = async (url, timeout = 3000) => {
     try {
         const controller = new AbortController()
-        const id = setTimeout(() => controller.abort(), 3000) // 🔥 增加超时时间
+        const id = setTimeout(() => controller.abort(), timeout) // 🔥 增加超时时间
         
         // 🔥 修复：构造探测 URL
         let httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://')
@@ -33,12 +36,14 @@ export const initWebSocket = async () => {
     try {
         let url = getWsUrl()
         // 自动探测：如果默认是本地，尝试探测 miniorange.local
-        if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1') && !await checkUrl(url)) {
-             console.log('[WS] Local 127.0.0.1 not reachable, probing miniorange.local...')
-             const remote = url.replace('127.0.0.1', 'miniorange.local')
-             if (await checkUrl(remote)) url = remote
+        // 🔥 增加 localhost 判断，并延长超时时间到 5s
+        if (!import.meta.env.VITE_WS_URL && (url.includes('127.0.0.1') || url.includes('localhost')) && !await checkUrl(url)) {
+             console.log('[WS] Local not reachable, probing miniorange.local...')
+             const remote = url.replace(/127\.0\.0\.1|localhost/g, 'miniorange.local')
+             if (await checkUrl(remote, 5000)) url = remote
         }
         
+        currentConnectedUrl = url
         console.log('[WS] Connecting to:', url)
         ws = new WebSocket(url)
 
@@ -87,7 +92,7 @@ export const initWebSocket = async () => {
                     clearTimeout(timer)
                     pendingRequests.delete(res.req_id)
 
-                    if (res.code === 200) {
+                    if (res.code === 200 || res.code === undefined) {
                         resolve(res)
                     } else {
                         reject(res)
@@ -104,7 +109,7 @@ export const initWebSocket = async () => {
     }
 }
 
-export const sendWsRequest = (action, data = {}) => {
+export const sendWsRequest = (action, data = {}, rootLevel = false) => {
     return new Promise((resolve, reject) => {
         // 🔥 Helper to execute send
         const executeSend = () => {
@@ -125,11 +130,16 @@ export const sendWsRequest = (action, data = {}) => {
                 payloadData = {value: data}
             }
 
-            ws.send(JSON.stringify({
+            const payload = {
                 action,
-                req_id,
-                data: payloadData
-            }))
+                req_id
+            }
+            if (rootLevel) {
+                Object.assign(payload, payloadData)
+            } else {
+                payload.data = payloadData
+            }
+            ws.send(JSON.stringify(payload))
         }
 
         // 🔥 Check connection and wait if necessary
@@ -162,7 +172,7 @@ export const wsUploadFile = (filename, content) => {
 }
 
 export const wsGetFile = (path) => {
-    // 🔥 修复：get_file 动作，服务端期望 data 中包含 path
+    // 🔥 修复：get_file 动作，服务端期望 data 中包含 name
     return sendWsRequest('get_file', {name: path})
 }
 
@@ -170,8 +180,24 @@ export const wsWorkflowRun = (workflow_id, sn) => {
     return sendWsRequest('run_workflow', {flow_id: workflow_id, sn: sn})
 }
 
+export const wsGetTimelineList = (params) => {
+    return sendWsRequest('get_timeline_list', params)
+}
+
+export const wsGetTimelineDetail = (runId) => {
+    return sendWsRequest('get_timeline', { run_id: String(runId) })
+}
+
 export const addMessageListener = (fn) => messageListeners.add(fn)
 export const removeMessageListener = (fn) => messageListeners.delete(fn)
+
+export const send = (data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data))
+    } else {
+        console.warn('[WS] Not connected, cannot send message')
+    }
+}
 
 export default {
     initWebSocket,
@@ -179,6 +205,10 @@ export default {
     wsUploadFile,
     wsGetFile,
     wsWorkflowRun,
+    wsGetTimelineList,
+    wsGetTimelineDetail,
     addMessageListener,
-    removeMessageListener
+    removeMessageListener,
+    send,
+    getConnectedUrl
 }

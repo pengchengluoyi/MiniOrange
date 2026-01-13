@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
 import { ElMessage, ElCard, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElIcon, ElEmpty, vLoading, ElSlider } from 'element-plus'
 import { Refresh, Back, Check, VideoPlay, VideoPause, Aim, Mouse, Reading, Close, Connection } from '@element-plus/icons-vue'
-import { getTimelineList, getTimelineDetail, getTimelineFile } from '@/api/timeline'
+import { initWebSocket, wsGetFile, wsGetTimelineList, wsGetTimelineDetail } from '@/api/mWebSocket'
 
 // ================== 列表页状态 ==================
 const loading = ref(false)
@@ -19,6 +19,39 @@ const screenshotUrlMap = reactive({}) // path -> url
 const currentImgNaturalSize = ref({ w: 0, h: 0 })
 const isPlaying = ref(false)
 let playTimer = null
+const pendingScreenshots = new Set() // 🔥 防止重复请求
+let imageObserver = null // 🔥 懒加载观察器
+
+// ================== 布局调整 ==================
+const leftPanelWidth = ref(300)
+const rightPanelWidth = ref(350)
+
+const startResize = (side, e) => {
+  const startX = e.clientX
+  const startWidth = side === 'left' ? leftPanelWidth.value : rightPanelWidth.value
+
+  const onMouseMove = (ev) => {
+    const diff = ev.clientX - startX
+    if (side === 'left') {
+      leftPanelWidth.value = Math.max(200, Math.min(600, startWidth + diff))
+    } else {
+      // 右侧面板：向左拖动(diff负数)增加宽度
+      rightPanelWidth.value = Math.max(250, Math.min(600, startWidth - diff))
+    }
+  }
+
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+}
 
 // 当前选中的步骤数据
 const currentStep = computed(() => {
@@ -238,7 +271,7 @@ const totalDurationTime = computed(() => formatTime(endTime.value - startTime.va
 const fetchData = async () => {
   loading.value = true
   try {
-    const res = await getTimelineList({ page: pagination.page, page_size: pagination.pageSize })
+    const res = await wsGetTimelineList({ page: pagination.page, page_size: pagination.pageSize })
     if (res.code === 200) {
       tableData.value = res.data.list
       pagination.total = res.data.total
@@ -259,18 +292,13 @@ const handleDetail = async (row) => {
   activeStepIndex.value = 0
 
   try {
-    const res = await getTimelineDetail(row.run_id)
+    const res = await wsGetTimelineDetail(row.run_id)
     if (res.code === 200) {
       detailList.value = res.data
       // 默认选中第一个
       if (detailList.value.length > 0) activeStepIndex.value = 0
 
       pause() // 重置播放状态
-      // 预加载截图
-      detailList.value.forEach(step => {
-        const d = parseStepData(step.data)
-        if (d && d.screenshot) loadScreenshot(d.screenshot)
-      })
     }
   } catch (e) {
     ElMessage.error('获取详情失败')
@@ -302,6 +330,7 @@ const loadScreenshot = async (rawPath) => {
   const path = getScreenshotPath(rawPath)
   if (!path) return
   if (screenshotUrlMap[path]) return
+  if (pendingScreenshots.has(path)) return // 🔥 如果正在加载中，跳过
 
   // 如果已经是 base64 或 http 链接，直接使用
   if (path.startsWith('data:') || path.startsWith('http')) {
@@ -313,8 +342,9 @@ const loadScreenshot = async (rawPath) => {
     return
   }
 
+  pendingScreenshots.add(path)
   try {
-    const res = await getTimelineFile(path)
+    const res = await wsGetFile(path)
     if (res.code === 200) {
       const data = res.data
       let url = ''
@@ -347,7 +377,9 @@ const loadScreenshot = async (rawPath) => {
       }
       screenshotUrlMap[path] = url
     }
-  } catch (e) { console.error(e) }
+  } catch (e) { console.error(e) } finally {
+    pendingScreenshots.delete(path)
+  }
 }
 
 // 返回列表视图
@@ -375,12 +407,40 @@ const onImgLoad = (e) => {
   currentImgNaturalSize.value = { w: e.target.naturalWidth, h: e.target.naturalHeight }
 }
 
+// 🔥 懒加载观察逻辑
+const observeItem = (el, path) => {
+  if (el && path && !screenshotUrlMap[path]) {
+    el.dataset.path = path
+    if (imageObserver) imageObserver.observe(el)
+  }
+}
+
 onMounted(() => {
+  initWebSocket()
   fetchData()
+
+  // 🔥 初始化 IntersectionObserver
+  imageObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const path = entry.target.dataset.path
+        if (path) {
+          loadScreenshot(path)
+          imageObserver.unobserve(entry.target)
+        }
+      }
+    })
+  }, {
+    rootMargin: '0px 200px 0px 200px' // 水平方向提前 200px 加载
+  })
 })
 
 onUnmounted(() => {
   pause()
+  if (imageObserver) {
+    imageObserver.disconnect()
+    imageObserver = null
+  }
 })
 </script>
 
@@ -432,7 +492,7 @@ onUnmounted(() => {
 
       <div class="dashboard-body">
 
-        <div class="panel-left">
+        <div class="panel-left" :style="{ width: leftPanelWidth + 'px' }">
           <div class="panel-title">Execution Steps</div>
           <div class="steps-scroll-area">
             <div
@@ -457,6 +517,9 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- 左侧拖拽条 -->
+        <div class="resizer" @mousedown="startResize('left', $event)"></div>
+
         <div class="panel-center">
           <!-- 播放控制栏 -->
           <div class="timeline-controls">
@@ -476,6 +539,7 @@ onUnmounted(() => {
             <div class="film-frame"
                  v-for="(item, i) in filmstripItems"
                  :key="i"
+                 :ref="(el) => observeItem(el, item.path)"
                  :class="{ active: activeStepIndex === item.index }"
                  @click="activeStepIndex = item.index">
               <div class="frame-img-placeholder">
@@ -504,7 +568,10 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="panel-right">
+        <!-- 右侧拖拽条 -->
+        <div class="resizer" @mousedown="startResize('right', $event)"></div>
+
+        <div class="panel-right" :style="{ width: rightPanelWidth + 'px' }">
           <div class="panel-title">Information</div>
 
           <div v-if="currentStep" class="info-content">
@@ -581,11 +648,10 @@ onUnmounted(() => {
 
 /* === 左侧面板 (Steps) === */
 .panel-left {
-  width: 300px;
-  border-right: 1px solid #e0e0e0;
   display: flex;
   flex-direction: column;
   background: #fff;
+  flex-shrink: 0; /* 防止被压缩 */
 }
 .panel-title {
   padding: 15px;
@@ -615,6 +681,18 @@ onUnmounted(() => {
 .step-content { flex: 1; }
 .step-type { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
 .step-time { font-size: 12px; color: #999; }
+
+/* 拖拽条 */
+.resizer {
+  width: 5px;
+  background: #f0f2f5;
+  cursor: col-resize;
+  z-index: 10;
+  transition: background 0.2s;
+  border-left: 1px solid #e0e0e0;
+  border-right: 1px solid #e0e0e0;
+}
+.resizer:hover { background: #409EFF; border-color: #409EFF; }
 
 /* === 中间面板 (Visual) === */
 .panel-center {
@@ -677,7 +755,7 @@ onUnmounted(() => {
 .frame-img-placeholder {
   width: 100%; height: 60px; background: #ddd; margin: 0 auto; border-radius: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
-.thumb-img { width: 100%; height: 100%; object-fit: cover; }
+.thumb-img { width: 100%; height: 100%; object-fit: contain; }
 
 .canvas-area {
   flex: 1;
@@ -719,11 +797,10 @@ onUnmounted(() => {
 
 /* === 右侧面板 (Info) === */
 .panel-right {
-  width: 350px;
-  border-left: 1px solid #e0e0e0;
   background: #fff;
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
 }
 .info-content {
   padding: 20px;

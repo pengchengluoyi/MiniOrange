@@ -114,8 +114,9 @@ const loadScreenshot = async () => {
     return
   }
 
-  let finalSrc = src
+  let finalSrc = '' // 🔥 修复：默认为空，防止 wsGetFile 失败后回退到本地路径导致 ERR_UNKNOWN_URL_SCHEME
   if (src.startsWith('data:image') || src.startsWith('http')) {
+    finalSrc = src
     if (src.startsWith('data:image')) finalSrc = dataURLtoBlobURL(src)
   } else {
     try {
