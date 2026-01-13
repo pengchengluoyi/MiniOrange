@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Plus } from '@element-plus/icons-vue'
 import {
   ElMessage,
@@ -15,16 +16,26 @@ import {
   ElFormItem,
   ElInput,
   ElSelect,
+  ElOption,
   vLoading
 } from 'element-plus'
 import { getScheduleList, createSchedule, updateSchedule, deleteSchedule, getScheduleHistory } from '@/api/schedule'
+import { getDeviceList } from '@/api/device'
+import { getProjects, getAppGraphList, getAppGraphDetail } from '@/api/workReport'
 
+const router = useRouter()
 const loading = ref(false)
 const tableData = ref([])
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const submitting = ref(false)
 const formRef = ref(null)
+
+// Options state
+const deviceOptions = ref([])
+const appOptions = ref([])
+const flowOptions = ref([])
+const flowLoading = ref(false)
 
 // History state
 const historyDialogVisible = ref(false)
@@ -65,6 +76,70 @@ const fetchData = async () => {
   }
 }
 
+const fetchDevices = async () => {
+  try {
+    const res = await getDeviceList()
+    const list = Array.isArray(res) ? res : (res.data || [])
+    if (res.code === 200 || Array.isArray(res)) {
+      deviceOptions.value = list.map(d => ({
+        label: `${d.sn} ${d.model ? `(${d.model})` : ''}`,
+        value: d.sn,
+        sn: d.sn,
+        model: d.model,
+        status: d.status
+      }))
+    }
+  } catch (e) { console.error(e) }
+}
+
+const fetchApps = async () => {
+  try {
+    const res = await getProjects()
+    // 兼容直接返回数组的情况
+    const projects = Array.isArray(res) ? res : (res.data || [])
+    const list = []
+    projects.forEach(p => {
+      if (p.apps) {
+        p.apps.forEach(a => {
+          list.push({
+            label: `${p.name} / ${a.name}`,
+            value: String(a.id),
+            projectName: p.name,
+            appName: a.name
+          })
+        })
+      }
+    })
+    appOptions.value = list
+  } catch (e) { console.error(e) }
+}
+
+const fetchFlows = async (appId) => {
+  flowOptions.value = []
+  if (!appId) return
+  flowLoading.value = true
+  try {
+    const res = await getAppGraphList(appId)
+    const graphs = Array.isArray(res) ? res : (res.data || [])
+    if (graphs.length > 0) {
+      const graphId = graphs[0].id
+      const detail = await getAppGraphDetail(graphId)
+      const detailData = detail.data || detail
+      if (detailData && detailData.nodes) {
+        flowOptions.value = detailData.nodes
+          .filter(n => n.type === 'case' && n.data?.workflow_id)
+          .map(n => ({
+            label: `${n.label || n.data.label} (ID: ${n.data.workflow_id})`,
+            value: String(n.data.workflow_id),
+            caseName: n.label || n.data.label,
+            workflowId: String(n.data.workflow_id)
+          }))
+      }
+    }
+  } catch (e) { console.error(e) }
+  finally { flowLoading.value = false }
+}
+
 const handleCreate = () => {
   isEdit.value = false
   resetForm()
@@ -83,6 +158,10 @@ const handleEdit = (row) => {
     is_active: row.is_active,
     skip_nodes: row.skip_nodes || []
   })
+  // 加载关联的流程选项
+  if (row.app_id) {
+    fetchFlows(row.app_id)
+  }
   dialogVisible.value = true
 }
 
@@ -179,8 +258,15 @@ const resetForm = () => {
   if (formRef.value) formRef.value.resetFields()
 }
 
+const handleAppChange = (val) => {
+  formData.flow_id = ''
+  fetchFlows(val)
+}
+
 onMounted(() => {
   fetchData()
+  fetchDevices()
+  fetchApps()
 })
 </script>
 
@@ -245,17 +331,41 @@ onMounted(() => {
           <el-input v-model="formData.name" placeholder="请输入任务名称" />
         </el-form-item>
         <el-form-item label="App ID" prop="app_id">
-          <el-input v-model="formData.app_id" placeholder="关联的应用ID (可选)" />
+          <el-select v-model="formData.app_id" placeholder="关联的应用 (可选)" clearable filterable style="width: 100%" @change="handleAppChange">
+            <el-option v-for="item in appOptions" :key="item.value" :label="item.label" :value="item.value">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span>{{ item.appName }}</span>
+                <span style="color: var(--el-text-color-secondary); font-size: 13px;">{{ item.projectName }}</span>
+              </div>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="Cron表达式" prop="cron_expression">
           <el-input v-model="formData.cron_expression" placeholder="分 时 日 月 周 (例如: 0 12 * * *)" />
           <div class="form-tip">格式: 分 时 日 月 周 (空格分隔)</div>
         </el-form-item>
         <el-form-item label="流程ID" prop="flow_id">
-          <el-input v-model="formData.flow_id" placeholder="请输入关联的流程ID" />
+          <el-select v-model="formData.flow_id" placeholder="选择关联的测试用例" clearable filterable :loading="flowLoading" style="width: 100%">
+            <el-option v-for="item in flowOptions" :key="item.value" :label="item.label" :value="item.value">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span>{{ item.caseName }}</span>
+                <span style="color: var(--el-text-color-secondary); font-size: 12px; font-family: monospace;">ID: {{ item.workflowId }}</span>
+              </div>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="设备SN" prop="target_sn">
-          <el-input v-model="formData.target_sn" placeholder="指定运行设备SN (留空则不限制)" />
+          <el-select v-model="formData.target_sn" placeholder="指定运行设备 (留空则不限制)" clearable style="width: 100%">
+            <el-option v-for="item in deviceOptions" :key="item.value" :label="item.label" :value="item.value">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <div>
+                  <span style="font-family: monospace;">{{ item.sn }}</span>
+                  <span v-if="item.model" style="color: #909399; font-size: 12px; margin-left: 8px;">({{ item.model }})</span>
+                </div>
+                <el-tag :type="item.status === 'online' ? 'success' : 'info'" size="small" effect="light">{{ item.status === 'online' ? '在线' : '离线' }}</el-tag>
+              </div>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="跳过节点" prop="skip_nodes">
            <el-select
@@ -294,7 +404,11 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="details" label="详情" show-overflow-tooltip />
-        <el-table-column prop="run_id" label="Run ID" width="120" show-overflow-tooltip />
+        <el-table-column prop="run_id" label="Run ID" width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-button link type="primary" @click="router.push({ name: 'Timeline', query: { runId: row.run_id } })">{{ row.run_id }}</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <template #footer>
         <el-button @click="historyDialogVisible = false">关闭</el-button>
