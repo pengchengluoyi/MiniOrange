@@ -1,7 +1,7 @@
 <script setup>
 import {ref, onMounted, onUnmounted, reactive, computed} from 'vue'
-import {initWebSocket, addMessageListener, removeMessageListener, sendWsRequest} from '@/api/mWebSocket'
-import {setDevicePassword, getDeviceList} from '@/api/device'
+import {initWebSocket, addMessageListener, removeMessageListener} from '@/api/mWebSocket'
+import {setDevicePassword, getDeviceList, sendCommand} from '@/api/device'
 import QRCode from 'qrcode'
 import {getWsUrl, LOCAL_HOST} from '@/utils/config'
 import {
@@ -133,11 +133,11 @@ const submitCommand = () => {
     return
   }
 
-  sendWsRequest('send_command_to_device', {
+  sendCommand({
     sn: currentDevice.value.sn,
     command: commandForm.command,
     params: params
-  })
+  }).catch(e => ElMessage.error(e.message))
 
   ElMessage.info('指令已发送')
   dialogVisible.value = false
@@ -221,10 +221,13 @@ const fetchFileList = (sn, path) => {
   browserLoading.value = true
   // 发送指令获取文件列表
   // 注意：这里假设后端/客户端已实现 list_dir 指令并会通过 WebSocket 返回 dir_list 消息
-  sendWsRequest('send_command_to_device', {
+  sendCommand({
     sn: sn,
     command: 'list_dir',
     params: {path}
+  }).catch(e => {
+    browserLoading.value = false
+    ElMessage.error('获取文件列表失败: ' + e.message)
   })
 }
 
@@ -286,7 +289,7 @@ const startTransfer = async () => {
     // 这里我们先发送指令，进度更新时会自动添加到列表（如果 ID 不匹配）。
     // 但为了 UX，我们先添加一个 "Pending" 状态的条目
 
-    await sendWsRequest('send_command_to_device', {
+    await sendCommand({
       sn: transferForm.source_sn,
       command: 'send_file',
       params: {
@@ -797,7 +800,7 @@ onUnmounted(() => {
  flex-direction: column;
  gap: 12px;
 }
-
+ 
 .browser-header { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .file-list { height: 300px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 4px; background: white; }
 .file-item { display: flex; align-items: center; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f1f5f9; transition: background 0.2s; }
