@@ -64,10 +64,17 @@ const parseStepData = (data) => {
   if (!data) return {}
   try {
     const res = typeof data === 'string' ? JSON.parse(data) : data
-    // 如果解析出来是字符串，或者原始数据就是字符串(catch块)，都视为截图路径
-    if (typeof res === 'string') return { screenshot: res, raw: res }
     return res || {}
-  } catch (e) { return { screenshot: data, raw: data } }
+  } catch (e) {
+    // 🔥 尝试修复 Python 风格的单引号 JSON 字符串
+    if (typeof data === 'string') {
+      try {
+        const fixed = data.replace(/'/g, '"').replace(/None/g, 'null').replace(/True/g, 'true').replace(/False/g, 'false')
+        return JSON.parse(fixed)
+      } catch (e2) {}
+    }
+    return data
+  }
 }
 
 // 解析当前步骤的 Data (JSON字符串 -> 对象)
@@ -78,7 +85,7 @@ const currentStepData = computed(() => {
 
 // 辅助：获取截图路径字符串
 const getScreenshotPath = (val) => {
-  if (!val) return ''
+  if (!val || val === 'None') return ''
   if (typeof val === 'string') return val
   if (typeof val === 'object') return val.path || val.url || ''
   return ''
@@ -87,27 +94,35 @@ const getScreenshotPath = (val) => {
 // 🔥 新增：过滤出仅包含截图的步骤用于顶部时间轴 (Midscene 风格)
 const filmstripItems = computed(() => {
   return detailList.value.map((step, index) => {
+    // 🔥 仅 screenshot 和 vision 类型才去获取截图
+    if (!['screenshot', 'vision'].includes(step.type)) return null
     const d = parseStepData(step.data)
-    const path = getScreenshotPath(d?.screenshot)
-    return { step, index, path }
-  }).filter(item => !!item.path)
+    // 兼容：如果 d 是字符串则直接作为路径，否则取 .screenshot
+    const path = getScreenshotPath(typeof d === 'string' ? d : d?.screenshot)
+    return path ? { step, index, path } : null
+  }).filter(item => item !== null)
 })
 
 const currentScreenshotUrl = computed(() => {
   // 1. 尝试获取当前步骤的截图
-  let data = currentStepData.value
-  let path = getScreenshotPath(data?.screenshot)
+  let path = ''
+  if (currentStep.value && ['screenshot', 'vision'].includes(currentStep.value.type)) {
+    let data = currentStepData.value
+    path = getScreenshotPath(typeof data === 'string' ? data : data?.screenshot)
+  }
 
   // 2. 如果当前步骤没有截图，则向前回溯寻找最近的截图 (Context)
   if (!path && detailList.value.length) {
     for (let i = activeStepIndex.value - 1; i >= 0; i--) {
       const step = detailList.value[i]
-      // 这里需要手动解析一下，因为 currentStepData 只针对 activeStepIndex
-      const d = parseStepData(step.data)
-      const p = getScreenshotPath(d?.screenshot)
-      if (p) {
-        path = p
-        break
+      // 🔥 回溯时也只看 screenshot/vision 类型
+      if (['screenshot', 'vision'].includes(step.type)) {
+        const d = parseStepData(step.data)
+        const p = getScreenshotPath(typeof d === 'string' ? d : d?.screenshot)
+        if (p) {
+          path = p
+          break
+        }
       }
     }
   }
@@ -144,6 +159,12 @@ const highlightStyle = computed(() => {
   // 4. 🔥 新增：支持直接的 [x, y] 数组 (常见于 click 自带 Data Detail)
   else if (Array.isArray(data) && data.length === 2) {
     [x, y] = data
+    w = 30; h = 30;
+    x -= w/2; y -= h/2;
+  }
+  // 5. 🔥 新增：支持 position [x, y] (gesture 类型常见)
+  else if (Array.isArray(data.position) && data.position.length === 2) {
+    [x, y] = data.position
     w = 30; h = 30;
     x -= w/2; y -= h/2;
   }
@@ -184,6 +205,8 @@ const arrowStyle = computed(() => {
     [x, y] = data
   } else if (Array.isArray(data.center) && data.center.length === 2) {
     [x, y] = data.center
+  } else if (Array.isArray(data.position) && data.position.length === 2) {
+    [x, y] = data.position
   } else if (typeof data.x === 'number' && typeof data.y === 'number') {
     x = data.x
     y = data.y
@@ -209,15 +232,16 @@ const arrowStyle = computed(() => {
 
 const getStepScreenshot = (step) => {
   const data = parseStepData(step.data)
-  const path = getScreenshotPath(data?.screenshot)
+  const path = getScreenshotPath(typeof data === 'string' ? data : data?.screenshot)
   return path ? screenshotUrlMap[path] : null
 }
 
 // 🔥 新增：监听当前步骤变化，如果截图未加载则立即请求
 watch(currentStep, (newStep) => {
-  if (newStep) {
+  if (newStep && ['screenshot', 'vision'].includes(newStep.type)) {
     const d = parseStepData(newStep.data)
-    if (d && d.screenshot) loadScreenshot(d.screenshot)
+    const path = typeof d === 'string' ? d : d?.screenshot
+    if (path) loadScreenshot(path)
   }
 })
 
@@ -730,7 +754,7 @@ onUnmounted(() => {
 
 .film-frame {
   flex-shrink: 0;
-  width: 140px;
+  width: auto;
   height: 90px;
   display: flex;
   flex-direction: column;
@@ -742,6 +766,7 @@ onUnmounted(() => {
   background: #f2f3f5;
   position: relative;
   box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  align-items: center;
 }
 .film-frame:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
 .film-frame.active {
@@ -750,12 +775,21 @@ onUnmounted(() => {
 }
 
 .frame-time {
-  position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; padding: 2px 6px; text-align: right; z-index: 2;
+  margin-top: auto;
+  width: 100%;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 10px;
+  padding: 2px 4px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .frame-img-placeholder {
-  width: 100%; height: 60px; background: #ddd; margin: 0 auto; border-radius: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  width: auto; height: 60px; margin: 0 auto; border-radius: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
-.thumb-img { width: 100%; height: 100%; object-fit: contain; }
+.thumb-img { width: auto; height: 100%; object-fit: contain; display: block; }
 
 .canvas-area {
   flex: 1;
@@ -831,7 +865,7 @@ onUnmounted(() => {
 .meta-item strong { margin-top: 4px; font-size: 13px; color: #333; }
 
 .img-loading-skeleton {
-  width: 100%; height: 100%;
+  width: 100px; height: 100%;
   background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
   background-size: 200% 100%;
   animation: loading 1.5s infinite;
