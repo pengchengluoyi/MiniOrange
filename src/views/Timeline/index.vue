@@ -725,6 +725,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   position: relative;
+  min-width: 0;
 }
 .timeline-controls {
   padding: 10px 20px;
