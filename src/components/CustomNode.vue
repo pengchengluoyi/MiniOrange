@@ -131,6 +131,19 @@ const props = defineProps(['id', 'data', 'label', 'selected'])
 const { findNode } = useVueFlow()
 const schemaDef = ref(null)
 
+const displayLabel = computed(() => props.label || props.data?.label || '未命名')
+
+// 获取节点 Code/Type (兼容 data 内和顶层属性)
+const getNodeInfo = () => {
+  const node = findNode(props.id)
+  // 优先取顶层属性(新版)，其次取 data 内属性(旧版/CaseEditor生成)
+  // 注意：props.data 是响应式的，findNode 获取的是 store 中的对象
+  return {
+    code: node?.nodeCode || props.data?.nodeCode || 'unknown',
+    type: node?.nodeType || props.data?.nodeType
+  }
+}
+
 onMounted(async () => {
   const allSchema = await scanComponentsApi()
 
@@ -139,10 +152,11 @@ onMounted(async () => {
   for (const groupKey in allSchema) {
     const group = allSchema[groupKey]
     const details = group.details || {}
+    const { code } = getNodeInfo()
 
     for (const key in details) {
       const item = details[key]
-      if (item.address === props.data.nodeCode) {
+      if (item.address === code) {
         // 注入分类样式信息 (颜色/图标)
         found = { ...item, categoryColor: group.desc?.color, categoryIcon: group.desc?.icon }
         break
@@ -153,9 +167,15 @@ onMounted(async () => {
   schemaDef.value = found
 })
 
-const isStartNode = computed(() => props.data.nodeCode === 'public/trigger')
-const isIfNode = computed(() => props.data.nodeCode === 'cfs/mIf' || props.data.nodeType === 'if')
-const isLoopNode = computed(() => props.data.nodeCode === 'cfs/mFor' || props.label === 'FOR循环')
+const isStartNode = computed(() => getNodeInfo().code === 'public/trigger')
+const isIfNode = computed(() => {
+  const { code, type } = getNodeInfo()
+  return code === 'cfs/mIf' || type === 'if'
+})
+const isLoopNode = computed(() => {
+  const { code } = getNodeInfo()
+  return code === 'cfs/mFor' || props.label === 'FOR循环'
+})
 
 const themeColor = computed(() => schemaDef.value?.categoryColor || '#6366f1')
 
@@ -169,12 +189,18 @@ const hexToRgba = (hex, alpha = 0.1) => {
 
 const finalIcon = computed(() => {
   const specificIconName = props.data.iconChar
+  const schemaIconName = schemaDef.value?.icon
   const categoryIconName = schemaDef.value?.categoryIcon
-  const defaultIcons = ['default_icon', 'puzzle', 'default', '', 'code']
-  if (defaultIcons.includes(specificIconName) && categoryIconName) {
-    return getIcon(categoryIconName)
-  }
-  return getIcon(specificIconName)
+  const defaultIcons = ['default_icon', 'puzzle', 'default', '', 'code', null, undefined]
+
+  // 1. Schema 定义优先 (修复 public/trigger 等系统节点图标不正确的问题)
+  if (schemaIconName) return getIcon(schemaIconName)
+
+  // 2. 实例数据优先 (恢复原有逻辑，确保大部分已有图标的节点正常显示)
+  if (specificIconName && !defaultIcons.includes(specificIconName)) return getIcon(specificIconName)
+
+  // 3. 分类图标兜底
+  return getIcon(categoryIconName || 'default')
 })
 
 const inputFields = computed(() => schemaDef.value?.inputs || [])
@@ -373,10 +399,10 @@ const getThumbStyle = (interaction) => {
   const url = screenshotCache.value[path]
 
   if (!url || !interaction || !interaction.w || !interaction.h) return { display: 'none' }
-  
+
   const naturalW = interaction?.naturalSize?.w || props.data.naturalSize?.w || 0
   const naturalH = interaction?.naturalSize?.h || props.data.naturalSize?.h || 0
-  
+
   if (!naturalW) return { display: 'none' }
 
   const boxW = 32, boxH = 32

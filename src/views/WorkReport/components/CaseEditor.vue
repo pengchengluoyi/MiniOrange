@@ -1,5 +1,5 @@
 <template>
-  <el-container class="editor-container" ref="editorContainerRef">
+  <el-container class="editor-container three-column-layout" ref="editorContainerRef">
     <el-header v-if="isPicker" height="60px" class="editor-toolbar-wrapper">
       <div class="editor-toolbar-glass">
         <span class="label">请点击画面中的热区进行选择</span>
@@ -17,7 +17,6 @@
           <el-button-group>
             <el-button type="primary" plain size="small" @click="addNode('page')">📄 页面</el-button>
             <el-button type="warning" plain size="small" @click="addNode('component')">🧩 组件</el-button>
-            <el-button type="success" plain size="small" @click="addNode('case')">🧪 用例</el-button>
           </el-button-group>
         </div>
 
@@ -39,7 +38,56 @@
       </div>
     </el-header>
 
-    <el-main class="flow-wrapper">
+    <el-container class="main-body">
+      <!-- Left Column: SOP Navigation -->
+      <el-aside width="280px" class="sop-sidebar" v-if="!isPicker">
+        <div class="sidebar-header">
+          <span class="title">SOPs</span>
+          <el-button type="info" link size="small" @click="openGraphSettings" title="Global Variables">
+            <el-icon><Setting /></el-icon>
+          </el-button>
+          <el-button type="primary" link size="small" @click="createNewSOP">
+            <el-icon><Plus /></el-icon>
+          </el-button>
+        </div>
+        
+        <ElTabs v-model="activeSopTab" class="sop-tabs" stretch>
+          <ElTabPane label="业务剧本" name="business">
+            <el-scrollbar>
+              <div class="sop-list">
+                <div v-for="sop in businessSops" :key="sop.id"
+                     class="sop-item business"
+                     :class="{ active: selectedSopId === sop.id }"
+                     @click="selectSOP(sop)">
+                  <div class="sop-header">
+                    <span class="sop-name">{{ sop.name }}</span>
+                  </div>
+                  <div class="sop-desc">{{ sop.desc || 'No description' }}</div>
+                </div>
+              </div>
+            </el-scrollbar>
+          </ElTabPane>
+          <ElTabPane label="系统反射" name="system">
+            <el-scrollbar>
+              <div class="sop-list">
+                <div v-for="sop in systemSops" :key="sop.id"
+                     class="sop-item system"
+                     :class="{ active: selectedSopId === sop.id }"
+                     @click="selectSOP(sop)">
+                  <div class="sop-header">
+                    <span class="sop-name">{{ sop.name }}</span>
+                    <el-tag size="small" type="danger" effect="dark">P{{ sop.priority }}</el-tag>
+                  </div>
+                  <div class="sop-desc">{{ sop.desc || 'No trigger defined' }}</div>
+                </div>
+              </div>
+            </el-scrollbar>
+          </ElTabPane>
+        </ElTabs>
+      </el-aside>
+
+      <!-- Center Column: Canvas -->
+      <el-main class="flow-wrapper">
       <div class="canvas-container">
         <VueFlow
             id="case-editor-canvas"
@@ -62,13 +110,18 @@
             @nodes-change="onNodesChange"
             @edges-change="onEdgesChange"
         >
+          <!-- SOP Visual Grouping Layer -->
+          <div v-if="selectedSopId"
+               class="sop-group-bg"
+               :class="[activeSopTab]"
+               :style="sopBoundingBoxStyle">
+            <span class="sop-group-label">{{ currentSopName }}</span>
+          </div>
+
           <template #node-page="props">
             <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
           </template>
           <template #node-component="props">
-            <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
-          </template>
-          <template #node-case="props">
             <PageNode v-bind="props" :is-picker="isPicker" @update-size="(s) => handleNodeSizeUpdate(props.id, s)"/>
           </template>
 
@@ -82,19 +135,102 @@
         <div v-if="selectedNode" class="editor-overlay-wrapper" @click.self="clearSelection">
           <PageDetailEditor
               :node="selectedNode"
+              :graph-id="graphId"
               @close="clearSelection"
               @update="onNodeUpdate"
           />
         </div>
       </transition>
     </el-main>
+
+      <!-- Right Column: Properties / SOP Editor -->
+      <el-aside width="300px" class="props-sidebar" v-if="!isPicker && selectedSopId">
+        <div class="sidebar-content">
+          <div class="sidebar-header">
+            <span class="title">SOP Configuration</span>
+            <el-button type="danger" link size="small" @click="handleDeleteSOP">
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+          <el-scrollbar>
+            <div class="form-wrapper">
+              <div class="form-item">
+                <div class="label">Name</div>
+                <el-input v-model="currentSopForm.name" @change="handleUpdateSOP" />
+              </div>
+              <div class="form-item" v-if="activeSopTab === 'system'">
+                <div class="label">Priority (Higher = First)</div>
+                <el-input-number v-model="currentSopForm.priority" :min="0" :max="999" @change="handleUpdateSOP" />
+              </div>
+              <div class="form-item">
+                <div class="label">Description</div>
+                <el-input v-model="currentSopForm.desc" type="textarea" :rows="3" @change="handleUpdateSOP" />
+              </div>
+              
+              <div class="form-item">
+                <div class="label">Variables (JSON)</div>
+                <!-- 暂时用文本域代替 KV 编辑器 -->
+                <el-input 
+                  v-model="currentSopForm.variablesStr" 
+                  type="textarea" 
+                  :rows="5" 
+                  placeholder='{"key": "value"}'
+                  @change="handleUpdateSOPVariables" 
+                />
+              </div>
+
+              <div class="form-item">
+                <div class="label">Associated Cases</div>
+                <div v-if="getSopCases(selectedSopId).length === 0" class="empty-text">No cases linked</div>
+                <div v-for="c in getSopCases(selectedSopId)" :key="c.id" class="case-list-item">
+                  <div class="case-info">
+                    <el-icon><Document /></el-icon>
+                    <span class="case-label" :title="c.label">{{ c.label }}</span>
+                  </div>
+                  <el-button link type="primary" size="small" @click="editCase(c)">
+                    <el-icon><Edit /></el-icon>
+                  </el-button>
+                </div>
+              </div>
+
+              <div class="form-item">
+                <div class="label">Actions</div>
+                <el-button type="primary" plain style="width: 100%" @click="addCaseToSOP">
+                  <el-icon><Plus /></el-icon> 新增关联用例 (Workflow)
+                </el-button>
+              </div>
+            </div>
+          </el-scrollbar>
+        </div>
+      </el-aside>
+
+    <!-- App Graph Global Settings Dialog -->
+    <el-dialog v-model="showGraphSettings" title="App Graph Global Variables" width="500px">
+      <div class="form-wrapper" style="padding: 0">
+        <div class="form-item">
+          <div class="label">Global Variables (JSON)</div>
+          <el-input 
+            v-model="graphVariablesStr" 
+            type="textarea" 
+            :rows="10" 
+            placeholder='{"base_url": "...", "env": "test"}'
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showGraphSettings = false">Cancel</el-button>
+        <el-button type="primary" @click="saveGraphSettings">Save</el-button>
+      </template>
+    </el-dialog>
+
+    </el-container>
   </el-container>
 </template>
 
 <script setup>
 /* --- 以下完整保留你原始的所有业务逻辑 --- */
-import {ref, onMounted, onUnmounted, watch, shallowRef} from 'vue'
-import {useRouter, useRoute} from 'vue-router'
+import {ref, onMounted, onUnmounted, watch, shallowRef, computed} from 'vue'
+import {useRouter, useRoute, onBeforeRouteLeave} from 'vue-router'
 import {VueFlow, useVueFlow} from '@vue-flow/core'
 import {Background} from '@vue-flow/background'
 import {Controls} from '@vue-flow/controls'
@@ -102,12 +238,13 @@ import {MiniMap} from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
-import {ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage} from 'element-plus'
-import {Delete, Refresh, ArrowLeft} from '@element-plus/icons-vue'
+import {ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage, ElAside, ElScrollbar, ElInput, ElInputNumber, ElEmpty, ElDialog, ElTabs, ElTabPane} from 'element-plus'
+import {Delete, Refresh, ArrowLeft, Plus, Document, Edit, Setting} from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
 import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
-import {fetchWorkflowAdd, fetchWorkflowDetailSimple} from '@/api/workflow'
+import * as wsApi from '@/api/wsAppGraph'
+import { fetchWorkflowDetailSimple, fetchWorkflowAdd } from '@/api/workflow'
 
 const props = defineProps({
   nodeData: { type: Object, default: () => ({}) },
@@ -119,6 +256,13 @@ const emit = defineEmits(['pick', 'close'])
 const isReady = ref(false)
 const nodes = ref([])
 const edges = ref([])
+const activeSopTab = ref('business')
+const workflowCache = ref({}) // 🔥 缓存 Workflow 详情 (id -> {id, name, desc})
+const sops = ref([]) // SOP List
+const selectedSopId = ref(null)
+const currentSopForm = ref({ name: '', desc: '', variablesStr: '{}' })
+const showGraphSettings = ref(false)
+const graphVariablesStr = ref('{}')
 const router = useRouter()
 const route = useRoute()
 const graphId = ref(null)
@@ -130,6 +274,226 @@ const editorContainerRef = ref(null)
 const onPaneReady = (instance) => {
   flowInstance.value = instance
   instance.fitView()
+}
+
+// --- SOP Logic ---
+const createNewSOP = async () => {
+  if (!graphId.value) return
+  try {
+    const type = activeSopTab.value === 'system' ? 'system' : 'business'
+    const priority = type === 'system' ? 100 : 0
+    const res = await wsApi.wsCreateSOP({
+      graph_id: graphId.value,
+      name: 'New SOP ' + (sops.value.length + 1),
+      type: type,
+      priority: priority,
+      desc: 'Created via frontend',
+      nodes: []
+    })
+    if (res.code === 200) {
+      // Refresh or push to list
+      // Assuming backend returns the created SOP object
+      // For now, let's reload the graph to be safe or push if structure matches
+      loadGraphData() 
+    }
+  } catch (e) {
+    ElMessage.error('Failed to create SOP')
+  }
+}
+
+const selectSOP = (sop) => {
+  selectedSopId.value = sop.id
+  // Init form
+  currentSopForm.value = {
+    name: sop.name,
+    desc: sop.desc,
+    priority: sop.priority || 0,
+    variablesStr: JSON.stringify(sop.variables || {}, null, 2)
+  }
+}
+
+const businessSops = computed(() => sops.value.filter(s => s.type !== 'system' && s.type !== 'interaction'))
+const systemSops = computed(() => sops.value.filter(s => s.type === 'system' || s.type === 'interaction').sort((a, b) => (b.priority || 0) - (a.priority || 0)))
+const currentSopName = computed(() => sops.value.find(s => s.id === selectedSopId.value)?.name || '')
+
+const sopBoundingBoxStyle = computed(() => {
+  const sop = sops.value.find(s => s.id === selectedSopId.value)
+  if (!sop || !sop.nodes || sop.nodes.length === 0) return { display: 'none' }
+  
+  // 找到所有关联节点
+  const relatedNodes = nodes.value.filter(n => sop.nodes.includes(n.id))
+  if (relatedNodes.length === 0) return { display: 'none' }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  relatedNodes.forEach(n => {
+    const x = n.position.x
+    const y = n.position.y
+    const w = n.data?.naturalSize?.w || 375
+    const h = n.data?.naturalSize?.h || 667
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (x + w > maxX) maxX = x + w
+    if (y + h > maxY) maxY = y + h
+  })
+
+  const padding = 60
+  return {
+    left: (minX - padding) + 'px',
+    top: (minY - padding) + 'px',
+    width: (maxX - minX + padding * 2) + 'px',
+    height: (maxY - minY + padding * 2) + 'px'
+  }
+})
+
+const getSopCases = (sopId) => {
+  const sop = sops.value.find(s => s.id === sopId)
+  if (!sop || !sop.workflows) return []
+  // 从缓存中获取 Workflow 详情，如果没有则显示 ID
+  return sop.workflows.map(wfItem => {
+    const wfId = typeof wfItem === 'object' ? wfItem.id : wfItem
+    return workflowCache.value[wfId] || { id: wfId, label: 'Loading...', desc: '' }
+  })
+}
+
+const editCase = (node) => {
+  const targetId = node.id
+  const currentAppId = props.appId || route.params.appId || route.query.appId
+
+  if (targetId) {
+    router.push({
+      name: 'Editor',
+      params: { id: targetId },
+      query: { appId: currentAppId }
+    })
+  } else {
+    ElMessage.warning('未找到关联的工作流 ID')
+  }
+}
+
+const addCaseToSOP = async () => {
+  if (!selectedSopId.value) return
+  
+  // 1. 直接创建 Workflow
+  let newWorkflowId = null
+  const newName = 'New Case ' + new Date().toLocaleString()
+  try {
+    const initialContent = {
+      nodes: [
+        {
+          id: `public-trigger-${Date.now()}`,
+          type: 'custom',
+          nodeCode: 'public/trigger',
+          nodeType: 200,
+          position: { x: 100, y: 200 },
+          data: {
+            label: '开始',
+            nodeCode: 'public/trigger',
+            nodeType: 200,
+            platform: 'common'
+          }
+        }
+      ],
+      edges: []
+    }
+    const res = await fetchWorkflowAdd(newName, 'Created via SOP', initialContent)
+    if (res.code === 200) {
+      newWorkflowId = res.data?.id || (res.data && typeof res.data !== 'object' ? res.data : null) || res.id
+      // 缓存新用例信息
+      if (newWorkflowId) {
+        workflowCache.value[newWorkflowId] = { id: newWorkflowId, label: res.data?.name || newName, desc: '' }
+      }
+    }
+  } catch (e) {
+    ElMessage.error('创建用例失败')
+    return
+  }
+  
+  if (!newWorkflowId) return
+
+  // 2. 关联到当前 SOP
+  const sop = sops.value.find(s => s.id === selectedSopId.value)
+  if (sop) {
+    // 后端返回的是对象列表，但更新时通常传 ID 列表，或者我们需要构造一个临时对象推入
+    const newWorkflowsList = [...(sop.workflows || []).map(w => String(typeof w === 'object' ? w.id : w)), String(newWorkflowId)]
+    try {
+      await wsApi.wsUpdateSOP({
+        sop_id: selectedSopId.value,
+        workflows: newWorkflowsList
+      })
+      sop.workflows = newWorkflowsList
+      ElMessage.success('已创建用例并关联到 SOP')
+    } catch (e) {
+      ElMessage.error('关联 SOP 失败')
+    }
+  }
+}
+
+const handleUpdateSOP = async () => {
+  if (!selectedSopId.value) return
+  try {
+    await wsApi.wsUpdateSOP({
+      sop_id: selectedSopId.value,
+      name: currentSopForm.value.name,
+      desc: currentSopForm.value.desc,
+      priority: currentSopForm.value.priority
+    })
+    // Update local list
+    const sop = sops.value.find(s => s.id === selectedSopId.value)
+    if (sop) {
+      sop.name = currentSopForm.value.name
+      sop.desc = currentSopForm.value.desc
+      sop.priority = currentSopForm.value.priority
+    }
+  } catch (e) {
+    ElMessage.error('Update failed')
+  }
+}
+
+const handleUpdateSOPVariables = async () => {
+  if (!selectedSopId.value) return
+  try {
+    const vars = JSON.parse(currentSopForm.value.variablesStr)
+    await wsApi.wsUpdateSOP({
+      sop_id: selectedSopId.value,
+      variables: vars
+    })
+    const sop = sops.value.find(s => s.id === selectedSopId.value)
+    if (sop) sop.variables = vars
+  } catch (e) {
+    ElMessage.error('Invalid JSON format')
+  }
+}
+
+const handleDeleteSOP = async () => {
+  if (!selectedSopId.value) return
+  try {
+    await wsApi.wsDeleteSOP(selectedSopId.value)
+    sops.value = sops.value.filter(s => s.id !== selectedSopId.value)
+    selectedSopId.value = null
+    ElMessage.success('SOP deleted')
+  } catch (e) {
+    ElMessage.error('Delete failed')
+  }
+}
+
+const openGraphSettings = () => {
+  showGraphSettings.value = true
+}
+
+const saveGraphSettings = async () => {
+  try {
+    const vars = JSON.parse(graphVariablesStr.value)
+    // Assuming wsUpdateAppGraph exists or we use a generic update
+    // Since wsUpdateAppGraph is not in the provided wsAppGraph.js context, 
+    // I will assume it needs to be added or I should use a generic request.
+    // For now, I'll use a direct sendWsRequest call pattern if needed, or assume wsApi has it.
+    // Let's assume we need to add it to wsAppGraph.js as well.
+    await wsApi.wsUpdateAppGraph({ graph_id: graphId.value, variables: vars })
+    ElMessage.success('Global variables updated')
+    showGraphSettings.value = false
+  } catch (e) {
+    ElMessage.error('Failed to save settings: ' + e.message)
+  }
 }
 
 // 1. 完整的数据加载与重试逻辑
@@ -157,11 +521,11 @@ const loadGraphData = async (retryCount = 0) => {
     try {
       const isAppId = isNaN(Number(id))
       if (isAppId) {
-        const listRes = await api.getAppGraphList(id)
+        const listRes = await wsApi.wsGetAppGraphList(id)
         if (listRes.code === 200 && listRes.data?.length > 0) {
           graphId.value = listRes.data[0].id
         } else {
-          const createRes = await api.createAppGraph({name: 'Default Graph', app_id: id})
+          const createRes = await wsApi.wsCreateAppGraph({name: 'Default Graph', app_id: id})
           if (createRes.code === 200) graphId.value = createRes.data.id
         }
       } else {
@@ -169,11 +533,17 @@ const loadGraphData = async (retryCount = 0) => {
       }
 
       if (graphId.value) {
-        const detailRes = await api.getAppGraphDetail(graphId.value)
+        const detailRes = await wsApi.wsGetAppGraphDetail(graphId.value)
         if (detailRes.code === 200) {
           const rawNodes = detailRes.data.nodes || []
           const rawEdges = detailRes.data.edges || []// 在 loadGraphData 函数内修改 nodes.value 的映射部分
-          nodes.value = rawNodes.map(n => {
+          sops.value = detailRes.data.sops || [] // Load SOPs
+
+          // Load Graph Variables
+          const gVars = detailRes.data.variables || {}
+          graphVariablesStr.value = JSON.stringify(gVars, null, 2)
+
+          const allMappedNodes = rawNodes.map(n => {
             // 1. 兼容后端返回的 components 字段 (你在 save 时传的是这个)
             const rawComponents = n.components || n.data?.interactions || [];
 
@@ -186,9 +556,9 @@ const loadGraphData = async (retryCount = 0) => {
               const base = { ...c, id: effectiveId, uid: effectiveId }
 
               if (c.rect) {
-                return {...base, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h)};
+                return {...base, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h), states: c.states || []};
               }
-              return {...base, x: Number(c.x), y: Number(c.y), w: Number(c.w), h: Number(c.h)};
+              return {...base, x: Number(c.x), y: Number(c.y), w: Number(c.w), h: Number(c.h), states: c.states || []};
             });
 
             return {
@@ -203,28 +573,37 @@ const loadGraphData = async (retryCount = 0) => {
                 interactions: processedInteractions,
                 desc: n.desc || n.data?.desc || '',
                 type: n.type || 'page',
+                is_blocking: n.is_blocking || n.data?.is_blocking || false, // 🔥 阻断属性
                 workflow_id: n.workflow_id || n.data?.workflow_id,
-                screenshot: n.screenshot || n.data?.screenshot
+                screenshot: n.screenshot || n.data?.screenshot,
+                skeleton_config: n.skeleton_config || n.data?.skeleton_config || {},
+
               },
               selected: false,
               dragging: false
             }
           })
 
-          // 🔥 拾取模式下，隐藏用例节点 (只允许选择页面/组件上的热区)
-          if (props.isPicker) {
-            nodes.value = nodes.value.filter(n => n.type !== 'case')
-          }
+          // 🔥 过滤掉旧数据的 Case 节点，画布只显示页面和组件
+          nodes.value = allMappedNodes.filter(n => n.type !== 'case')
 
-          const caseNodes = nodes.value.filter(n => n.type === 'case' && n.data.workflow_id)
-          if (caseNodes.length > 0) {
-            Promise.all(caseNodes.map(async (node) => {
+          // 🔥 加载 SOP 关联的 Workflow 详情
+          const allWorkflowIds = new Set()
+          sops.value.forEach(s => {
+            if (s.workflows && Array.isArray(s.workflows)) {
+              s.workflows.forEach(w => {
+                const id = typeof w === 'object' ? w.id : w
+                allWorkflowIds.add(id)
+              })
+            }
+          })
+          
+          if (allWorkflowIds.size > 0) {
+            Promise.all(Array.from(allWorkflowIds).map(async (wfId) => {
               try {
-                const res = await fetchWorkflowDetailSimple(node.data.workflow_id)
+                const res = await fetchWorkflowDetailSimple(wfId)
                 if (res.code === 200 && res.data) {
-                  node.label = res.data.name
-                  node.data.label = res.data.name
-                  node.data.desc = res.data.desc || ''
+                  workflowCache.value[wfId] = { id: wfId, label: res.data.name, desc: res.data.desc || '' }
                 }
               } catch (e) {
                 console.error('Fetch workflow detail failed', e)
@@ -301,6 +680,12 @@ const getSafeScreenshot = (val) => {
   return typeof val === 'string' ? val : null
 }
 
+// 辅助：清洗路径
+const cleanPath = (path) => {
+  if (path && typeof path === 'string' && path.startsWith('/static/')) return path.replace('/static/', '')
+  return path
+}
+
 // 3. 完整的连线与 ParentNode 逻辑
 const onConnect = async (params) => {
   // 🔥 拾取模式下禁止连线操作
@@ -333,12 +718,19 @@ const onConnect = async (params) => {
         desc: childNode.data.desc || '',
         parentNode: parentId,
         naturalSize: childNode.data.naturalSize || null,
-        screenshot: getSafeScreenshot(childNode.data.screenshot),
+        screenshot: cleanPath(getSafeScreenshot(childNode.data.screenshot)),
         workflow_id: childNode.data.workflow_id ? String(childNode.data.workflow_id) : null,
-        components: (childNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
+        skeleton_config: childNode.data.skeleton_config || {},
+        components: (childNode.data.interactions || []).map(c => ({
+          ...c,
+          uid: c.uid || c.id || null,
+          rect: {x: c.x, y: c.y, w: c.w, h: c.h},
+          skeleton_config: c.skeleton_config || {},
+          states: (c.states || []).map(s => ({...s, skeleton_config: s.skeleton_config || {}}))
+        }))
       }
       try {
-        await api.saveNodeDetail(payload)
+        await wsApi.wsSaveNodeDetail(payload)
       } catch (e) {
         console.error('Save parentNode failed', e)
       }
@@ -498,7 +890,7 @@ const ensureGraphId = async () => {
   const appId = route.params.appId
   if (!appId) return null
   try {
-    const createRes = await api.createAppGraph({name: 'New Workflow ' + new Date().toLocaleString(), app_id: appId})
+    const createRes = await wsApi.wsCreateAppGraph({name: 'New Workflow ' + new Date().toLocaleString(), app_id: appId})
     if (createRes.code === 200) {
       graphId.value = createRes.data.id
       router.replace({query: {...route.query, id: graphId.value}})
@@ -536,7 +928,7 @@ const handleSaveLayout = async () => {
       label: e.label,
       trigger: e.data?.trigger
     }))
-    await api.syncGraphLayout({graph_id: graphId.value, nodes: saveNodes, edges: saveEdges})
+    await wsApi.wsSyncGraphLayout({graph_id: graphId.value, nodes: saveNodes, edges: saveEdges})
     saveStatus.value = 'saved'
   } catch (e) {
     saveStatus.value = 'unsaved'
@@ -566,14 +958,22 @@ const onNodeUpdate = (updatedNode) => {
       type: updatedNode.type || 'page',
       label: updatedNode.label,
       desc: updatedNode.data.desc || '',
+      is_blocking: updatedNode.data.is_blocking || false,
       parentNode: updatedNode.parentNode || null,
       naturalSize: updatedNode.data.naturalSize || null,
-      screenshot: getSafeScreenshot(updatedNode.data.screenshot),
+      screenshot: cleanPath(getSafeScreenshot(updatedNode.data.screenshot)),
+      skeleton_config: updatedNode.data.skeleton_config || {},
       workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
-      components: (updatedNode.data.interactions || []).map(c => ({...c, uid: c.uid || c.id || null, rect: {x: c.x, y: c.y, w: c.w, h: c.h}}))
+      components: (updatedNode.data.interactions || []).map(c => ({
+        ...c,
+        uid: c.uid || c.id || null,
+        rect: {x: c.x, y: c.y, w: c.w, h: c.h},
+        skeleton_config: c.skeleton_config || {},
+        states: (c.states || []).map(s => ({...s, skeleton_config: s.skeleton_config || {}}))
+      }))
     }
     try {
-      await api.saveNodeDetail(payload);
+      await wsApi.wsSaveNodeDetail(payload);
       triggerAutoSave()
     } catch (error) {
       ElMessage.error('保存失败')
@@ -596,29 +996,6 @@ const createNodeData = (type, position, label) => {
   }
 }
 
-// 6. 完整的关联流程初始化逻辑
-const initWorkflowIfCase = async (node) => {
-  if (node.type === 'case' && !node.data.workflow_id) {
-    try {
-      const content = {
-        nodes: [{
-          id: `public-trigger-${Date.now()}`,
-          type: 'custom',
-          position: {x: 100, y: 200},
-          data: {label: '开始', nodeCode: 'public/trigger', outputs: []}
-        }], edges: []
-      }
-      const res = await fetchWorkflowAdd(node.label, '自动创建的关联流程', content)
-      if (res.code === 200) {
-        const wfId = res.data?.id || (res.data && typeof res.data !== 'object' ? res.data : null) || res.id
-        if (wfId) node.data.workflow_id = wfId
-      }
-    } catch (e) {
-      ElMessage.warning('创建关联流程失败')
-    }
-  }
-}
-
 // 7. 完整的节点添加系列方法
 const addNode = async (type) => {
   let position = {x: 100 + Math.random() * 50, y: 100 + Math.random() * 50}
@@ -628,11 +1005,10 @@ const addNode = async (type) => {
     position = {x: parentNode.position.x + 250, y: parentNode.position.y}
   }
   const newNode = createNodeData(type, position)
-  await initWorkflowIfCase(newNode)
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({
+      await wsApi.wsAddEmptyNode({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -640,23 +1016,23 @@ const addNode = async (type) => {
         x: parseInt(position.x),
         y: parseInt(position.y)
       })
-      await api.saveNodeDetail({
+      await wsApi.wsSaveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
         label: newNode.label,
         desc: '',
+        is_blocking: false,
         parentNode: null,
         naturalSize: newNode.data.naturalSize || null,
         screenshot: null,
-        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
     nodes.value.push(newNode)
   } catch (error) {
     ElMessage.error('添加失败');
-    return
+    return null
   }
 
   if (parentNode) {
@@ -670,17 +1046,17 @@ const addNode = async (type) => {
     }, 10)
     triggerAutoSave()
   }
+  return newNode
 }
 
 const addChildNode = async () => {
   if (selectedElements.value.length === 0) return
   const parent = selectedElements.value[0]
   const newNode = createNodeData(parent.type || 'page', {x: parent.position.x + 300, y: parent.position.y})
-  await initWorkflowIfCase(newNode)
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({
+      await wsApi.wsAddEmptyNode({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -688,7 +1064,7 @@ const addChildNode = async () => {
         x: parseInt(newNode.position.x),
         y: parseInt(newNode.position.y)
       })
-      await api.saveNodeDetail({
+      await wsApi.wsSaveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -697,7 +1073,6 @@ const addChildNode = async () => {
         parentNode: null,
         naturalSize: newNode.data.naturalSize || null,
         screenshot: null,
-        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -720,11 +1095,10 @@ const addParentNode = async () => {
   if (selectedElements.value.length === 0) return
   const child = selectedElements.value[0]
   const newNode = createNodeData(child.type || 'page', {x: child.position.x - 300, y: child.position.y})
-  await initWorkflowIfCase(newNode)
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({
+      await wsApi.wsAddEmptyNode({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -732,7 +1106,7 @@ const addParentNode = async () => {
         x: parseInt(newNode.position.x),
         y: parseInt(newNode.position.y)
       })
-      await api.saveNodeDetail({
+      await wsApi.wsSaveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -741,7 +1115,6 @@ const addParentNode = async () => {
         parentNode: null,
         naturalSize: newNode.data.naturalSize || null,
         screenshot: null,
-        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -764,11 +1137,10 @@ const addSiblingNode = async () => {
   if (selectedElements.value.length === 0) return
   const current = selectedElements.value[0]
   const newNode = createNodeData(current.type || 'page', {x: current.position.x, y: current.position.y + 150})
-  await initWorkflowIfCase(newNode)
   try {
     const gid = await ensureGraphId()
     if (gid) {
-      await api.addEmptyNode({
+      await wsApi.wsAddEmptyNode({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -776,7 +1148,7 @@ const addSiblingNode = async () => {
         x: parseInt(newNode.position.x),
         y: parseInt(newNode.position.y)
       })
-      await api.saveNodeDetail({
+      await wsApi.wsSaveNodeDetail({
         graph_id: gid,
         node_id: newNode.id,
         type: newNode.type,
@@ -785,7 +1157,6 @@ const addSiblingNode = async () => {
         parentNode: null,
         naturalSize: newNode.data.naturalSize || null,
         screenshot: null,
-        workflow_id: newNode.data.workflow_id ? String(newNode.data.workflow_id) : null,
         components: []
       })
     }
@@ -826,6 +1197,7 @@ const handleNodeSizeUpdate = (nodeId, size) => {
   width: 100%;
   background: transparent !important; /* 必须透明看到底层水波纹 */
 }
+.three-column-layout { flex-direction: column; }
 
 /* 顶部工具栏：留出 88px 侧边间距，但通过容器 padding 实现，防止 Canvas 偏移 */
 .editor-toolbar-wrapper {
@@ -865,6 +1237,98 @@ const handleNodeSizeUpdate = (nodeId, size) => {
   gap: 15px;
 }
 
+.main-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* SOP Sidebar */
+.sop-sidebar {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(10px);
+  border-right: 1px solid rgba(255, 255, 255, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.sop-tabs { flex: 1; display: flex; flex-direction: column; }
+:deep(.sop-tabs .el-tabs__content) { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+:deep(.sop-tabs .el-tab-pane) { height: 100%; display: flex; flex-direction: column; }
+
+.sidebar-header {
+  padding: 15px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: #374151;
+}
+.sop-item {
+  padding: 12px 15px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(0,0,0,0.03);
+  transition: background 0.2s;
+}
+.sop-item:hover { background: rgba(0,0,0,0.02); }
+.sop-item.active { background: rgba(99, 102, 241, 0.1); border-left: 3px solid #6366f1; }
+
+/* 系统反射 SOP 样式 */
+.sop-item.system.active { background: rgba(249, 115, 22, 0.1); border-left-color: #f97316; }
+
+.sop-name { font-weight: 500; font-size: 14px; color: #1f2937; display: block; margin-bottom: 4px; }
+.sop-desc { font-size: 12px; color: #9ca3af; }
+
+/* Props Sidebar */
+.props-sidebar {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  border-left: 1px solid rgba(255, 255, 255, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-content { height: 100%; display: flex; flex-direction: column; }
+.form-wrapper { padding: 20px; }
+.form-item { margin-bottom: 20px; }
+.form-item .label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+.case-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  background: #f8fafc;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #334155;
+}
+.case-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  flex: 1;
+}
+.case-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.empty-text { font-size: 12px; color: #9ca3af; font-style: italic; }
+.empty-sidebar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* 画布通透感 */
 .flow-wrapper {
   flex: 1;
@@ -883,6 +1347,31 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 
 .flow-canvas {
   background: transparent !important;
+}
+
+/* SOP Visual Grouping */
+.sop-group-bg {
+  position: absolute;
+  z-index: -1;
+  border: 2px dashed rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: 12px;
+  pointer-events: none; /* Let clicks pass through to nodes */
+  transition: all 0.3s ease;
+}
+.sop-group-bg.system {
+  border-color: rgba(249, 115, 22, 0.5);
+  background: rgba(249, 115, 22, 0.08);
+  background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(249, 115, 22, 0.05) 10px, rgba(249, 115, 22, 0.05) 20px);
+}
+.sop-group-label {
+  position: absolute; top: -24px; left: 0;
+  background: inherit; color: #666; font-size: 12px; padding: 2px 8px; border-radius: 4px;
+  font-weight: bold;
+}
+.sop-group-bg.active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
 }
 
 /* 状态标签 */

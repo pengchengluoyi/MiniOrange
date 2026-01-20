@@ -162,7 +162,16 @@ export function useFlowPersistence(getNodes, getEdges, setNodes, setEdges, flowN
                 if (nodesData && nodesData.nodes && Array.isArray(nodesData.nodes)) {
                     const normalizedNodes = {}
                     nodesData.nodes.forEach(n => {
-                        if (n.id) normalizedNodes[n.id] = n
+                        if (n.id) {
+                            // 🔥 修复：CaseEditor 生成的节点数据 nodeCode/nodeType 在 data 中
+                            // 但 Adapter 期望它们在顶层，导致加载后 nodeCode 为 unknown
+                            const fixedNode = { ...n }
+                            if (fixedNode.data) {
+                                if (!fixedNode.nodeCode && fixedNode.data.nodeCode) fixedNode.nodeCode = fixedNode.data.nodeCode
+                                if (!fixedNode.nodeType && fixedNode.data.nodeType) fixedNode.nodeType = fixedNode.data.nodeType
+                            }
+                            normalizedNodes[n.id] = fixedNode
+                        }
                     })
                     // 保留 _ui_meta
                     if (nodesData._ui_meta) normalizedNodes._ui_meta = nodesData._ui_meta

@@ -21,9 +21,16 @@
       </div>
 
       <!-- 如果等待太久，显示重试按钮 -->
-      <button v-if="showRetryBtn" class="retry-btn" @click="retryConnection">
-        连接超时，点击手动重试
-      </button>
+      <div v-if="showRetryBtn" class="retry-box">
+        <input 
+          v-model="customIp" 
+          class="ip-input" 
+          placeholder="输入服务端IP (如 100.x.x.x)" 
+        />
+        <button class="retry-btn" @click="retryConnection">
+          {{ customIp ? '连接指定IP' : '重试自动连接' }}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -37,34 +44,56 @@ import UpdatePrompt from './components/UpdatePrompt.vue'
 import GlobalAlert from './components/GlobalAlert.vue'
 import { setGlobalBaseUrl } from '@/utils/request'
 import managementWsService from '@/api/managementWebSocket'
+import mWebSocket from '@/api/mWebSocket'
 
 const isServerReady = ref(false)
 const showRetryBtn = ref(false)
 const statusTitle = ref('正在启动引擎...')
 const statusDesc = ref('正在唤醒 Python 服务端，请稍候...')
+const customIp = ref('')
 let retryCount = 0
 const MAX_RETRIES = 30 // 30次 * 500ms = 15秒超时
 
 // 检查服务端健康状态
 const checkHealth = async () => {
-  const candidates = ['http://127.0.0.1:10104', 'http://miniorange.local:10104']
+  const candidates = [
+    'http://localhost:10104',
+    'http://127.0.0.1:10104',
+    'http://miniorange.local:10104'
+  ]
+
+  const hostname = window.location.hostname
+  if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    candidates.push(`http://${hostname}:10104`)
+  }
+  
+  // 🔥 支持 Tailscale/远程 IP 手动输入
+  if (customIp.value) {
+    const ip = customIp.value.trim()
+    // 自动补全协议和端口
+    const url = ip.startsWith('http') ? ip : `http://${ip}:10104`
+    candidates.unshift(url)
+  }
+
   let success = false
 
   for (const url of candidates) {
     try {
       const controller = new AbortController()
       const id = setTimeout(() => controller.abort(), 2000)
-      const response = await fetch(`${url}/docs`, {
+      const response = await fetch(`${url}/sys/server_info`, {
         method: 'GET',
+        mode: 'cors',
         signal: controller.signal
       })
       clearTimeout(id)
-      if (response.ok || response.status === 404 || response.status === 405) { // 只要能连通即可
+      if (response.ok) { // 只要能连通即可
         setGlobalBaseUrl(url)
         
         // 🔥 同步设置 ManagementWebSocket 的地址，避免它再次探测或连接失败
         const wsUrl = url.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws'
         managementWsService.setUrl(wsUrl)
+        mWebSocket.setWsUrl(wsUrl) // 🔥 同步设置 mWebSocket 地址
         
         success = true
         break
@@ -158,8 +187,28 @@ onMounted(() => {
   margin: 0;
 }
 
-.retry-btn {
+.retry-box {
   margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.ip-input {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ip-input:focus {
+  border-color: #4f46e5;
+}
+
+.retry-btn {
   padding: 8px 16px;
   background-color: white;
   border: 1px solid #cbd5e1;

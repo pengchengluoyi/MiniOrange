@@ -9,10 +9,11 @@ const checkUrl = async (url) => {
   try {
     const controller = new AbortController()
     const id = setTimeout(() => controller.abort(), 3000) // 🔥 增加超时时间，防止 mDNS 解析慢导致误判
-    await fetch(`${url}/docs`, { method: 'GET', mode: 'no-cors', signal: controller.signal })
+    const res = await fetch(`${url}/sys/server_info`, { method: 'GET', mode: 'cors', signal: controller.signal })
     clearTimeout(id)
-    return true
-  } catch {
+    return res.ok
+  } catch (e) {
+    console.warn(`[API] Probe failed for ${url}:`, e)
     return false
   }
 }
@@ -37,7 +38,19 @@ service.interceptors.request.use(
     if (!import.meta.env.VITE_API_URL) {
       if (!checkPromise) {
         checkPromise = (async () => {
-          const candidates = ['http://127.0.0.1:10104', 'http://miniorange.local:10104']
+          const candidates = [
+            'https://localhost:10104', 'http://localhost:10104',
+            'https://127.0.0.1:10104', 'http://127.0.0.1:10104',
+            'https://miniorange.local:10104', 'http://miniorange.local:10104'
+          ]
+
+          // 自动探测当前域名 (适配 miniorange-xxx.local 这种 mDNS 访问场景)
+          const hostname = window.location.hostname
+          if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+            candidates.push(`https://${hostname}:10104`)
+            candidates.push(`http://${hostname}:10104`)
+          }
+
           for (const url of candidates) {
             console.log(`[API] Probing ${url}...`)
             if (await checkUrl(url)) {

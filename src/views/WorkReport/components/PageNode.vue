@@ -21,6 +21,14 @@
               @load="onImageLoaded"
           />
 
+          <!-- 🔥 新增：骨架蒙版层 -->
+          <img
+              v-if="displaySkeleton"
+              :src="displaySkeleton"
+              class="skeleton-mask"
+              draggable="false"
+          />
+
           <div class="hotspots-overlay">
             <div v-for="(comp, i) in data.interactions" :key="i"
                  class="mini-hotspot" :style="getHotspotStyle(comp)">
@@ -61,6 +69,7 @@ const emit = defineEmits(['update-size'])
 
 const {updateNodeInternals} = useVueFlow()
 const displayScreenshot = ref('')
+const displaySkeleton = ref('')
 
 const onImageLoaded = (event) => {
   const img = event.target;
@@ -96,84 +105,115 @@ const dataURLtoBlobURL = (dataurl) => {
   }
 }
 
-const loadScreenshot = async () => {
+const loadImages = async () => {
   // 清理旧的 BlobURL，防止内存泄漏
   if (displayScreenshot.value && displayScreenshot.value.startsWith('blob:')) {
     URL.revokeObjectURL(displayScreenshot.value)
   }
-
-  // 🔥 1. 兼容处理：screenshot 可能是对象 { path: '...', url: '...' }
-  let src = props.data.screenshot
-  if (src && typeof src === 'object') {
-    src = src.path || src.url || ''
+  if (displaySkeleton.value && displaySkeleton.value.startsWith('blob:')) {
+    URL.revokeObjectURL(displaySkeleton.value)
   }
 
-  if (!src) {
-    displayScreenshot.value = ''
-    nextTick(() => updateNodeInternals([props.id]))
-    return
+  // 1. 准备路径
+  let screenshotSrc = props.data.screenshot
+  if (screenshotSrc && typeof screenshotSrc === 'object') {
+    screenshotSrc = screenshotSrc.path || screenshotSrc.url || ''
+  }
+  if (screenshotSrc && typeof screenshotSrc === 'string' && screenshotSrc.startsWith('/static/')) {
+    screenshotSrc = screenshotSrc.replace('/static/', '')
   }
 
-  let finalSrc = '' // 🔥 修复：默认为空，防止 wsGetFile 失败后回退到本地路径导致 ERR_UNKNOWN_URL_SCHEME
-  if (src.startsWith('data:image') || src.startsWith('http')) {
-    finalSrc = src
-    if (src.startsWith('data:image')) finalSrc = dataURLtoBlobURL(src)
+  let skeletonSrc = props.data.skeleton_config?.mask_url || props.data.skeleton_config?.filename || ''
+  if (skeletonSrc && typeof skeletonSrc === 'string' && skeletonSrc.startsWith('/static/')) {
+    skeletonSrc = skeletonSrc.replace('/static/', '')
+  }
+
+  // 2. 决策显示逻辑：有screenshot显示screenshot，没有则显示骨架图作为主图
+  let mainSrc = ''
+  let maskSrc = ''
+
+  if (screenshotSrc) {
+    mainSrc = screenshotSrc
+    maskSrc = skeletonSrc // 有主图时，骨架图作为蒙版
+  } else if (skeletonSrc) {
+    mainSrc = skeletonSrc // 无主图时，骨架图作为主图
+    maskSrc = ''          // 避免重叠显示
+  }
+
+  // 3. 加载图片
+  if (mainSrc) {
+    displayScreenshot.value = await fetchImage(mainSrc)
   } else {
-    try {
-      const res = await wsGetFile(src)
-      if (res.code === 200 && res.data) {
-        // 🔥 2. 修复：如果返回的是 raw base64 (不带 data: 前缀)，手动补全
-        let dataUrl = res.data
-
-        // 🔥 3. 增强：处理非字符串数据 (Blob, ArrayBuffer, BufferJSON)
-        if (typeof dataUrl === 'object') {
-          if (dataUrl instanceof Blob) {
-            finalSrc = URL.createObjectURL(dataUrl)
-          } else if (dataUrl instanceof ArrayBuffer) {
-            finalSrc = URL.createObjectURL(new Blob([dataUrl]))
-          } else if (dataUrl.type === 'Buffer' && Array.isArray(dataUrl.data)) {
-            // 处理 Node.js Buffer 序列化后的 JSON
-            const u8 = new Uint8Array(dataUrl.data)
-            finalSrc = URL.createObjectURL(new Blob([u8]))
-          } else if (dataUrl.content && typeof dataUrl.content === 'string') {
-            // 🔥 新增：处理 { name, content } 结构
-            let rawStr = dataUrl.content
-            if (!rawStr.startsWith('data:')) {
-              let mime = 'image/png'
-              if (dataUrl.name) {
-                const ext = dataUrl.name.split('.').pop().toLowerCase()
-                if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
-              }
-              rawStr = `data:${mime};base64,${rawStr}`
-            }
-            finalSrc = dataURLtoBlobURL(rawStr)
-          } else {
-            console.warn('Unknown screenshot data object:', dataUrl)
-            return
-          }
-        } else if (typeof dataUrl === 'string') {
-          if (!dataUrl.startsWith('data:')) {
-            const ext = src.split('.').pop().toLowerCase()
-            const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png'
-            dataUrl = `data:${mime};base64,${dataUrl}`
-          }
-          // 统一转 BlobURL 以提升性能
-          finalSrc = dataURLtoBlobURL(dataUrl)
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load screenshot', e)
-    }
+    displayScreenshot.value = ''
   }
 
-  displayScreenshot.value = finalSrc
+  if (maskSrc) {
+    displaySkeleton.value = await fetchImage(maskSrc)
+  } else {
+    displaySkeleton.value = ''
+  }
+
+  nextTick(() => updateNodeInternals([props.id]))
 }
 
-watch(() => props.data.screenshot, loadScreenshot, {immediate: true})
+// 提取公共的图片获取逻辑
+const fetchImage = async (src) => {
+  if (!src) return ''
+  if (src.startsWith('data:image') || src.startsWith('http')) {
+    if (src.startsWith('data:image')) return dataURLtoBlobURL(src)
+    return src
+  }
+  try {
+    const res = await wsGetFile(src)
+    if (res.code === 200 && res.data) {
+      let dataUrl = res.data
+      if (typeof dataUrl === 'object') {
+        if (dataUrl instanceof Blob) return URL.createObjectURL(dataUrl)
+        if (dataUrl instanceof ArrayBuffer) return URL.createObjectURL(new Blob([dataUrl]))
+        if (dataUrl.type === 'Buffer' && Array.isArray(dataUrl.data)) {
+          const u8 = new Uint8Array(dataUrl.data)
+          return URL.createObjectURL(new Blob([u8]))
+        }
+        if (dataUrl.content && typeof dataUrl.content === 'string') {
+          let rawStr = dataUrl.content
+          if (!rawStr.startsWith('data:')) {
+            let mime = 'image/png'
+            if (dataUrl.name) {
+              const ext = dataUrl.name.split('.').pop().toLowerCase()
+              if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg'
+            }
+            rawStr = `data:${mime};base64,${rawStr}`
+          }
+          return dataURLtoBlobURL(rawStr)
+        }
+      } else if (typeof dataUrl === 'string') {
+        if (!dataUrl.startsWith('data:')) {
+          const ext = src.split('.').pop().toLowerCase()
+          const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png'
+          dataUrl = `data:${mime};base64,${dataUrl}`
+        }
+        return dataURLtoBlobURL(dataUrl)
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load image', src, e)
+  }
+  return ''
+}
+
+// 🔥 优化：明确监听 skeleton_config 的关键字段，确保变化时触发
+watch(
+  () => [props.data.screenshot, props.data.skeleton_config?.filename, props.data.skeleton_config?.mask_url], 
+  loadImages, 
+  {deep: true, immediate: true}
+)
 
 onUnmounted(() => {
   if (displayScreenshot.value && displayScreenshot.value.startsWith('blob:')) {
     URL.revokeObjectURL(displayScreenshot.value)
+  }
+  if (displaySkeleton.value && displaySkeleton.value.startsWith('blob:')) {
+    URL.revokeObjectURL(displaySkeleton.value)
   }
 })
 
@@ -271,6 +311,17 @@ const iconMap = {page: Document, component: Cpu, case: Aim}
   height: auto;
   display: block;
   opacity: 0.95;
+}
+
+.skeleton-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.6;
+  mix-blend-mode: multiply;
+  pointer-events: none;
 }
 
 /* 核心修复：热区遮罩层 */

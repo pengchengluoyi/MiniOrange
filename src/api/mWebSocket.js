@@ -1,214 +1,152 @@
-import {ElMessage} from 'element-plus'
 import { getWsUrl } from '@/utils/config'
 
 let ws = null
+let listeners = []
+let pendingRequests = new Map()
 let isConnected = false
-const pendingRequests = new Map()
 let reconnectTimer = null
-const messageListeners = new Set() // 🔥 Listeners for push messages
-let isInitializing = false
-let currentConnectedUrl = '' // 🔥 保存实际连接成功的 URL
+let currentToken = ''
+let customBaseUrl = ''
 
-export const getConnectedUrl = () => currentConnectedUrl || getWsUrl()
-
-const checkUrl = async (url, timeout = 3000) => {
-    try {
-        const controller = new AbortController()
-        const id = setTimeout(() => controller.abort(), timeout) // 🔥 增加超时时间
-        
-        // 🔥 修复：构造探测 URL
-        let httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://')
-        // 确保探测的是 /docs 接口 (FastAPI 默认文档路径)，避免请求根路径 / 导致 404 或 405
-        httpUrl = httpUrl.includes('/ws') ? httpUrl.replace('/ws', '/docs') : (httpUrl.endsWith('/') ? `${httpUrl}docs` : `${httpUrl}/docs`)
-
-        await fetch(httpUrl, { method: 'GET', mode: 'no-cors', signal: controller.signal })
-        clearTimeout(id)
-        return true
-    } catch {
-        return false
-    }
+export const setWsUrl = (url) => {
+  customBaseUrl = url
 }
 
-export const initWebSocket = async () => {
-    if (ws || isInitializing) return
-    isInitializing = true
+export const initWebSocket = (token) => {
+  if (token) {
+    currentToken = token
+    localStorage.setItem('ws_token', token)
+  } else if (!currentToken) {
+    currentToken = localStorage.getItem('ws_token') || ''
+  }
 
-    try {
-        let url = getWsUrl()
-        // 自动探测：如果默认是本地，尝试探测 miniorange.local
-        // 🔥 增加 localhost 判断，并延长超时时间到 5s
-        if (!import.meta.env.VITE_WS_URL && (url.includes('127.0.0.1') || url.includes('localhost')) && !await checkUrl(url)) {
-             console.log('[WS] Local not reachable, probing miniorange.local...')
-             const remote = url.replace(/127\.0\.0\.1|localhost/g, 'miniorange.local')
-             if (await checkUrl(remote, 5000)) url = remote
-        }
-        
-        currentConnectedUrl = url
-        console.log('[WS] Connecting to:', url)
-        ws = new WebSocket(url)
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return
+  }
 
-        ws.onopen = () => {
-            console.log('[WS] Connected')
-            isConnected = true
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer)
-                reconnectTimer = null
-            }
-        }
+  const baseUrl = customBaseUrl || getWsUrl()
+  // 🔥 关键修复：如果存在 Token，拼接到 URL 参数中
+  const url = currentToken ? `${baseUrl}?token=${currentToken}` : baseUrl
 
-        ws.onclose = () => {
-            console.log('[WS] Disconnected')
-            isConnected = false
-            ws = null
+  console.log('Connecting WS:', url)
+  ws = new WebSocket(url)
 
-            // 🔥 Reject all pending requests on disconnect
-            pendingRequests.forEach(({reject, timer}) => {
-                clearTimeout(timer)
-                reject(new Error('WebSocket disconnected'))
-            })
-            pendingRequests.clear()
-
-            // Auto reconnect
-            reconnectTimer = setTimeout(() => {
-                initWebSocket()
-            }, 3000)
-        }
-
-        ws.onerror = (e) => {
-            console.error('[WS] Error', e)
-            isConnected = false
-        }
-
-        ws.onmessage = (e) => {
-            try {
-                const res = JSON.parse(e.data)
-
-                // 🔥 Notify global listeners (e.g. for Scrcpy DOM updates)
-                messageListeners.forEach(fn => fn(res))
-
-                // Handle request-response by req_id
-                if (res.req_id && pendingRequests.has(res.req_id)) {
-                    const {resolve, reject, timer} = pendingRequests.get(res.req_id)
-                    clearTimeout(timer)
-                    pendingRequests.delete(res.req_id)
-
-                    if (res.code === 200 || res.code === undefined) {
-                        resolve(res)
-                    } else {
-                        reject(res)
-                    }
-                }
-            } catch (err) {
-                console.error('[WS] Message parse error', err)
-            }
-        }
-    } catch (e) {
-        console.error('[WS] Init failed', e)
-    } finally {
-        isInitializing = false
+  ws.onopen = () => {
+    isConnected = true
+    console.log('WebSocket Connected')
+    if (reconnectTimer) {
+      clearInterval(reconnectTimer)
+      reconnectTimer = null
     }
-}
+  }
 
-export const sendWsRequest = (action, data = {}, rootLevel = false) => {
-    return new Promise((resolve, reject) => {
-        // 🔥 Helper to execute send
-        const executeSend = () => {
-            const req_id = Date.now().toString(36) + Math.random().toString(36).substr(2)
-            const timer = setTimeout(() => {
-                if (pendingRequests.has(req_id)) {
-                    pendingRequests.delete(req_id)
-                    reject(new Error('Request timeout'))
-                }
-            }, 30000)
-
-            pendingRequests.set(req_id, {resolve, reject, timer})
-
-            // 🔥 适配服务端协议：data 字段直接作为参数
-            // 如果 data 是字符串（如 get_file 的 path），则包装成对象
-            let payloadData = data
-            if (typeof data !== 'object' || data === null) {
-                payloadData = {value: data}
-            }
-
-            const payload = {
-                action,
-                req_id
-            }
-            if (rootLevel) {
-                Object.assign(payload, payloadData)
-            } else {
-                payload.data = payloadData
-            }
-            ws.send(JSON.stringify(payload))
-        }
-
-        // 🔥 Check connection and wait if necessary
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            executeSend()
+  ws.onmessage = (event) => {
+    try {
+      const res = JSON.parse(event.data)
+      
+      // Handle Request-Response
+      if (res.req_id && pendingRequests.has(res.req_id)) {
+        const { resolve, reject } = pendingRequests.get(res.req_id)
+        if (res.code === 200) {
+          resolve(res)
         } else {
-            // Try to init if not existing or closed
-            if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-                initWebSocket()
-            }
-
-            // Wait for connection (max 3s)
-            let checks = 0
-            const interval = setInterval(() => {
-                checks++
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    clearInterval(interval)
-                    executeSend()
-                } else if (checks > 60) {
-                    clearInterval(interval)
-                    reject(new Error('WebSocket not connected'))
-                }
-            }, 100)
+          reject(res)
         }
-    })
+        pendingRequests.delete(res.req_id)
+      }
+
+      // Broadcast to listeners
+      listeners.forEach(listener => listener(res))
+
+    } catch (e) {
+      console.error('WS Message Error', e)
+    }
+  }
+
+  ws.onclose = (e) => {
+    isConnected = false
+    console.log('WebSocket Closed', e.code, e.reason)
+    if (!reconnectTimer) {
+      reconnectTimer = setInterval(() => {
+        initWebSocket()
+      }, 3000)
+    }
+  }
+
+  ws.onerror = (err) => {
+    console.error('WebSocket Error', err)
+    ws.close()
+  }
 }
 
-export const wsUploadFile = (filename, content) => {
-    return sendWsRequest('upload', {name: filename, content: content})
+export const addMessageListener = (callback) => {
+  if (!listeners.includes(callback)) {
+    listeners.push(callback)
+  }
+}
+
+export const removeMessageListener = (callback) => {
+  listeners = listeners.filter(l => l !== callback)
+}
+
+export const sendWsRequest = (action, data = {}) => {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('WebSocket not connected'))
+      return
+    }
+
+    const req_id = Date.now().toString(36) + Math.random().toString(36).substr(2)
+    
+    const timer = setTimeout(() => {
+      if (pendingRequests.has(req_id)) {
+        pendingRequests.delete(req_id)
+        reject(new Error('Request timeout'))
+      }
+    }, 10000)
+
+    pendingRequests.set(req_id, { 
+      resolve: (res) => { clearTimeout(timer); resolve(res) }, 
+      reject: (err) => { clearTimeout(timer); reject(err) } 
+    })
+
+    ws.send(JSON.stringify({
+      req_id,
+      action,
+      ...data
+    }))
+  })
 }
 
 export const wsGetFile = (path) => {
-    // 🔥 修复：get_file 动作，服务端期望 data 中包含 name
-    return sendWsRequest('get_file', {name: path})
+  return sendWsRequest('get_file', { path })
 }
 
-export const wsWorkflowRun = (workflow_id, sn) => {
-    return sendWsRequest('run_workflow', {flow_id: workflow_id, sn: sn})
+export const wsUploadFile = (name, content) => {
+  return sendWsRequest('upload', { name, content })
 }
 
-export const wsGetTimelineList = (params) => {
-    return sendWsRequest('get_timeline_list', params)
+export const wsGetTimelineList = (params = {}) => {
+  return sendWsRequest('get_timeline_list', params)
 }
 
-export const wsGetTimelineDetail = (runId) => {
-    return sendWsRequest('get_timeline', { run_id: String(runId) })
+export const wsGetTimelineDetail = (id) => {
+  return sendWsRequest('get_timeline_detail', { id })
 }
 
-export const addMessageListener = (fn) => messageListeners.add(fn)
-export const removeMessageListener = (fn) => messageListeners.delete(fn)
-
-export const send = (data) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data))
-    } else {
-        console.warn('[WS] Not connected, cannot send message')
-    }
+export const getConnectedUrl = () => {
+  return getWsUrl()
 }
 
 export default {
-    initWebSocket,
-    sendWsRequest,
-    wsUploadFile,
-    wsGetFile,
-    wsWorkflowRun,
-    wsGetTimelineList,
-    wsGetTimelineDetail,
-    addMessageListener,
-    removeMessageListener,
-    send,
-    getConnectedUrl
+  setWsUrl,
+  initWebSocket,
+  addMessageListener,
+  removeMessageListener,
+  sendWsRequest,
+  wsGetFile,
+  wsUploadFile,
+  wsGetTimelineList,
+  wsGetTimelineDetail,
+  getConnectedUrl
 }

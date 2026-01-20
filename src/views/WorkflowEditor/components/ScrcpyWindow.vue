@@ -211,6 +211,13 @@ const domTree = shallowRef(null);
 const highlightRect = ref(null);
 
 // 使用 useScrcpy 逻辑
+const props = defineProps({
+  targetDeviceId: {
+    type: String,
+    default: ''
+  }
+})
+
 const {
   deviceList,
   refreshDevices,
@@ -280,9 +287,15 @@ const initBackendWs = () => {
 onMounted(async () => {
   await refreshDevices();
   // 🔥 3. 自动投屏：如果有设备，默认选中第一个并开始
-  if (deviceList.value.length > 0 && !selectedDeviceId.value) {
-    selectedDeviceId.value = deviceList.value[0].id;
-    startStream(); // 自动开始
+  if (props.targetDeviceId) {
+    const target = deviceList.value.find(d => d.id === props.targetDeviceId)
+    if (target) {
+      selectedDeviceId.value = target.id
+      startStream()
+    }
+  } else if (deviceList.value.length > 0 && !selectedDeviceId.value) {
+    selectedDeviceId.value = deviceList.value[0].id
+    startStream() // 自动开始
   }
   await initDecoder();
 
