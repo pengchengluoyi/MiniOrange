@@ -29,6 +29,13 @@ export const joinCluster = async (targetUrl) => {
   return handleResponse(response)
 }
 
+export const leaveCluster = async () => {
+  const response = await fetch(`${getBaseUrl()}/sys/leave_cluster`, {
+    method: 'POST'
+  })
+  return handleResponse(response)
+}
+
 export const updateConfig = async (data) => {
   const response = await fetch(`${getBaseUrl()}/sys/config`, {
     method: 'POST',

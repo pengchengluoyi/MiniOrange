@@ -2,7 +2,7 @@
 import {ref, onMounted, onUnmounted, reactive, computed} from 'vue'
 import {initWebSocket, addMessageListener, removeMessageListener, sendWsRequest, getConnectedUrl} from '@/api/mWebSocket'
 import {setDevicePassword, getDeviceList, sendCommand} from '@/api/device'
-import {getServerInfo, scanLanServers as scanLanServersApi, joinCluster, updateConfig} from '@/api/system'
+import {getServerInfo, scanLanServers as scanLanServersApi, joinCluster, leaveCluster, updateConfig} from '@/api/system'
 import QRCode from 'qrcode'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
 import {getWsUrl, LOCAL_HOST} from '@/utils/config'
@@ -65,6 +65,8 @@ const scannedServers = ref([])
 const targetClusterUrl = ref('')
 const joinWarningVisible = ref(false)
 const currentServerInfo = ref({ ip: 'Unknown', port: 'Unknown', hostname: 'Unknown', server_name: 'MiniOrange Master' })
+const isNodeMode = ref(false)
+const masterUrl = ref('')
 
 // 网络配置相关
 const networkDialogVisible = ref(false)
@@ -246,6 +248,10 @@ const showAddDeviceDialog = async () => {
       
       // 简单判断是否是 localhost
       isLocalhost.value = info.ip === '127.0.0.1' || info.ip === 'localhost'
+
+      // 🔥 更新节点模式状态
+      isNodeMode.value = info.role === 'node'
+      if (info.master_url) masterUrl.value = info.master_url
     }
     activeAddDeviceTab.value = 'mobile'
     addDeviceDialogVisible.value = true
@@ -507,6 +513,19 @@ const confirmJoinCluster = async () => {
   }
 }
 
+// 退出集群
+const handleLeaveCluster = async () => {
+  try {
+    await leaveCluster()
+    ElMessage.success('已退出集群，服务正在重启...')
+    addDeviceDialogVisible.value = false
+    // 等待后端重启后刷新页面
+    setTimeout(() => window.location.reload(), 3000)
+  } catch (e) {
+    ElMessage.error('退出失败: ' + e.message)
+  }
+}
+
 const handleScrcpy = (row) => {
   currentScrcpySn.value = row.sn
   scrcpyDialogVisible.value = true
@@ -698,6 +717,20 @@ onUnmounted(() => {
         <!-- B. 集群组网模块 -->
         <el-tab-pane label="分布式集群" name="cluster">
           <div class="cluster-container">
+            <!-- 节点模式 UI -->
+            <div v-if="isNodeMode" class="cluster-status-card node-mode">
+              <el-tag type="warning" effect="dark">Node Mode</el-tag>
+              <p class="status-desc">当前本机作为 <strong>计算节点</strong> 运行中。</p>
+              <div class="node-info">
+                <span>归属主控: {{ masterUrl || 'Unknown' }}</span>
+              </div>
+              <div style="margin-top: 16px;">
+                <el-button type="danger" plain @click="handleLeaveCluster">退出集群 (恢复独立服务)</el-button>
+              </div>
+            </div>
+
+            <!-- Master 模式 UI -->
+            <div v-else>
             <div class="cluster-status-card">
               <el-tag type="success" effect="dark">Master Mode</el-tag>
               <p class="status-desc">当前本机作为 <strong>独立服务端 (Master)</strong> 运行。您可以扫描局域网内的其他服务器，将本机作为计算节点加入它们。</p>
@@ -729,6 +762,7 @@ onUnmounted(() => {
                   <el-button @click="handleJoinClick(targetClusterUrl)">加入</el-button>
                 </template>
               </el-input>
+            </div>
             </div>
           </div>
         </el-tab-pane>
@@ -1076,6 +1110,12 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 .scan-section { margin-bottom: 16px; }
+.node-info {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #909399;
+  font-family: monospace;
+}
 .server-list {
   border: 1px solid #e2e8f0;
   border-radius: 6px;
