@@ -1,9 +1,9 @@
 <script setup>
 import {ref, onMounted, onUnmounted, reactive, computed} from 'vue'
+import { useRouter } from 'vue-router'
 import {initWebSocket, addMessageListener, removeMessageListener, sendWsRequest, getConnectedUrl} from '@/api/mWebSocket'
 import {setDevicePassword, getDeviceList, sendCommand} from '@/api/device'
-import {getServerInfo, scanLanServers as scanLanServersApi, joinCluster, leaveCluster, updateConfig} from '@/api/system'
-import QRCode from 'qrcode'
+import {getServerInfo, leaveCluster, getNodeStatus} from '@/api/system'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
 import {getWsUrl, LOCAL_HOST} from '@/utils/config'
 import {
@@ -25,7 +25,8 @@ import {
   ElTabPane,
   ElProgress,
   ElSelect,
-  ElOption
+  ElOption,
+  ElMessageBox
 } from 'element-plus'
 import {
   Refresh,
@@ -39,9 +40,11 @@ import {
   Document,
   Back,
   Cellphone,
-  Setting
+  Setting,
+  SwitchButton
 } from '@element-plus/icons-vue'
 
+const router = useRouter()
 const loading = ref(false)
 const deviceList = ref([])
 
@@ -54,23 +57,8 @@ const commandForm = reactive({
 })
 const sending = ref(false)
 
-// 添加设备弹窗
-const addDeviceDialogVisible = ref(false)
-const qrCodeUrl = ref('')
-const serverAddress = ref('')
-const isLocalhost = ref(false)
-const activeAddDeviceTab = ref('mobile')
-const isScanning = ref(false)
-const scannedServers = ref([])
-const targetClusterUrl = ref('')
-const joinWarningVisible = ref(false)
-const currentServerInfo = ref({ ip: 'Unknown', port: 'Unknown', hostname: 'Unknown', server_name: 'MiniOrange Master' })
-const isNodeMode = ref(false)
 const masterUrl = ref('')
 
-// 网络配置相关
-const networkDialogVisible = ref(false)
-const networkForm = reactive({ external_url: '' })
 
 // 密码设置弹窗
 const passwordDialogVisible = ref(false)
@@ -161,104 +149,6 @@ const submitCommand = () => {
 
   ElMessage.info('指令已发送')
   dialogVisible.value = false
-}
-
-// 显示添加设备弹窗
-const showAddDeviceDialog = async () => {
-  try {
-    const res = await getServerInfo()
-    if (res.code === 200) {
-      const info = res.data
-
-      // 🔥 适配 Tailscale/远程环境: 
-      // 如果前端是通过自定义 IP (如 Tailscale IP) 连接的，强制修正二维码中的地址
-      // 确保手机端扫描后能连接到正确的 IP，而不是服务端自己认为的局域网 IP
-      const currentWsUrl = getConnectedUrl()
-      if (currentWsUrl && (currentWsUrl.startsWith('ws://') || currentWsUrl.startsWith('wss://'))) {
-        try {
-          const wsUrlObj = new URL(currentWsUrl)
-          const newHost = wsUrlObj.hostname
-          const newPort = wsUrlObj.port
-
-          // 🔥 修复：如果当前浏览器使用的是 localhost/127.0.0.1，但服务端返回了有效的局域网 IP (如 192.x, 10.x, 100.x)，
-          // 则不要用 localhost 覆盖它，否则手机端扫码无法连接。
-          const isLocal = newHost === '127.0.0.1' || newHost === 'localhost'
-          let serverHasValidIp = false
-          if (info.ip && info.ip !== '127.0.0.1' && info.ip !== 'localhost' && info.ip !== '0.0.0.0') {
-            serverHasValidIp = true
-          } else if (info.connect_url) {
-            try {
-              const sUrl = new URL(info.connect_url)
-              if (sUrl.hostname !== '127.0.0.1' && sUrl.hostname !== 'localhost' && sUrl.hostname !== '0.0.0.0') {
-                serverHasValidIp = true
-              }
-            } catch (e) {}
-          }
-
-          // 只有当 "当前不是 localhost" 或者 "服务端没给有效IP" 时，才进行覆盖
-          if (!isLocal || !serverHasValidIp) {
-            // 1. 修正 qr_payload (用于生成二维码)
-            if (info.qr_payload) {
-              try {
-                // 尝试解析 JSON 格式 payload
-                const payloadObj = JSON.parse(info.qr_payload)
-                // 兼容不同的 payload 格式 (u 或 url)
-                const urlKey = payloadObj.u ? 'u' : (payloadObj.url ? 'url' : null)
-
-                if (urlKey) {
-                  const u = new URL(payloadObj[urlKey])
-                  u.hostname = newHost
-                  if (newPort) u.port = newPort
-                  payloadObj[urlKey] = u.toString()
-                  info.qr_payload = JSON.stringify(payloadObj)
-                }
-              } catch (e) {
-                // 非 JSON，可能是纯 URL 字符串
-                if (typeof info.qr_payload === 'string' && info.qr_payload.startsWith('http')) {
-                  const u = new URL(info.qr_payload)
-                  u.hostname = newHost
-                  if (newPort) u.port = newPort
-                  info.qr_payload = u.toString()
-                }
-              }
-            }
-
-            // 2. 修正 connect_url (用于显示)
-            if (info.connect_url) {
-              const u = new URL(info.connect_url)
-              u.hostname = newHost
-              if (newPort) u.port = newPort
-              info.connect_url = u.toString()
-            }
-
-            // 3. 更新界面显示的 IP
-            info.ip = newHost
-          }
-        } catch (e) {
-          console.warn('Failed to patch QR code with custom IP', e)
-        }
-      }
-
-      currentServerInfo.value = info
-      serverAddress.value = info.connect_url
-      
-      // 使用后端返回的 qr_payload 生成二维码 (包含 Token 和 URL)
-      const payload = info.qr_payload || info.connect_url
-      qrCodeUrl.value = await QRCode.toDataURL(payload, {width: 256})
-      
-      // 简单判断是否是 localhost
-      isLocalhost.value = info.ip === '127.0.0.1' || info.ip === 'localhost'
-
-      // 🔥 更新节点模式状态
-      isNodeMode.value = info.role === 'node'
-      if (info.master_url) masterUrl.value = info.master_url
-    }
-    activeAddDeviceTab.value = 'mobile'
-    addDeviceDialogVisible.value = true
-  } catch (err) {
-    ElMessage.error('生成二维码失败')
-    console.error(err)
-  }
 }
 
 // 打开设置密码弹窗
@@ -475,55 +365,28 @@ const handleWsMessage = (res) => {
   }
 }
 
-const scanLanServers = async () => {
-  isScanning.value = true
-  scannedServers.value = []
-  try {
-    const res = await scanLanServersApi()
-    if (res.code === 200) {
-      scannedServers.value = res.data || []
-      if (scannedServers.value.length === 0) {
-        ElMessage.info('暂未发现局域网内的其他服务器，请手动输入')
-      }
-    }
-  } catch (e) {
-    ElMessage.error('扫描失败: ' + e.message)
-  } finally {
-    isScanning.value = false
-  }
-}
-
-const handleJoinClick = (url) => {
-  if (!url) {
-    ElMessage.warning('请输入目标服务器地址')
-    return
-  }
-  targetClusterUrl.value = url
-  joinWarningVisible.value = true
-}
-
-const confirmJoinCluster = async () => {
-  try {
-    await joinCluster(targetClusterUrl.value)
-    ElMessage.success('指令已发送，正在切换模式...')
-    joinWarningVisible.value = false
-    addDeviceDialogVisible.value = false
-  } catch (e) {
-    ElMessage.error('请求失败: ' + (e.message || '未知错误'))
-  }
-}
-
 // 退出集群
 const handleLeaveCluster = async () => {
-  try {
-    await leaveCluster()
-    ElMessage.success('已退出集群，服务正在重启...')
-    addDeviceDialogVisible.value = false
-    // 等待后端重启后刷新页面
-    setTimeout(() => window.location.reload(), 3000)
-  } catch (e) {
-    ElMessage.error('退出失败: ' + e.message)
-  }
+  ElMessageBox.confirm('确定要解除绑定吗？设备将重启并断开连接。', '解绑确认', {
+    confirmButtonText: '确定解绑',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      await leaveCluster()
+      ElMessage.success('已解绑，正在重启...')
+    } catch (e) {
+      // 忽略因服务重启导致的连接中断错误，视为操作继续
+      console.warn('解绑请求可能因服务重启而中断:', e)
+    } finally {
+      // 无论成功与否，都清理本地状态并跳转
+      localStorage.removeItem('ws_token')
+      localStorage.removeItem('token')
+      router.replace('/login')
+      // 延迟刷新以重置 WebSocket 连接状态
+      setTimeout(() => window.location.reload(), 1000)
+    }
+  })
 }
 
 const handleScrcpy = (row) => {
@@ -531,34 +394,19 @@ const handleScrcpy = (row) => {
   scrcpyDialogVisible.value = true
 }
 
-const openNetworkSettings = () => {
-  networkForm.external_url = currentServerInfo.value.external_url || ''
-  networkDialogVisible.value = true
-}
-
-const saveNetworkSettings = async () => {
-  try {
-    await updateConfig({ external_url: networkForm.external_url })
-    ElMessage.success('配置已保存')
-    networkDialogVisible.value = false
-    // 刷新服务器信息以更新二维码
-    await showAddDeviceDialog()
-  } catch (e) {
-    ElMessage.error('保存失败: ' + e.message)
-  }
-}
-
 onMounted(async () => {
+  console.log('[DeviceManage] onMounted: 页面加载')
   // 🔥 1. 先获取服务端信息拿到 Token
   try {
-    const res = await getServerInfo()
-    if (res.code === 200 && res.data?.token) {
-      initWebSocket(res.data.token)
-    } else {
-      initWebSocket()
+    console.log('[DeviceManage] 正在调用 getNodeStatus()...')
+    const res = await getNodeStatus()
+    console.log('[DeviceManage] getNodeStatus 返回结果:', res)
+    if (res.code === 200) {
+      masterUrl.value = res.data.master_url
     }
   } catch (e) {
-    initWebSocket()
+    console.error('[DeviceManage] getNodeStatus 调用失败:', e)
+    console.error(e)
   }
 
   addMessageListener(handleWsMessage)
@@ -578,10 +426,14 @@ onUnmounted(() => {
           <Monitor/>
         </el-icon>
         <h2>设备管理</h2>
+        <div v-if="masterUrl" class="master-status">
+          <el-tag type="success" effect="plain" size="small">已连接主控</el-tag>
+          <span class="master-url">{{ masterUrl }}</span>
+        </div>
       </div>
       <div class="header-actions">
         <el-button type="success" plain :icon="Files" @click="openTransferDialog()">文件传输</el-button>
-        <el-button type="primary" :icon="Plus" @click="showAddDeviceDialog">添加设备</el-button>
+        <el-button type="danger" plain :icon="SwitchButton" @click="handleLeaveCluster">退出登录 / 解绑</el-button>
         <el-button :icon="Refresh" circle @click="fetchList" :loading="loading" title="刷新列表"/>
       </div>
     </div>
@@ -672,119 +524,6 @@ onUnmounted(() => {
           <el-button type="primary" @click="submitCommand" :loading="sending">
             发送
           </el-button>
-        </span>
-      </template>
-    </el-dialog>
-
-    <!-- 添加设备弹窗 -->
-    <el-dialog
-        v-model="addDeviceDialogVisible"
-        title="连接与组网"
-        width="500px"
-        destroy-on-close
-    >
-      <el-tabs v-model="activeAddDeviceTab" stretch>
-        <!-- A. 移动端连接模块 -->
-        <el-tab-pane label="移动端连接" name="mobile">
-          <div class="qr-code-container">
-            <p class="guide-text">使用 MiniOrange App 扫描下方二维码，即可连接至本机。连接后，手机将作为移动控制端 (Client)，可查看设备投屏、执行 Workflow 任务或发送指令。</p>
-            
-            <img v-if="qrCodeUrl" :src="qrCodeUrl" alt="QR Code" class="qr-code-img"/>
-            
-            <div class="network-hint">
-              <el-icon><Connection /></el-icon>
-              <span>请确保手机与本机处于同一局域网 (Wi-Fi)</span>
-            </div>
-            <div class="server-info-tag">
-              本机 IP: <strong>{{ currentServerInfo.ip }}</strong>
-            </div>
-            <div class="server-detail-text">
-              服务器: {{ currentServerInfo.server_name }} | 端口: {{ currentServerInfo.port }}
-            </div>
-
-            <div style="margin-top: 8px;">
-              <el-button link type="primary" size="small" @click="openNetworkSettings">
-                <el-icon style="margin-right: 4px"><Setting /></el-icon> 配置外网/穿透地址
-              </el-button>
-            </div>
-
-            <el-alert v-if="isLocalhost" title="本地网络提示" type="warning" show-icon :closable="false" style="margin-top: 10px">
-              当前检测到 localhost 地址，外部设备可能无法连接。请确保使用局域网 IP。
-            </el-alert>
-          </div>
-        </el-tab-pane>
-
-        <!-- B. 集群组网模块 -->
-        <el-tab-pane label="分布式集群" name="cluster">
-          <div class="cluster-container">
-            <!-- 节点模式 UI -->
-            <div v-if="isNodeMode" class="cluster-status-card node-mode">
-              <el-tag type="warning" effect="dark">Node Mode</el-tag>
-              <p class="status-desc">当前本机作为 <strong>计算节点</strong> 运行中。</p>
-              <div class="node-info">
-                <span>归属主控: {{ masterUrl || 'Unknown' }}</span>
-              </div>
-              <div style="margin-top: 16px;">
-                <el-button type="danger" plain @click="handleLeaveCluster">退出集群 (恢复独立服务)</el-button>
-              </div>
-            </div>
-
-            <!-- Master 模式 UI -->
-            <div v-else>
-            <div class="cluster-status-card">
-              <el-tag type="success" effect="dark">Master Mode</el-tag>
-              <p class="status-desc">当前本机作为 <strong>独立服务端 (Master)</strong> 运行。您可以扫描局域网内的其他服务器，将本机作为计算节点加入它们。</p>
-            </div>
-
-            <div class="scan-section">
-              <el-button type="primary" plain :loading="isScanning" @click="scanLanServers" style="width: 100%">
-                扫描局域网服务器
-              </el-button>
-            </div>
-
-            <div class="server-list">
-              <div v-for="srv in scannedServers" :key="srv.url" class="server-item">
-                <div class="srv-info">
-                  <div class="srv-name">{{ srv.name }}</div>
-                  <div class="srv-ip">{{ srv.ip }}</div>
-                </div>
-                <el-button size="small" type="primary" @click="handleJoinClick(srv.url)">连接</el-button>
-              </div>
-              <div v-if="scannedServers.length === 0 && !isScanning" class="empty-scan">
-                <el-empty description="未发现服务器" :image-size="60" />
-              </div>
-            </div>
-
-            <div class="manual-join">
-              <div class="divider"><span>或手动加入</span></div>
-              <el-input v-model="targetClusterUrl" placeholder="输入主控地址 (ws://ip:port/ws/device)">
-                <template #append>
-                  <el-button @click="handleJoinClick(targetClusterUrl)">加入</el-button>
-                </template>
-              </el-input>
-            </div>
-            </div>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
-    </el-dialog>
-
-    <!-- C. 连接确认弹窗 -->
-    <el-dialog
-      v-model="joinWarningVisible"
-      title="⚠️ 模式切换警告"
-      width="400px"
-      center
-    >
-      <div class="warning-content">
-        <p>您即将加入 <strong>{{ targetClusterUrl }}</strong> 的集群。</p>
-        <p class="warning-highlight">⚠️ 警告：加入集群后，本机 Web 管理界面将关闭，并转为后台节点模式运行。是否继续？</p>
-        <p class="warning-sub">如需恢复，请在主控端移除本节点，或重启本机程序。</p>
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="joinWarningVisible = false">取消</el-button>
-          <el-button type="danger" @click="confirmJoinCluster">确认加入</el-button>
         </span>
       </template>
     </el-dialog>
@@ -968,20 +707,6 @@ onUnmounted(() => {
       </div>
     </el-dialog>
 
-    <!-- 网络配置弹窗 -->
-    <el-dialog v-model="networkDialogVisible" title="网络配置" width="450px" append-to-body>
-      <el-form :model="networkForm" label-position="top">
-        <el-form-item label="外部访问地址 (External URL)">
-          <el-input v-model="networkForm.external_url" placeholder="例如: wss://my-frp.com:12345/ws" />
-          <div style="font-size: 12px; color: #909399; margin-top: 4px; line-height: 1.4;">设置后，二维码将包含此地址，允许外网设备通过穿透服务连接。</div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="networkDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveNetworkSettings">保存</el-button>
-      </template>
-    </el-dialog>
-
   </div>
 </template>
 
@@ -1021,6 +746,13 @@ onUnmounted(() => {
   color: #6366f1;
 }
 
+.master-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.master-url { font-size: 12px; color: #64748b; font-family: monospace; }
+
 .page-header h2 {
   margin: 0;
   font-size: 20px;
@@ -1044,122 +776,6 @@ onUnmounted(() => {
 
 .code-input {
   font-family: monospace;
-}
-
-.qr-code-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  text-align: center;
-  padding: 10px 0;
-}
-
-.guide-text {
-  margin: 0;
-  font-size: 14px;
-  color: #606266;
-  line-height: 1.5;
-  margin-bottom: 8px;
-}
-
-.qr-code-img {
-  width: 200px;
-  height: 200px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-
-.network-hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #e6a23c;
-  font-size: 12px;
-}
-
-.server-info-tag {
-  background: #f0f9eb;
-  color: #67c23a;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 14px;
-}
-
-.server-detail-text {
-  font-size: 12px;
-  color: #909399;
-}
-
-/* Cluster Styles */
-.cluster-container {
-  padding: 10px 0;
-}
-.cluster-status-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 16px;
-  text-align: center;
-  margin-bottom: 20px;
-}
-.status-desc {
-  margin: 10px 0 0 0;
-  font-size: 13px;
-  color: #606266;
-  line-height: 1.5;
-}
-.scan-section { margin-bottom: 16px; }
-.node-info {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #909399;
-  font-family: monospace;
-}
-.server-list {
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  height: 150px;
-  overflow-y: auto;
-  margin-bottom: 16px;
-}
-.server-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #f1f5f9;
-}
-.srv-name { font-weight: 600; font-size: 14px; color: #303133; }
-.srv-ip { font-size: 12px; color: #909399; }
-.empty-scan { padding: 20px 0; }
-
-.manual-join .divider {
-  display: flex;
-  align-items: center;
-  margin-bottom: 12px;
-  color: #909399;
-  font-size: 12px;
-}
-.manual-join .divider::before, .manual-join .divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: #e2e8f0;
-}
-.manual-join .divider span { padding: 0 10px; }
-
-.warning-content {
-  text-align: center;
-}
-.warning-highlight {
-  color: #f56c6c;
-  font-weight: 600;
-  margin: 16px 0;
-}
-.warning-sub {
-  font-size: 12px;
-  color: #909399;
 }
 
 .transfer-direction {

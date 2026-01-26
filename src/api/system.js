@@ -1,48 +1,21 @@
-import { getBaseUrl } from '@/utils/config'
+import { sendWsRequest } from '@/api/mWebSocket'
 
-const handleResponse = async (response) => {
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(errorText || response.statusText)
-  }
-  return response.json()
+export const getServerInfo = () => {
+  return sendWsRequest('get_server_info')
 }
 
-export const getServerInfo = async () => {
-  const response = await fetch(`${getBaseUrl()}/sys/server_info`)
-  return handleResponse(response)
+export const joinCluster = (target_urls, token) => {
+  return sendWsRequest('join_cluster', { target_urls, token })
 }
 
-export const scanLanServers = async () => {
-  const response = await fetch(`${getBaseUrl()}/sys/scan_lan_servers`)
-  return handleResponse(response)
+export const leaveCluster = () => {
+  return sendWsRequest('leave_cluster')
 }
 
-export const joinCluster = async (targetUrl) => {
-  const response = await fetch(`${getBaseUrl()}/sys/join_cluster`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ target_url: targetUrl })
-  })
-  return handleResponse(response)
+export const updateConfig = (data) => {
+  return sendWsRequest('update_server_config', data)
 }
 
-export const leaveCluster = async () => {
-  const response = await fetch(`${getBaseUrl()}/sys/leave_cluster`, {
-    method: 'POST'
-  })
-  return handleResponse(response)
-}
-
-export const updateConfig = async (data) => {
-  const response = await fetch(`${getBaseUrl()}/sys/config`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(data)
-  })
-  return handleResponse(response)
+export const getNodeStatus = () => {
+  return sendWsRequest('get_node_status')
 }

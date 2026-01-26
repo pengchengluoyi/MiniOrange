@@ -8,6 +8,8 @@ import { initServiceConfig } from '@/utils/config' // 🔥 新增：引入配置
 // 🔥🔥🔥 Vue Flow 核心样式
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
+import ElementPlus from 'element-plus'
+import 'element-plus/dist/index.css'
 
 // 初始化服务配置
 initServiceConfig().then((host) => {
@@ -19,4 +21,5 @@ const pinia = createPinia()
 
 app.use(pinia)
 app.use(router) // 🔥 新增：挂载路由
+app.use(ElementPlus)
 app.mount('#app')
