@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getServerInfo, getNodeStatus } from '@/api/system'
+import managementWsService from '@/api/managementWebSocket'
 import QRCode from 'qrcode'
 import { ElMessage, ElButton } from 'element-plus'
 
@@ -10,6 +11,16 @@ const qrCodeUrl = ref('')
 const hostname = ref('')
 const loading = ref(false)
 const isConnected = ref(true)
+
+let pollTimer = null
+let qrRetryTimer = null
+
+const clearTimers = () => {
+  if (pollTimer) clearInterval(pollTimer)
+  if (qrRetryTimer) clearInterval(qrRetryTimer)
+  pollTimer = null
+  qrRetryTimer = null
+}
 
 // 获取配网二维码
 const fetchQrCode = async () => {
@@ -22,6 +33,15 @@ const fetchQrCode = async () => {
     const res = await getServerInfo()
     console.log('[Login] fetchQrCode: getServerInfo 返回结果:', res)
     if (res.code === 200) {
+      // 🔥 如果服务端已经是 node 或 client 模式 (已配网)，且存在 Token，尝试自动登录
+      const token = res.data.token || res.data.access_token
+      if ((res.data.role === 'node' || res.data.role === 'client') && token) {
+        localStorage.setItem('ws_token', token)
+        clearTimers()
+        ElMessage.success('检测到已登录')
+        router.replace('/')
+        return
+      }
       hostname.value = res.data.hostname
       // 渲染二维码
       qrCodeUrl.value = await QRCode.toDataURL(res.data.qr_payload, {
@@ -49,16 +69,28 @@ const handleReset = () => {
 }
 
 // 轮询或监听状态变化
-let pollTimer = null
-let qrRetryTimer = null // [新增] 二维码重试定时器
 const checkStatus = async () => {
   if (!isConnected.value) return
   try {
     // console.log('[Login] checkStatus: 轮询节点状态...')
     const res = await getNodeStatus()
-    // 🔥 核心商业逻辑：一旦检测到角色变成 node，说明手机扫码成功了
-    if (res.code === 200 && res.data.role === 'node') {
-      console.log('[Login] checkStatus: 检测到角色变更为 node，登录成功！')
+    
+    let token = res.data.token || res.data.access_token
+    const isNode = res.data.role === 'node'
+
+    // 🔥 如果检测到角色已经是 node，但 getNodeStatus 没返回 token，则调用 getServerInfo 获取 token
+    if (res.code === 200 && isNode && !token) {
+      const infoRes = await getServerInfo()
+      if (infoRes.code === 200) {
+        token = infoRes.data.token || infoRes.data.access_token
+      }
+    }
+
+    // 🔥 核心商业逻辑：有 Token 且角色正确 (node 或 client)
+    if (token && (isNode || res.data.role === 'client')) {
+      console.log('[Login] checkStatus: 登录成功！')
+      localStorage.setItem('ws_token', token)
+      clearTimers()
       ElMessage.success('登录成功')
       router.replace('/')
     }
@@ -86,7 +118,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  clearTimers()
 })
 </script>
 

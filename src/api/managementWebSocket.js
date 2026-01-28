@@ -24,36 +24,59 @@ class ManagementWebSocket {
     this.reconnectAttempts = 0
     this.reconnectInterval = 5000 // 5秒重连
     this.messageQueue = []
-    this.targetUrl = null // 🔥 缓存最终确定的 URL
+    this.manualUrl = null // 🔥 手动设置的 URL
+    this.useRemoteHost = false // 🔥 缓存是否需要使用 miniorange.local
+    this.reconnectTimer = null // 🔥 重连定时器引用
   }
 
   // 🔥 允许外部设置 URL (例如 App.vue 探测完成后)
   setUrl(url) {
-    this.targetUrl = url
+    this.manualUrl = url
   }
 
   async connect() {
+    // 🔥 如果有正在等待的重连定时器，立即清除，允许本次强制连接
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return
     }
 
-    // 🔥 如果没有设置 URL，则尝试自动探测
-    if (!this.targetUrl) {
-      let url = getWsUrl()
-      if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1')) {
+    let url = this.manualUrl
+
+    // 🔥 如果没有手动设置 URL，则从配置获取并尝试自动探测
+    if (!url) {
+      url = getWsUrl()
+
+      // 如果之前探测到需要使用 remote host，直接替换
+      if (this.useRemoteHost) {
+        url = url.replace('127.0.0.1', 'miniorange.local')
+      } 
+      // 否则执行探测逻辑
+      else if (!import.meta.env.VITE_WS_URL && url.includes('127.0.0.1')) {
         if (!await checkUrl(url)) {
           console.log('[Mgmt-WS] Local 127.0.0.1 unreachable, probing miniorange.local...')
           const remote = url.replace('127.0.0.1', 'miniorange.local')
           if (await checkUrl(remote)) {
+            this.useRemoteHost = true
             url = remote
           }
         }
       }
-      this.targetUrl = url
     }
 
-    console.log('[Mgmt-WS] Connecting to:', this.targetUrl)
-    this.ws = new WebSocket(this.targetUrl)
+    // 🔥 自动附加 Token (如果存在且 URL 中尚未包含)
+    const token = localStorage.getItem('ws_token')
+    if (token && !url.includes('token=')) {
+      const separator = url.includes('?') ? '&' : '?'
+      url = `${url}${separator}token=${token}`
+    }
+
+    console.log('[Mgmt-WS] Connecting to:', url)
+    this.ws = new WebSocket(url)
 
     this.ws.onopen = () => {
       console.log('[Mgmt-WS] Connected to server.')
@@ -81,7 +104,7 @@ class ManagementWebSocket {
     this.ws.onclose = () => {
       this.isConnected = false
       this.ws = null
-      setTimeout(() => {
+      this.reconnectTimer = setTimeout(() => {
         this.reconnectAttempts++
         this.connect()
       }, this.reconnectInterval)

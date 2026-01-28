@@ -119,7 +119,7 @@ export const sendWsRequest = (action, data = {}) => {
 }
 
 export const wsGetFile = (path) => {
-  return sendWsRequest('get_file', { path })
+  return sendWsRequest('get_file', { "name": path })
 }
 
 export const wsUploadFile = (name, content) => {
