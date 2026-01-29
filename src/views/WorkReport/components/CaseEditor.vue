@@ -1,94 +1,47 @@
 <template>
-  <el-container class="editor-container three-column-layout" ref="editorContainerRef">
-    <el-header v-if="isPicker" height="60px" class="editor-toolbar-wrapper">
-      <div class="editor-toolbar-glass">
-        <span class="label">请点击画面中的热区进行选择</span>
-        <div class="toolbar-info" style="margin-left: auto">
-          <el-button size="small" @click="$emit('close')">取消</el-button>
+  <div class="case-editor-root" ref="editorContainerRef">
+    <!-- 🔥 Teleport Toolbar to Global TitleBar -->
+    <Teleport to="#titlebar-center-portal">
+      <div class="editor-toolbar-portal" v-if="isPicker">
+        <span class="portal-label">请点击画面中的热区进行选择</span>
+        <div class="portal-actions">
+          <el-button size="small" round @click="$emit('close')">取消</el-button>
         </div>
       </div>
-    </el-header>
-    <el-header v-else height="60px" class="editor-toolbar-wrapper">
-      <div class="editor-toolbar-glass">
-        <el-button :icon="ArrowLeft" circle size="small" @click="$router.back()"/>
+      <div class="editor-toolbar-portal" v-else>
+        <el-button :icon="ArrowLeft" text circle size="default" @click="$router.back()" class="portal-back-btn"/>
 
-        <div class="toolbar-group">
-          <span class="label">添加节点:</span>
+        <div class="portal-group">
           <el-button-group>
-            <el-button type="primary" plain size="small" @click="addNode('page')">📄 页面</el-button>
-            <el-button type="warning" plain size="small" @click="addNode('component')">🧩 组件</el-button>
+            <el-button type="primary" link size="small" @click="addNode('page')">
+              <el-icon><Document /></el-icon> 页面
+            </el-button>
+            <el-button type="warning" link size="small" @click="addNode('component')">
+              <el-icon><Cpu /></el-icon> 组件
+            </el-button>
           </el-button-group>
         </div>
 
-        <div class="toolbar-group">
-          <el-button type="danger" plain size="small" :icon="Delete" :disabled="selectedElements.length === 0"
-                     @click="removeSelected">删除选中
+        <div class="portal-divider"></div>
+
+        <div class="portal-group">
+          <el-button type="danger" link size="small" :icon="Delete" :disabled="selectedElements.length === 0" @click="removeSelected" title="删除选中">
           </el-button>
-          <el-button type="info" plain size="small" :icon="Refresh" @click="fitView">重置视图</el-button>
+          <el-button type="info" link size="small" :icon="Refresh" @click="fitView" title="重置视图"></el-button>
         </div>
 
-        <div class="toolbar-info">
+        <div class="portal-info">
           <span v-if="saveStatus === 'saving'" class="save-status saving">
-            <el-icon class="is-loading"><Refresh/></el-icon> 保存中...
+            <el-icon class="is-loading"><Refresh/></el-icon>
           </span>
-          <span v-else-if="saveStatus === 'saved'" class="save-status saved">✔ 已保存</span>
-          <span v-else-if="saveStatus === 'unsaved'" class="save-status unsaved">⚠️ 未保存</span>
-          <el-tag type="info" size="small" effect="plain">提示: 选中节点后添加可自动连线</el-tag>
+          <span v-else-if="saveStatus === 'saved'" class="save-status saved">✔</span>
+          <span v-else-if="saveStatus === 'unsaved'" class="save-status unsaved">⚠️</span>
         </div>
       </div>
-    </el-header>
+    </Teleport>
 
-    <el-container class="main-body">
-      <!-- Left Column: SOP Navigation -->
-      <el-aside width="280px" class="sop-sidebar" v-if="!isPicker">
-        <div class="sidebar-header">
-          <span class="title">SOPs</span>
-          <el-button type="info" link size="small" @click="openGraphSettings" title="Global Variables">
-            <el-icon><Setting /></el-icon>
-          </el-button>
-          <el-button type="primary" link size="small" @click="createNewSOP">
-            <el-icon><Plus /></el-icon>
-          </el-button>
-        </div>
-        
-        <ElTabs v-model="activeSopTab" class="sop-tabs" stretch>
-          <ElTabPane label="业务剧本" name="business">
-            <el-scrollbar>
-              <div class="sop-list">
-                <div v-for="sop in businessSops" :key="sop.id"
-                     class="sop-item business"
-                     :class="{ active: selectedSopId === sop.id }"
-                     @click="selectSOP(sop)">
-                  <div class="sop-header">
-                    <span class="sop-name">{{ sop.name }}</span>
-                  </div>
-                  <div class="sop-desc">{{ sop.desc || 'No description' }}</div>
-                </div>
-              </div>
-            </el-scrollbar>
-          </ElTabPane>
-          <ElTabPane label="系统反射" name="system">
-            <el-scrollbar>
-              <div class="sop-list">
-                <div v-for="sop in systemSops" :key="sop.id"
-                     class="sop-item system"
-                     :class="{ active: selectedSopId === sop.id }"
-                     @click="selectSOP(sop)">
-                  <div class="sop-header">
-                    <span class="sop-name">{{ sop.name }}</span>
-                    <el-tag size="small" type="danger" effect="dark">P{{ sop.priority }}</el-tag>
-                  </div>
-                  <div class="sop-desc">{{ sop.desc || 'No trigger defined' }}</div>
-                </div>
-              </div>
-            </el-scrollbar>
-          </ElTabPane>
-        </ElTabs>
-      </el-aside>
-
-      <!-- Center Column: Canvas -->
-      <el-main class="flow-wrapper">
-      <div class="canvas-container">
+    <!-- 🔥 Layer 0: Full Screen Canvas -->
+    <div class="flow-wrapper">
         <VueFlow
             id="case-editor-canvas"
             v-if="isReady"
@@ -109,13 +62,15 @@
             @pane-click="onPaneClick"
             @nodes-change="onNodesChange"
             @edges-change="onEdgesChange"
+            @dragover.prevent
+            @drop="onCanvasDrop"
         >
           <!-- SOP Visual Grouping Layer -->
-          <div v-if="selectedSopId"
+          <div v-for="sop in sops" :key="sop.id"
                class="sop-group-bg"
-               :class="[activeSopTab]"
-               :style="sopBoundingBoxStyle">
-            <span class="sop-group-label">{{ currentSopName }}</span>
+               :class="[sop.type === 'system' ? 'system' : 'business', { active: selectedSopId === sop.id }]"
+               :style="getSopBoundingStyle(sop)">
+            <span class="sop-group-label">{{ sop.name }}</span>
           </div>
 
           <template #node-page="props">
@@ -129,60 +84,120 @@
           <Controls/>
           <MiniMap/>
         </VueFlow>
-      </div>
+    </div>
 
-      <transition name="fade">
-        <div v-if="selectedNode" class="editor-overlay-wrapper" @click.self="clearSelection">
-          <PageDetailEditor
-              :node="selectedNode"
-              :graph-id="graphId"
-              @close="clearSelection"
-              @update="onNodeUpdate"
-          />
+    <!-- 🔥 Layer 10: Floating Left Card (SOPs) -->
+    <Transition name="slide-fade-left">
+      <div class="floating-card left" v-if="!isPicker && showLeftPanel">
+        <div class="panel-header">
+          <span class="panel-title">SOP Graph</span>
+          <div class="header-actions">
+            <el-button type="info" link size="small" @click="openGraphSettings">
+              <el-icon><Setting /></el-icon>
+            </el-button>
+            <el-button type="primary" link size="small" @click="createNewSOP">
+              <el-icon><Plus /></el-icon>
+            </el-button>
+            <el-button link size="small" @click="showLeftPanel = false" class="collapse-btn">
+              <el-icon><Close /></el-icon>
+            </el-button>
+          </div>
         </div>
-      </transition>
-    </el-main>
 
-      <!-- Right Column: Properties / SOP Editor -->
-      <el-aside width="300px" class="props-sidebar" v-if="!isPicker && selectedSopId">
-        <div class="sidebar-content">
-          <div class="sidebar-header">
-            <span class="title">SOP Configuration</span>
+        <ElTabs v-model="activeSopTab" class="glass-tabs" stretch>
+          <ElTabPane label="Business" name="business">
+            <el-scrollbar>
+              <div class="sop-list">
+                <div v-for="sop in businessSops" :key="sop.id"
+                     class="glass-card sop-item business"
+                     :class="{ active: selectedSopId === sop.id }"
+                     draggable="true"
+                     @dragstart="onSopDragStart($event, sop)"
+                     @click="selectSOP(sop)">
+                  <div class="sop-header">
+                    <span class="sop-name">{{ sop.name }}</span>
+                  </div>
+                  <div class="sop-desc">{{ sop.desc || 'No description' }}</div>
+                </div>
+              </div>
+            </el-scrollbar>
+          </ElTabPane>
+          <ElTabPane label="System" name="system">
+            <el-scrollbar>
+              <div class="sop-list">
+                <div v-for="sop in systemSops" :key="sop.id"
+                     class="glass-card sop-item system"
+                     :class="{ active: selectedSopId === sop.id }"
+                     draggable="true"
+                     @dragstart="onSopDragStart($event, sop)"
+                     @click="selectSOP(sop)">
+                  <div class="sop-header">
+                    <span class="sop-name">{{ sop.name }}</span>
+                    <el-tag size="small" type="danger" effect="dark" round>P{{ sop.priority }}</el-tag>
+                  </div>
+                  <div class="sop-desc">{{ sop.desc || 'No trigger defined' }}</div>
+                </div>
+              </div>
+            </el-scrollbar>
+          </ElTabPane>
+        </ElTabs>
+      </div>
+    </Transition>
+
+    <!-- Left FAB (Closed) -->
+    <Transition name="fade">
+      <div class="fab-toggle left" v-if="!isPicker && !showLeftPanel" @click="showLeftPanel = true">
+        <el-icon size="20"><Menu /></el-icon>
+      </div>
+    </Transition>
+
+    <!-- 🔥 Layer 10: Floating Right Card (Config) -->
+    <Transition name="slide-fade-right">
+      <div class="floating-card right" v-if="!isPicker && selectedSopId && showRightPanel">
+        <div class="panel-header">
+          <el-button link size="small" @click="showRightPanel = false" class="collapse-btn">
+            <el-icon><Close /></el-icon>
+          </el-button>
+          <span class="panel-title">Configuration</span>
             <el-button type="danger" link size="small" @click="handleDeleteSOP">
               <el-icon><Delete /></el-icon>
             </el-button>
-          </div>
+        </div>
           <el-scrollbar>
             <div class="form-wrapper">
+              <div class="section-header">Basic Info</div>
               <div class="form-item">
                 <div class="label">Name</div>
-                <el-input v-model="currentSopForm.name" @change="handleUpdateSOP" />
+              <el-input v-model="currentSopForm.name" @change="handleUpdateSOP" class="glass-input"/>
               </div>
               <div class="form-item" v-if="activeSopTab === 'system'">
                 <div class="label">Priority (Higher = First)</div>
-                <el-input-number v-model="currentSopForm.priority" :min="0" :max="999" @change="handleUpdateSOP" />
+              <el-input-number v-model="currentSopForm.priority" :min="0" :max="999" @change="handleUpdateSOP" class="glass-input"/>
               </div>
               <div class="form-item">
                 <div class="label">Description</div>
-                <el-input v-model="currentSopForm.desc" type="textarea" :rows="3" @change="handleUpdateSOP" />
+              <el-input v-model="currentSopForm.desc" type="textarea" :rows="3" @change="handleUpdateSOP" class="glass-input"/>
               </div>
+
+              <div class="section-divider"></div>
+              <div class="section-header">Configuration</div>
               
               <div class="form-item">
                 <div class="label">Variables (JSON)</div>
-                <!-- 暂时用文本域代替 KV 编辑器 -->
-                <el-input 
+                <SmartJsonEditor 
                   v-model="currentSopForm.variablesStr" 
-                  type="textarea" 
-                  :rows="5" 
                   placeholder='{"key": "value"}'
                   @change="handleUpdateSOPVariables" 
                 />
               </div>
 
+              <div class="section-divider"></div>
+              <div class="section-header">Workflow</div>
+
               <div class="form-item">
                 <div class="label">Associated Cases</div>
                 <div v-if="getSopCases(selectedSopId).length === 0" class="empty-text">No cases linked</div>
-                <div v-for="c in getSopCases(selectedSopId)" :key="c.id" class="case-list-item">
+              <div v-for="c in getSopCases(selectedSopId)" :key="c.id" class="glass-card case-list-item">
                   <div class="case-info">
                     <el-icon><Document /></el-icon>
                     <span class="case-label" :title="c.label">{{ c.label }}</span>
@@ -201,8 +216,27 @@
               </div>
             </div>
           </el-scrollbar>
-        </div>
-      </el-aside>
+      </div>
+    </Transition>
+
+    <!-- Right FAB (Closed) -->
+    <Transition name="fade">
+      <div class="fab-toggle right" v-if="!isPicker && selectedSopId && !showRightPanel" @click="showRightPanel = true">
+        <el-icon size="20"><Setting /></el-icon>
+      </div>
+    </Transition>
+
+    <!-- 🔥 Layer 20: Focus Mode Overlay -->
+    <transition name="fade">
+      <div v-if="selectedNode" class="focus-mode-overlay" @click.self="clearSelection">
+        <PageDetailEditor
+            :node="selectedNode"
+            :graph-id="graphId"
+            @close="clearSelection"
+            @update="onNodeUpdate"
+        />
+      </div>
+    </transition>
 
     <!-- App Graph Global Settings Dialog -->
     <el-dialog v-model="showGraphSettings" title="App Graph Global Variables" width="500px">
@@ -223,12 +257,10 @@
       </template>
     </el-dialog>
 
-    </el-container>
-  </el-container>
+  </div>
 </template>
 
 <script setup>
-/* --- 以下完整保留你原始的所有业务逻辑 --- */
 import {ref, onMounted, onUnmounted, watch, shallowRef, computed} from 'vue'
 import {useRouter, useRoute, onBeforeRouteLeave} from 'vue-router'
 import {VueFlow, useVueFlow} from '@vue-flow/core'
@@ -239,8 +271,10 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 import {ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage, ElAside, ElScrollbar, ElInput, ElInputNumber, ElEmpty, ElDialog, ElTabs, ElTabPane} from 'element-plus'
-import {Delete, Refresh, ArrowLeft, Plus, Document, Edit, Setting} from '@element-plus/icons-vue'
+import {Delete, Refresh, ArrowLeft, Plus, Document, Edit, Setting, Cpu, CaretLeft, CaretRight, Menu, Close} from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
+import SmartJsonEditor from '@/components/Core/SmartJsonEditor.vue'
+import { useAppStore } from '@/store/appStore'
 import PageDetailEditor from './PageDetailEditor.vue'
 import * as api from '../../../api/workReport'
 import * as wsApi from '@/api/wsAppGraph'
@@ -252,6 +286,8 @@ const props = defineProps({
   appId: { type: [String, Number], default: '' }
 })
 const emit = defineEmits(['pick', 'close'])
+
+const appStore = useAppStore()
 
 const isReady = ref(false)
 const nodes = ref([])
@@ -271,9 +307,66 @@ let autoSaveTimer = null
 const flowInstance = shallowRef(null)
 const editorContainerRef = ref(null)
 
+// 🔥 Panel State
+const showLeftPanel = ref(true)
+const showRightPanel = ref(true)
+
 const onPaneReady = (instance) => {
   flowInstance.value = instance
   instance.fitView()
+}
+
+// --- Drag & Drop Logic (SOP to Canvas) ---
+const onSopDragStart = (event, sop) => {
+  if (event.dataTransfer) {
+    event.dataTransfer.setData('application/json', JSON.stringify(sop))
+    event.dataTransfer.effectAllowed = 'copy'
+  }
+}
+
+const onCanvasDrop = async (event) => {
+  const dataStr = event.dataTransfer?.getData('application/json')
+  if (!dataStr) return
+  
+  try {
+    const sop = JSON.parse(dataStr)
+    const { x, y } = flowInstance.value.project({ x: event.clientX, y: event.clientY })
+    
+    // Create a new node representing a logic branch for this SOP
+    // The prompt asks for "automatically generating a logic branch dependent on that component's recognition result"
+    // We'll create a 'component' node with the SOP name as label, implying a check.
+    
+    const newNode = {
+      id: `node-${Date.now()}`,
+      type: 'component', 
+      position: { x, y },
+      label: `Check: ${sop.name}`,
+      data: {
+        label: `Check: ${sop.name}`,
+        desc: `Logic branch for SOP: ${sop.name}`,
+        type: 'component',
+        interactions: [], 
+        naturalSize: { w: 375, h: 667 }
+      }
+    }
+    
+    // Save to backend
+    if (graphId.value) {
+      await wsApi.wsAddEmptyNode({
+        graph_id: graphId.value,
+        node_id: newNode.id,
+        type: newNode.type,
+        label: newNode.label,
+        x: parseInt(x),
+        y: parseInt(y)
+      })
+    }
+    
+    nodes.value.push(newNode)
+    triggerAutoSave()
+  } catch (e) {
+    console.error('Drop failed', e)
+  }
 }
 
 // --- SOP Logic ---
@@ -314,10 +407,8 @@ const selectSOP = (sop) => {
 
 const businessSops = computed(() => sops.value.filter(s => s.type !== 'system' && s.type !== 'interaction'))
 const systemSops = computed(() => sops.value.filter(s => s.type === 'system' || s.type === 'interaction').sort((a, b) => (b.priority || 0) - (a.priority || 0)))
-const currentSopName = computed(() => sops.value.find(s => s.id === selectedSopId.value)?.name || '')
 
-const sopBoundingBoxStyle = computed(() => {
-  const sop = sops.value.find(s => s.id === selectedSopId.value)
+const getSopBoundingStyle = (sop) => {
   if (!sop || !sop.nodes || sop.nodes.length === 0) return { display: 'none' }
   
   // 找到所有关联节点
@@ -328,22 +419,24 @@ const sopBoundingBoxStyle = computed(() => {
   relatedNodes.forEach(n => {
     const x = n.position.x
     const y = n.position.y
-    const w = n.data?.naturalSize?.w || 375
-    const h = n.data?.naturalSize?.h || 667
+    // Use dimensions from VueFlow if available, else fallback to estimated size
+    const w = n.dimensions?.width || 160 
+    const h = n.dimensions?.height || 200
+    
     if (x < minX) minX = x
     if (y < minY) minY = y
     if (x + w > maxX) maxX = x + w
     if (y + h > maxY) maxY = y + h
   })
 
-  const padding = 60
+  const padding = 40
   return {
     left: (minX - padding) + 'px',
     top: (minY - padding) + 'px',
     width: (maxX - minX + padding * 2) + 'px',
     height: (maxY - minY + padding * 2) + 'px'
   }
-})
+}
 
 const getSopCases = (sopId) => {
   const sop = sops.value.find(s => s.id === sopId)
@@ -615,7 +708,20 @@ const loadGraphData = async (retryCount = 0) => {
           const validNodeIds = new Set(nodes.value.map(n => n.id))
           edges.value = rawEdges
               .filter(e => validNodeIds.has(String(e.source)) && validNodeIds.has(String(e.target)))
-              .map(e => ({...e, id: String(e.id)}))
+              .map(e => {
+                // Smart Connection Logic: Color code based on label
+                const label = (e.label || '').toLowerCase()
+                let stroke = '#94a3b8' // Default Grey
+                let strokeDasharray = '0'
+
+                if (['yes', 'ok', 'success', 'pass', 'true'].some(k => label.includes(k))) stroke = '#10b981' // Green
+                else if (['no', 'fail', 'error', 'cancel', 'false'].some(k => label.includes(k))) stroke = '#ef4444' // Red
+                else if (['loop', 'fallback', 'retry'].some(k => label.includes(k))) {
+                  stroke = '#64748b'
+                  strokeDasharray = '5 5'
+                }
+                return {...e, id: String(e.id), style: { stroke, strokeWidth: 2, strokeDasharray }}
+              })
         }
       }
     } catch (e) {
@@ -691,7 +797,10 @@ const onConnect = async (params) => {
   // 🔥 拾取模式下禁止连线操作
   if (props.isPicker) return
 
-  flowInstance.value?.addEdges([params])
+  flowInstance.value?.addEdges([{
+    ...params,
+    style: { stroke: '#94a3b8', strokeWidth: 2 }
+  }])
   const sourceNode = nodes.value.find(n => n.id === params.source)
   const targetNode = nodes.value.find(n => n.id === params.target)
   if (sourceNode && targetNode) {
@@ -866,6 +975,9 @@ const onNodeDoubleClick = (e) => {
     }
     return
   }
+
+  // 🔥 Focus Mode: Zoom into the node
+  flowInstance.value?.fitView({ nodes: [node.id], duration: 800, padding: 0.5 })
   selectedNode.value = node
 }
 
@@ -880,6 +992,7 @@ const triggerAutoSave = () => {
   // 🔥 严重修复：拾取模式下绝对禁止触发自动保存，否则会覆盖掉被隐藏的节点(如用例节点)导致数据丢失
   if (props.isPicker) return
 
+  appStore.setCanvasDirty(true)
   saveStatus.value = 'saving'
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(handleSaveLayout, 1000)
@@ -929,8 +1042,10 @@ const handleSaveLayout = async () => {
       trigger: e.data?.trigger
     }))
     await wsApi.wsSyncGraphLayout({graph_id: graphId.value, nodes: saveNodes, edges: saveEdges})
+    appStore.setCanvasDirty(false)
     saveStatus.value = 'saved'
   } catch (e) {
+    // On failure, it remains dirty
     saveStatus.value = 'unsaved'
   }
 }
@@ -1188,161 +1303,261 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 </script>
 
 <style scoped>
-/* --- 全场景液态玻璃 UI 优化 --- */
-
-.editor-container {
-  display: flex;
-  flex-direction: column;
-  height: 100%; /* 🔥 修复：改为 100% 适应父容器(弹窗)，防止撑满全屏 */
+.case-editor-root {
+  position: relative;
   width: 100%;
-  background: transparent !important; /* 必须透明看到底层水波纹 */
-}
-.three-column-layout { flex-direction: column; }
-
-/* 顶部工具栏：留出 88px 侧边间距，但通过容器 padding 实现，防止 Canvas 偏移 */
-.editor-toolbar-wrapper {
-  padding: 10px 20px 0 108px; /* 留出侧边栏位置 */
-  background: transparent;
-}
-
-.editor-toolbar-glass {
   height: 100%;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  padding: 0 24px;
-  background: rgba(255, 255, 255, 0.45) !important;
-  backdrop-filter: blur(20px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.08);
-}
-
-.toolbar-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.label {
-  font-size: 13px;
-  color: #4b5563;
-  font-weight: 700;
-}
-
-.toolbar-info {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.main-body {
-  flex: 1;
-  display: flex;
   overflow: hidden;
+  background: #f2f3f5;
 }
 
-/* SOP Sidebar */
-.sop-sidebar {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(10px);
-  border-right: 1px solid rgba(255, 255, 255, 0.5);
+/* 🔥 Portal Toolbar Styles */
+.editor-toolbar-portal {
   display: flex;
-  flex-direction: column;
-}
-.sop-tabs { flex: 1; display: flex; flex-direction: column; }
-:deep(.sop-tabs .el-tabs__content) { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-:deep(.sop-tabs .el-tab-pane) { height: 100%; display: flex; flex-direction: column; }
-
-.sidebar-header {
-  padding: 15px;
-  border-bottom: 1px solid rgba(0,0,0,0.05);
-  display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  height: 100%;
+  padding: 0 10px;
+  width: 100%;
+  justify-content: center;
+}
+
+.portal-label {
+  font-size: 13px;
   font-weight: 600;
   color: #374151;
 }
-.sop-item {
-  padding: 12px 15px;
-  cursor: pointer;
-  border-bottom: 1px solid rgba(0,0,0,0.03);
-  transition: background 0.2s;
-}
-.sop-item:hover { background: rgba(0,0,0,0.02); }
-.sop-item.active { background: rgba(99, 102, 241, 0.1); border-left: 3px solid #6366f1; }
 
-/* 系统反射 SOP 样式 */
-.sop-item.system.active { background: rgba(249, 115, 22, 0.1); border-left-color: #f97316; }
+.portal-group {
+  display: flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 16px;
+  padding: 2px 4px;
+}
+
+.portal-divider {
+  width: 1px;
+  height: 16px;
+  background: #e5e7eb;
+  margin: 0 4px;
+}
+
+.portal-info {
+  margin-left: 12px;
+  display: flex;
+  align-items: center;
+}
+
+.portal-actions {
+  margin-left: auto;
+}
+
+.portal-back-btn {
+  color: #606266;
+}
+
+/* 🔥 Floating Cards */
+.floating-card {
+  position: absolute;
+  top: 80px;
+  bottom: 100px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.75); /* High opacity for readability */
+  backdrop-filter: blur(24px) saturate(180%); /* Strong blur */
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08); /* Soft, diffuse shadow */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.floating-card.left {
+  left: 20px;
+  width: 260px;
+}
+
+.floating-card.right {
+  right: 20px;
+  width: 320px;
+}
+
+.panel-header {
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(0,0,0,0.03);
+}
+
+.panel-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+/* 🔥 FAB Toggles */
+.fab-toggle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 20;
+  color: #666;
+  transition: all 0.2s;
+}
+.fab-toggle:hover {
+  transform: translateY(-50%) scale(1.1);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+  color: #333;
+}
+
+.fab-toggle.left { left: 20px; }
+.fab-toggle.right { right: 20px; }
+
+.collapse-btn {
+  color: #9ca3af;
+  transition: color 0.2s;
+}
+.collapse-btn:hover { color: #4b5563; }
+
+/* Transitions */
+.slide-fade-left-enter-active, .slide-fade-left-leave-active { transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
+.slide-fade-left-enter-from, .slide-fade-left-leave-to { transform: translateX(-50px); opacity: 0; }
+
+.slide-fade-right-enter-active, .slide-fade-right-leave-active { transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
+.slide-fade-right-enter-from, .slide-fade-right-leave-to { transform: translateX(50px); opacity: 0; }
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* 🔥 Glass Cards (SOP Items) */
+.glass-card {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin: 0 12px 10px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.glass-card:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.glass-card.active {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+  padding-left: 20px; /* Offset for the active strip */
+}
+
+.glass-card.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: #6366f1;
+}
+
+.glass-card.system.active {
+  border-color: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 8px 24px rgba(249, 115, 22, 0.15);
+}
+
+.glass-card.system.active::before {
+  background: #f97316;
+}
 
 .sop-name { font-weight: 500; font-size: 14px; color: #1f2937; display: block; margin-bottom: 4px; }
 .sop-desc { font-size: 12px; color: #9ca3af; }
 
-/* Props Sidebar */
-.props-sidebar {
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(10px);
-  border-left: 1px solid rgba(255, 255, 255, 0.5);
-  display: flex;
-  flex-direction: column;
-}
-.sidebar-content { height: 100%; display: flex; flex-direction: column; }
-.form-wrapper { padding: 20px; }
-.form-item { margin-bottom: 20px; }
+/* 🔥 Segmented Control Tabs */
+.glass-tabs { flex: 1; display: flex; flex-direction: column; }
+:deep(.glass-tabs .el-tabs__header) { margin: 0 12px 12px 12px; border-bottom: none; }
+:deep(.glass-tabs .el-tabs__nav-wrap::after) { display: none; }
+:deep(.glass-tabs .el-tabs__nav) { width: 100%; display: flex; background: rgba(0,0,0,0.05); border-radius: 8px; padding: 2px; }
+:deep(.glass-tabs .el-tabs__item) { flex: 1; text-align: center; height: 32px; line-height: 32px; border-radius: 6px; border: none; margin: 0; padding: 0; font-size: 13px; color: #666; transition: all 0.2s; }
+:deep(.glass-tabs .el-tabs__item.is-active) { background: white; color: #1f2937; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+:deep(.glass-tabs .el-tabs__active-bar) { display: none; }
+:deep(.glass-tabs .el-tabs__content) { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+:deep(.glass-tabs .el-tab-pane) { height: 100%; display: flex; flex-direction: column; }
+
+/* Config Form Styles */
+.form-wrapper { padding: 0 12px 20px 12px; }
+.form-item { margin-bottom: 16px; }
 .form-item .label {
   font-size: 12px;
   font-weight: 600;
   color: #6b7280;
   margin-bottom: 6px;
-  text-transform: uppercase;
 }
+
+.section-header {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin: 16px 0 12px 0;
+  letter-spacing: 0.05em;
+}
+
+.section-divider {
+  height: 1px;
+  background: rgba(0,0,0,0.06);
+  margin: 20px 0;
+}
+
+.empty-text { font-size: 12px; color: #9ca3af; font-style: italic; }
+
 .case-list-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px;
-  background: #f8fafc;
-  border-radius: 6px;
-  margin-bottom: 6px;
-  font-size: 13px;
-  color: #334155;
+  margin: 0 0 8px 0; /* Override glass-card margin */
+  padding: 8px 12px;
 }
-.case-info {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  flex: 1;
+.case-info { display: flex; align-items: center; gap: 6px; overflow: hidden; flex: 1; font-size: 13px; color: #334155; }
+.case-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Transparent Inputs */
+:deep(.glass-input .el-input__wrapper), :deep(.glass-input .el-textarea__inner) {
+  background: rgba(255, 255, 255, 0.4);
+  box-shadow: none;
+  border: 1px solid rgba(255, 255, 255, 0.6);
 }
-.case-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+:deep(.glass-input .el-input__wrapper:hover), :deep(.glass-input .el-textarea__inner:hover) {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: #a5b4fc;
 }
-.empty-text { font-size: 12px; color: #9ca3af; font-style: italic; }
-.empty-sidebar {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+:deep(.glass-input .el-input__wrapper.is-focus), :deep(.glass-input .el-textarea__inner:focus) {
+  background: white;
+  box-shadow: 0 0 0 1px #6366f1;
+  border-color: #6366f1;
 }
 
 /* 画布通透感 */
 .flow-wrapper {
-  flex: 1;
-  position: relative;
-  background: transparent;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  padding: 0;
-}
-
-.canvas-container {
   position: absolute;
   inset: 0;
+  z-index: 0;
 }
 
 .flow-canvas {
@@ -1353,15 +1568,15 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 .sop-group-bg {
   position: absolute;
   z-index: -1;
-  border: 2px dashed rgba(99, 102, 241, 0.3);
-  background: rgba(99, 102, 241, 0.05);
+  border: 1px dashed #ccc;
+  background: rgba(0, 0, 0, 0.02);
   border-radius: 12px;
   pointer-events: none; /* Let clicks pass through to nodes */
   transition: all 0.3s ease;
 }
 .sop-group-bg.system {
-  border-color: rgba(249, 115, 22, 0.5);
-  background: rgba(249, 115, 22, 0.08);
+  border-color: #f97316;
+  background: rgba(249, 115, 22, 0.05);
   background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(249, 115, 22, 0.05) 10px, rgba(249, 115, 22, 0.05) 20px);
 }
 .sop-group-label {
@@ -1397,16 +1612,17 @@ const handleNodeSizeUpdate = (nodeId, size) => {
   color: #f56c6c;
 }
 
-/* 详情编辑器全屏覆盖 */
-.editor-overlay-wrapper {
+/* 🔥 Focus Mode Overlay */
+.focus-mode-overlay {
   position: absolute;
   inset: 0;
-  z-index: 2000;
-  background: rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(15px);
+  z-index: 100; /* Above VueFlow but below TitleBar */
+  background: rgba(242, 243, 245, 0.85); /* Neutral canvas color with transparency */
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: fadeIn 0.3s ease;
 }
 
 /* VueFlow 辅助控件毛玻璃化 */
@@ -1425,5 +1641,9 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 .fade-enter-from, .fade-leave-to {
   opacity: 0;
   transform: scale(0.98);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; } to { opacity: 1; }
 }
 </style>

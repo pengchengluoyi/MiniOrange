@@ -17,6 +17,7 @@
           <img
               :src="displayScreenshot"
               class="node-screenshot"
+              :class="{ 'dimmed': !!displaySkeleton }"
               draggable="false"
               @load="onImageLoaded"
           />
@@ -203,8 +204,8 @@ const fetchImage = async (src) => {
 
 // 🔥 优化：明确监听 skeleton_config 的关键字段，确保变化时触发
 watch(
-  () => [props.data.screenshot, props.data.skeleton_config?.filename, props.data.skeleton_config?.mask_url], 
-  loadImages, 
+  () => [props.data.screenshot, props.data.skeleton_config?.filename, props.data.skeleton_config?.mask_url],
+  loadImages,
   {deep: true, immediate: true}
 )
 
@@ -311,6 +312,12 @@ const iconMap = {page: Document, component: Cpu, case: Aim}
   height: auto;
   display: block;
   opacity: 0.95;
+}
+
+/* 🔥 4. 骨架模式下，底图变暗，突出骨架 */
+.node-screenshot.dimmed {
+  opacity: 0.3;
+  filter: grayscale(0.8) contrast(1.2);
 }
 
 .skeleton-mask {

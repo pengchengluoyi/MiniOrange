@@ -201,6 +201,8 @@ const onMouseUp = () => {
   display: flex; flex-direction: column;
   background: #f8fafc; /* 降底色，作为保底 */
   position: relative; overflow: hidden;
+  padding-top: 50px; /* Space for Global TitleBar */
+  box-sizing: border-box;
 }
 
 /* 2. 液态背景核心动画 */

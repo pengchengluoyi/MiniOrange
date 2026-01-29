@@ -1,34 +1,32 @@
 <template>
-  <header class="editor-header">
-
-    <!-- 左侧 -->
-    <div class="header-section left">
-      <WindowControls class="win-controls"/>
-      <div class="divider"></div>
-      <button class="nav-btn no-drag" :disabled="isModified || isSaving" @click="$emit('back')">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M19 12H5"/>
-          <path d="M12 19l-7-7 7-7"/>
-        </svg>
-      </button>
-      <div class="flow-meta no-drag" @click="$emit('edit-info')">
-        <div class="meta-icon">⚡️</div>
-        <div class="meta-content">
-          <div class="flow-title">{{ flowName || '未命名流程' }}</div>
-          <div class="flow-status">
-            <span class="status-badge" :class="saveStatusClass">{{ saveStatusText }}</span>
-            <!-- 🔥 显示保存时间 -->
-            <span v-if="!isModified && !isSaving && lastSavedTime" class="save-time">
-              {{ lastSavedTime }}
-            </span>
+  <Teleport to="#titlebar-center-portal">
+    <div class="workflow-toolbar-portal">
+      <!-- Left Section -->
+      <div class="portal-section left">
+        <button class="nav-btn no-drag" :disabled="isModified || isSaving" @click="$emit('back')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 12H5"/>
+            <path d="M12 19l-7-7 7-7"/>
+          </svg>
+        </button>
+        <div class="flow-meta no-drag" @click="$emit('edit-info')">
+          <div class="meta-icon">⚡️</div>
+          <div class="meta-content">
+            <div class="flow-title">{{ flowName || '未命名流程' }}</div>
+            <div class="flow-status">
+              <span class="status-badge" :class="saveStatusClass">{{ saveStatusText }}</span>
+              <!-- 🔥 显示保存时间 -->
+              <span v-if="!isModified && !isSaving && lastSavedTime" class="save-time">
+                {{ lastSavedTime }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- 中间 -->
-    <div class="header-section center">
-      <div class="tool-capsule no-drag">
+      <!-- Center Section -->
+      <div class="portal-section center">
+        <div class="tool-capsule no-drag">
         <div class="source-group">
           <button
               class="capsule-btn"
@@ -72,11 +70,11 @@
           应用视图
         </button>
       </div>
-    </div>
+      </div>
 
-    <!-- 右侧 -->
-    <div class="header-section right">
-      <div class="action-area no-drag">
+      <!-- Right Section -->
+      <div class="portal-section right">
+        <div class="action-area no-drag">
 
         <!-- 🔥 优化后的日志按钮 (次级按钮样式) -->
         <button class="secondary-btn" @click="$emit('toggle-log')" title="查看日志">
@@ -106,8 +104,9 @@
           </div>
         </button>
       </div>
+      </div>
     </div>
-  </header>
+  </Teleport>
 
   <!-- 设备选择弹窗 -->
   <el-dialog v-model="deviceDialogVisible" title="选择执行设备" width="600px" append-to-body>
@@ -133,7 +132,6 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import WindowControls from '@/components/WindowControls.vue'
 import managementWsService from '@/api/managementWebSocket'
 import { ElDialog, ElTable, ElTableColumn, ElTag, ElButton, ElEmpty, ElMessage, vLoading } from 'element-plus'
 
@@ -227,43 +225,23 @@ onUnmounted(() => {
   border-color: #cbd5e1;
 }
 
-/* 原有样式保持 */
-.editor-header {
-  height: 56px;
-  background: white;
-  border-bottom: 1px solid #eef2f6;
+.workflow-toolbar-portal {
+  width: 100%;
+  height: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 8px;
-  -webkit-app-region: drag;
-  z-index: 100;
-  position: relative;
+  padding: 0 12px;
 }
 
 .no-drag {
   -webkit-app-region: no-drag;
 }
 
-.header-section {
+.portal-section {
   display: flex;
   align-items: center;
-  height: 100%;
-}
-
-.left {
-  flex: 1;
   gap: 12px;
-}
-
-.center {
-  flex: 0 0 auto;
-}
-
-.right {
-  flex: 1;
-  justify-content: flex-end;
-  padding-right: 12px;
 }
 
 .tool-capsule {
@@ -412,12 +390,6 @@ onUnmounted(() => {
   0% { stroke-dasharray: 1, 150; stroke-dashoffset: 0; }
   50% { stroke-dasharray: 90, 150; stroke-dashoffset: -35; }
   100% { stroke-dasharray: 90, 150; stroke-dashoffset: -124; }
-}
-
-.divider {
-  width: 1px;
-  height: 20px;
-  background: #e2e8f0;
 }
 
 .nav-btn {

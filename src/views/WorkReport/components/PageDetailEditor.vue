@@ -1,433 +1,565 @@
 <template>
-  <div class="saas-overlay" tabindex="0" @keydown.esc="$emit('close')">
-    <div class="saas-window">
-      <el-container class="h-full">
-        <!-- 顶部工具栏 -->
-        <el-header class="saas-header" :class="{ 'blocking-header': localData.is_blocking }">
-          <div class="header-left">
-            <el-tag effect="dark" type="info" class="id-badge">ID: {{ node.id ? node.id.slice(-4) : 'NA' }}</el-tag>
-            <el-input
-                v-model="localData.label"
-                class="saas-input-title"
-                placeholder="页面名称"
-                @input="updateNode"
-            >
-              <template #prefix>
-                <el-icon>
-                  <Document/>
-                </el-icon>
-              </template>
-            </el-input>
-            <el-input
-                v-model="localData.desc"
-                class="saas-input-desc"
-                placeholder="描述信息"
-                @input="updateNode"
-            >
-            </el-input>
-            <el-tag v-if="localData.is_blocking" type="danger" effect="dark" size="small">🛑 BLOCKING</el-tag>
+  <div class="focus-editor-root" tabindex="0" @keydown.esc="$emit('close')">
+    <!-- 🔥 Teleport Controls to Global TitleBar -->
+    <Teleport to="#titlebar-center-portal">
+      <div class="focus-toolbar">
+        <div class="focus-info">
+          <el-tag effect="dark" type="info" size="small" class="id-badge">ID: {{
+              node.id ? node.id.slice(-4) : 'NA'
+            }}
+          </el-tag>
+          <el-input
+              v-model="localData.label"
+              class="focus-input-title"
+              placeholder="Page Name"
+              size="small"
+              @input="updateNode"
+          />
+          <el-tag v-if="localData.is_blocking" type="danger" effect="dark" size="small">🛑 BLOCKING</el-tag>
+        </div>
+
+        <div class="focus-divider"></div>
+
+        <!-- 🔥 新增：骨架蒙版显隐控制 -->
+        <el-switch v-model="showSkeletonMask" inline-prompt active-text="Mask On" inactive-text="Mask Off" size="small"
+                   style="margin-right: 12px; --el-switch-on-color: #6366f1;"/>
+
+        <div class="focus-divider"></div>
+
+        <el-button-group>
+          <el-button :icon="ZoomIn" @click="zoomIn" size="small" text title="Zoom In"/>
+          <el-button :icon="ZoomOut" @click="zoomOut" size="small" text title="Zoom Out"/>
+          <el-button :icon="FullScreen" @click="fitToScreen" size="small" text title="Fit Screen"/>
+        </el-button-group>
+        <span class="zoom-label">{{ Math.round(scale * 100) }}%</span>
+
+        <div class="focus-divider"></div>
+
+        <el-button type="primary" size="small" round @click="handleSave">
+          <el-icon>
+            <Check/>
+          </el-icon>
+          Done
+        </el-button>
+        <el-button size="small" circle @click="$emit('close')">
+          <el-icon>
+            <Close/>
+          </el-icon>
+        </el-button>
+      </div>
+    </Teleport>
+
+    <!-- Hidden File Input (Kept in DOM for functionality) -->
+    <input type="file" ref="fileInput" accept="image/*" style="display:none" @change="handleFileUpload"/>
+
+    <el-container class="editor-layout">
+      <!-- 中间画布区域 -->
+      <el-main class="visual-container" ref="visualPanelRef" @wheel.prevent="handleWheel">
+        <div class="canvas-wrapper"
+             @dragstart.prevent
+             @mousedown="handleCanvasMouseDown"
+             @mousemove="handleCanvasMouseMove"
+             @mouseup="handleCanvasMouseUp">
+
+          <!-- 🔥 7. 安全区域 (Safe Areas) 遮罩与拖拽线 -->
+          <div class="safe-area-overlay top" :style="{ height: localData.ignored_top + 'px' }"
+               :class="{ 'is-dragging': isDraggingSafeLine === 'top' }">
+            <div class="safe-area-label">Top Bar ({{ localData.ignored_top }}px)</div>
+            <div v-if="!isSafeLineLocked" class="safe-area-handle"
+                 @mousedown.stop="startDragSafeLine('top', $event)"></div>
+          </div>
+          <div class="safe-area-overlay bottom" :style="{ height: localData.ignored_bottom + 'px' }"
+               :class="{ 'is-dragging': isDraggingSafeLine === 'bottom' }">
+            <div class="safe-area-label">Bottom Bar ({{ localData.ignored_bottom }}px)</div>
+            <div v-if="!isSafeLineLocked" class="safe-area-handle"
+                 @mousedown.stop="startDragSafeLine('bottom', $event)"></div>
           </div>
 
-          <div class="header-center">
-            <el-button-group class="canvas-tools">
-              <el-button :icon="ZoomIn" @click="zoomIn" title="放大"/>
-              <el-button :icon="ZoomOut" @click="zoomOut" title="缩小"/>
-              <el-button :icon="FullScreen" @click="fitToScreen" title="适应屏幕"/>
-            </el-button-group>
-            <span class="zoom-label">{{ Math.round(scale * 100) }}%</span>
+          <!-- 🔥 预览模式提示条 -->
+          <div v-if="previewImage" class="preview-banner">
+            <span>正在预览骨架素材</span>
+            <el-button link type="primary" size="small" @click="exitPreview">退出预览</el-button>
+            <el-button link type="success" size="small" @click="setPreviewAsMain">设为页面主图</el-button>
           </div>
-
-          <div class="header-right">
-            <input type="file" ref="fileInput" accept="image/*" style="display:none" @change="handleFileUpload"/>
-
-            <el-button @click="handleSave" :icon="Check">完成</el-button>
-            <el-button link class="btn-icon-close" @click="$emit('close')">
-              <el-icon :size="20">
-                <Close/>
-              </el-icon>
-            </el-button>
-          </div>
-        </el-header>
-
-        <el-container class="editor-body">
-          <!-- 中间画布区域 -->
-          <el-main class="visual-container" ref="visualPanelRef" @wheel.prevent="handleWheel">
-            <div class="canvas-wrapper"
-                 @dragstart.prevent
-                 @mousedown="handleCanvasMouseDown"
-                 @mousemove="handleCanvasMouseMove"
-                 @mouseup="handleCanvasMouseUp">
-
-              <!-- 🔥 7. 安全区域 (Safe Areas) 遮罩与拖拽线 -->
-              <div class="safe-area-overlay top" :style="{ height: localData.ignored_top + 'px' }">
-                <div class="safe-area-label">顶部忽略区域 ({{ localData.ignored_top }}px)</div>
-                <div class="safe-area-handle" @mousedown.stop="startDragSafeLine('top', $event)"></div>
-              </div>
-              <div class="safe-area-overlay bottom" :style="{ height: localData.ignored_bottom + 'px' }">
-                <div class="safe-area-label">底部忽略区域 ({{ localData.ignored_bottom }}px)</div>
-                <div class="safe-area-handle" @mousedown.stop="startDragSafeLine('bottom', $event)"></div>
+          <div class="transform-layer" :style="transformStyle">
+            <div class="artboard" ref="imageRef" :style="imageWrapperStyle">
+              <img v-if="currentDisplayScreenshot" :src="currentDisplayScreenshot" class="base-img"
+                   draggable="false" @load="onImgLoad"/>
+              <!-- 🔥 骨架蒙版层: 改为高亮模式，而不是遮挡模式 -->
+              <img v-if="localData.skeletonMask && !previewImage && showSkeletonMask"
+                   :src="getStateImageUrl(localData.skeletonMask)"
+                   class="skeleton-highlight-overlay"
+                   draggable="false"/>
+              <div v-else-if="!currentDisplayScreenshot" class="empty-artboard">
+                <el-empty description="暂无截图，请点击右上角上传"/>
               </div>
 
-              <!-- 🔥 预览模式提示条 -->
-              <div v-if="previewImage" class="preview-banner">
-                <span>正在预览骨架素材</span>
-                <el-button link type="primary" size="small" @click="exitPreview">退出预览</el-button>
-                <el-button link type="success" size="small" @click="setPreviewAsMain">设为页面主图</el-button>
-              </div>
-              <div class="transform-layer" :style="transformStyle">
-                <div class="artboard" ref="imageRef" :style="imageWrapperStyle">
-                  <img v-if="currentDisplayScreenshot" :src="currentDisplayScreenshot" class="base-img"
-                       draggable="false" @load="onImgLoad"/>
-                  <!-- 骨架蒙版层 -->
-                  <!-- 🔥 5. 修复：预览具体图片时隐藏页面级骨架蒙版，避免干扰 -->
-                  <img v-if="localData.skeletonMask && !previewImage" :src="getStateImageUrl(localData.skeletonMask)"
-                       class="skeleton-mask" draggable="false"/>
-                  <div v-else-if="!currentDisplayScreenshot" class="empty-artboard">
-                    <el-empty description="暂无截图，请点击右上角上传"/>
-                  </div>
-
-                  <!-- 现有热区 -->
-                  <div v-for="(comp, index) in localData.interactions" :key="index"
-                       class="hotspot-box"
-                       :class="{ selected: selectedCompIndex === index }"
-                       :style="{
+              <!-- 现有热区 -->
+              <div v-for="(comp, index) in localData.interactions" :key="index"
+                   class="hotspot-box"
+                   :class="{
+                          selected: selectedCompIndices.has(index),
+                          'needs-confirm': comp.needs_confirmation,
+                         'is-system': comp.component_type === 'System Areas',
+                         'is-container': comp.component_type === 'container'
+                       }"
+                   :style="{
                           left: comp.x + 'px',
                           top: comp.y + 'px',
                           width: comp.w + 'px',
                           height: comp.h + 'px'
                         }"
-                       @mousedown="handleHotspotMouseDown($event, index)">
-                    <div class="label-tag">{{ index + 1 }}</div>
-                  </div>
+                   @mousedown="handleHotspotMouseDown($event, index)">
+                <div class="label-tag">
+                  {{ index + 1 }}
+                  <span v-if="comp.needs_confirmation" title="需确认">❓</span>
+                </div>
+              </div>
 
-                  <!-- 正在绘制的热区 -->
-                  <div v-if="isDrawing && currentBox" class="drawing-box" :style="drawingBoxStyle"></div>
+              <!-- 正在绘制的热区 -->
+              <div v-if="isDrawing && currentBox" class="drawing-box" :style="drawingBoxStyle"></div>
 
-                  <!-- 裁剪框 -->
-                  <div v-if="isCropping && cropBox" class="crop-box" :style="cropBoxStyle">
-                    <div class="crop-actions">
-                      <el-button type="success" size="small" @click="confirmCrop">确认裁剪</el-button>
-                      <el-button size="small" @click="cancelCrop">取消</el-button>
-                    </div>
-                  </div>
+              <!-- 裁剪框 -->
+              <div v-if="isCropping && cropBox" class="crop-box" :style="cropBoxStyle">
+                <div class="crop-actions">
+                  <el-button type="success" size="small" @click="confirmCrop">确认裁剪</el-button>
+                  <el-button size="small" @click="cancelCrop">取消</el-button>
                 </div>
               </div>
             </div>
+          </div>
+        </div>
 
-            <!-- 底部提示 -->
-            <div class="canvas-tip">
-              <el-tag type="info" size="small" effect="light" round>
-                <el-icon style="vertical-align: middle">
-                  <InfoFilled/>
+        <!-- 底部提示 -->
+        <div class="canvas-tip">
+          <el-tag type="info" size="small" effect="light" round>
+            <el-icon style="vertical-align: middle">
+              <InfoFilled/>
+            </el-icon>
+            按住 Command/Ctrl + 鼠标左键拖拽创建热区 | 空格 + 拖拽移动画布
+          </el-tag>
+        </div>
+      </el-main>
+
+      <!-- 右侧属性栏 -->
+      <el-aside width="320px" class="props-sidebar">
+        <div class="sidebar-header">
+          <div v-if="selectedCompIndices.size > 1" class="header-row">
+            <el-button link :icon="ArrowLeft" @click="clearSelection">取消选择</el-button>
+            <span class="title">已选 {{ selectedCompIndices.size }} 项</span>
+          </div>
+          <div v-if="selectedCompIndex === -1" class="header-row">
+            <!-- Moved Description Input Here -->
+            <el-input
+                v-model="localData.desc"
+                size="small"
+                placeholder="Page Description..."
+                @input="updateNode"
+                style="margin-right: 8px; flex: 1;"
+            />
+            <span class="title">页面配置</span>
+            <el-tag size="small" type="info" round>{{ localData.interactions.length }}</el-tag>
+          </div>
+          <div v-else class="header-row">
+            <el-button link :icon="ArrowLeft" @click="selectedCompIndex = -1">返回列表</el-button>
+            <span class="title">组件配置</span>
+          </div>
+        </div>
+        <el-scrollbar class="list-content">
+          <!-- 🔥 多选模式 (Multi-select Mode) -->
+          <div v-if="selectedCompIndices.size > 1" class="multi-select-view">
+            <div class="form-group">
+              <el-button type="primary" style="width: 100%" @click="mergeSelectedComponents">
+                <el-icon>
+                  <Connection/>
                 </el-icon>
-                按住 Command/Ctrl + 鼠标左键拖拽创建热区 | 空格 + 拖拽移动画布
-              </el-tag>
+                合并热区 (Merge)
+              </el-button>
             </div>
-          </el-main>
-
-          <!-- 右侧属性栏 -->
-          <el-aside width="320px" class="props-sidebar">
-            <div class="sidebar-header">
-              <div v-if="selectedCompIndex === -1" class="header-row">
-                <span class="title">页面配置</span>
-                <el-tag size="small" type="info" round>{{ localData.interactions.length }}</el-tag>
-              </div>
-              <div v-else class="header-row">
-                <el-button link :icon="ArrowLeft" @click="selectedCompIndex = -1">返回列表</el-button>
-                <span class="title">组件配置</span>
+            <div class="form-group">
+              <el-button type="danger" plain style="width: 100%" @click="deleteSelectedComponents">
+                <el-icon>
+                  <Delete/>
+                </el-icon>
+                批量删除
+              </el-button>
+            </div>
+            <div class="divider-line"></div>
+            <div class="selected-list-preview">
+              <div v-for="idx in Array.from(selectedCompIndices).sort((a,b)=>a-b)" :key="idx" class="comp-card mini"
+                   style="padding: 6px;">
+                <div class="index-circle" style="width: 20px; height: 20px; font-size: 10px;">{{ idx + 1 }}</div>
+                <div class="comp-label-text" style="font-size: 12px;">{{ localData.interactions[idx]?.label }}</div>
               </div>
             </div>
-            <el-scrollbar class="list-content">
-              <!-- 列表模式 -->
-              <div v-if="selectedCompIndex === -1">
-                <ElTabs v-model="pageActiveTab" class="comp-tabs">
-                  <ElTabPane label="组件清单" name="list">
-                    <div v-for="(comp, index) in localData.interactions" :key="index"
-                         :ref="(el) => setItemRef(el, index)"
-                         class="comp-card"
-                         :class="{ active: selectedCompIndex === index }"
-                         @click="focusComponent(index)">
-                      <div class="card-left">
-                        <div class="index-circle">{{ index + 1 }}</div>
-                        <div class="comp-thumbnail" :style="getThumbStyle(comp)"></div>
-                      </div>
-                      <div class="card-body">
-                        <div class="comp-label-text">{{ comp.label || '未命名组件' }}</div>
-                        <div class="comp-meta-text">X:{{ comp.x }} Y:{{ comp.y }}</div>
-                      </div>
-                      <el-button link type="danger" class="delete-btn" :icon="Delete" @click.stop="deleteComp(index)"/>
-                    </div>
-                  </ElTabPane>
+          </div>
+          <!-- 列表模式 -->
+          <div v-else-if="selectedCompIndex === -1">
+            <ElTabs v-model="pageActiveTab" class="comp-tabs">
+              <ElTabPane label="组件清单" name="list">
+                <div v-for="(comp, index) in localData.interactions" :key="index"
+                     :ref="(el) => setItemRef(el, index)"
+                     class="comp-card"
+                     :class="{ active: selectedCompIndex === index }"
+                     @click="focusComponent(index)">
+                  <div class="card-left">
+                    <div class="index-circle">{{ index + 1 }}</div>
+                    <div class="comp-thumbnail" :style="getThumbStyle(comp)"></div>
+                  </div>
+                  <div class="card-body">
+                    <div class="comp-label-text">{{ comp.label || '未命名组件' }}</div>
+                    <div class="comp-meta-text">X:{{ comp.x }} Y:{{ comp.y }}</div>
+                  </div>
+                  <el-button link type="danger" class="delete-btn" :icon="Delete" @click.stop="deleteComp(index)"/>
+                </div>
+              </ElTabPane>
 
-                  <ElTabPane label="骨架与配置" name="config">
-                    <div class="form-group">
-                      <div class="form-label">页面截图 (Screenshot)</div>
-                      <div class="main-screenshot-uploader" @click="triggerUpload">
-                        <!-- 显示安全区域数值 -->
-                        <div class="safe-area-info" v-if="localData.ignored_top || localData.ignored_bottom">
-                          <el-tag size="small" type="warning">
-                            忽略: Top {{ localData.ignored_top }}px / Bottom {{ localData.ignored_bottom }}px
-                          </el-tag>
-                        </div>
-                        <div v-if="ocrLoading" class="uploader-loading">
-                          <el-icon class="is-loading">
-                            <Refresh/>
-                          </el-icon>
-                          <span>识别中...</span>
-                        </div>
-                        <template v-else>
-                          <img v-if="localData.screenshot" :src="localData.screenshot" class="preview-img"/>
-                          <div v-else class="upload-placeholder">
-                            <el-icon class="upload-icon">
-                              <Camera/>
-                            </el-icon>
-                            <span>点击上传截图 (自动OCR)</span>
-                          </div>
-                          <div v-if="localData.screenshot" class="reupload-overlay">
-                            <el-icon>
-                              <Camera/>
-                            </el-icon>
-                          </div>
-                        </template>
-                      </div>
+              <ElTabPane label="Page Config" name="config">
+                <!-- 🔥 System Bar Exclusion -->
+                <div class="config-section">
+                  <div class="section-header">
+                    <span class="title">Ignored Areas (System Bars)</span>
+                    <el-button link size="small" @click="isSafeLineLocked = !isSafeLineLocked">
+                      <el-icon :color="isSafeLineLocked ? '#F56C6C' : '#909399'">
+                        <Lock v-if="isSafeLineLocked"/>
+                        <Unlock v-else/>
+                      </el-icon>
+                    </el-button>
+                  </div>
+                  <div class="control-row">
+                    <span class="label">Top (Status Bar)</span>
+                    <div class="control-inputs">
+                      <el-slider v-model="localData.ignored_top" :max="300" :disabled="isSafeLineLocked" size="small"
+                                 style="flex: 1; margin-right: 10px"/>
+                      <el-input-number v-model="localData.ignored_top" :min="0" :max="localData.naturalH" size="small"
+                                       :disabled="isSafeLineLocked" controls-position="right" style="width: 70px"/>
                     </div>
+                  </div>
+                  <div class="control-row">
+                    <span class="label">Bottom (Home Bar)</span>
+                    <div class="control-inputs">
+                      <el-slider v-model="localData.ignored_bottom" :max="300" :disabled="isSafeLineLocked" size="small"
+                                 style="flex: 1; margin-right: 10px"/>
+                      <el-input-number v-model="localData.ignored_bottom" :min="0" :max="localData.naturalH"
+                                       size="small" :disabled="isSafeLineLocked" controls-position="right"
+                                       style="width: 70px"/>
+                    </div>
+                  </div>
+                </div>
 
-                    <div class="form-group">
-                      <div class="form-label">骨架训练 (Skeleton)</div>
-                      <div class="skeleton-uploader">
-                        <el-upload
-                            action="#"
-                            list-type="picture-card"
-                            :auto-upload="false"
-                            :on-change="handleSkeletonImgChange"
-                            :file-list="skeletonFileList"
-                            multiple
-                        >
-                          <!-- 🔥 自定义文件列表项：支持设为主图、预览、删除 -->
-                          <template #file="{ file }">
-                            <div class="skeleton-file-item">
-                              <img class="el-upload-list__item-thumbnail" :src="file.url" alt=""/>
-                              <span class="el-upload-list__item-actions">
-                               <span class="action-btn" @click="handleViewSkeleton(file)" title="在画布预览/裁剪">
+                <div class="divider-line"></div>
+
+                <!-- 🔥 Page Structure Training -->
+                <div class="config-section">
+                  <div class="section-header">
+                    <span class="title">Page Structure Model</span>
+                    <el-tag size="small" type="info">{{ pageTrainingSelectedUids.size }} Selected</el-tag>
+                  </div>
+                  <div class="helper-text">
+                    Upload screenshots of the same page with different content to train the structural model.
+                  </div>
+
+                  <div class="skeleton-gallery">
+                    <el-upload
+                        action="#"
+                        list-type="picture-card"
+                        :auto-upload="false"
+                        :on-change="handleSkeletonImgChange"
+                        :file-list="skeletonFileList"
+                        multiple
+                        class="mini-uploader"
+                    >
+                      <template #default>
+                        <el-icon>
+                          <Plus/>
+                        </el-icon>
+                      </template>
+                      <template #file="{ file }">
+                        <div class="gallery-item" :class="{ selected: pageTrainingSelectedUids.has(file.uid) }"
+                             @click.stop="togglePageSampleSelection(file)">
+                          <img class="el-upload-list__item-thumbnail" :src="file.url" alt=""/>
+                          <div class="selection-overlay">
+                            <el-icon v-if="pageTrainingSelectedUids.has(file.uid)">
+                              <Check/>
+                            </el-icon>
+                          </div>
+                          <span class="el-upload-list__item-actions" @click.stop>
+                               <span class="action-btn" @click.stop="handleViewSkeleton(file)" title="Preview">
                                  <el-icon><View/></el-icon>
                                </span>
-                               <span class="action-btn" @click="handleSetMainFromSkeleton(file)" title="设为页面主图">
-                                 <el-icon><Picture/></el-icon>
-                               </span>
-                               <span class="action-btn delete" @click="handleRemoveSkeleton(file)">
+                               <span class="action-btn delete" @click.stop="handleRemoveSkeleton(file)" title="Remove">
                                  <el-icon><Delete/></el-icon>
                                </span>
                              </span>
-                            </div>
-                          </template>
-                          <el-icon>
-                            <Plus/>
-                          </el-icon>
-                        </el-upload>
-                      </div>
-                      <el-button type="primary" plain style="width: 100%; margin-top: 10px"
-                                 :disabled="skeletonFileList.length < 2"
-                                 @click="trainSkeleton">
-                        生成骨架蒙版
-                      </el-button>
-                    </div>
-                  </ElTabPane>
-                </ElTabs>
-              </div>
+                        </div>
+                      </template>
+                    </el-upload>
+                  </div>
 
-
-              <!-- 详情模式 -->
-              <div v-else class="detail-view">
-                <div class="comp-preview-large"
-                     :style="getThumbStyle(localData.interactions[selectedCompIndex], 280, 100)"></div>
-                <!-- 🔥 画布底图切换 (全局) -->
-                <div class="form-group" style="margin-bottom: 12px; padding: 0 2px;">
-                  <el-select v-model="currentCanvasSource" size="small" style="width: 100%"
-                             @change="handleCanvasSourceChange" placeholder="切换画布底图">
-                    <template #prefix>
-                      <el-icon>
-                        <Picture/>
-                      </el-icon>
-                    </template>
-                    <el-option label="主截图 (Main Screenshot)" value="main"/>
-                    <el-option v-for="(file, idx) in skeletonFileList" :key="idx" :label="file.name" :value="idx"/>
-                  </el-select>
+                  <el-button type="primary" style="width: 100%; margin-top: 12px"
+                             :disabled="pageTrainingSelectedUids.size < 1"
+                             @click="trainSkeleton">
+                    Train Page Structure
+                  </el-button>
                 </div>
 
-                <ElTabs v-model="activeTab" class="comp-tabs">
-                  <ElTabPane label="基础属性" name="props">
-                    <div class="form-group">
-                      <div class="form-label">组件名称</div>
-                      <el-input v-model="localData.interactions[selectedCompIndex].label" @input="updateNode"/>
+                <div class="divider-line"></div>
+
+                <div class="form-group">
+                  <div class="form-label">Main Screenshot</div>
+                  <div class="main-screenshot-uploader" @click="triggerUpload">
+                    <div v-if="ocrLoading" class="uploader-loading">
+                      <el-icon class="is-loading">
+                        <Refresh/>
+                      </el-icon>
+                      <span>识别中...</span>
                     </div>
-                    <div class="form-group">
-                      <div class="form-label">坐标区域</div>
-                      <div class="coord-inputs-grid">
-                        <div class="coord-item"><span>X</span>
-                          <el-input v-model.number="localData.interactions[selectedCompIndex].x" type="number"
-                                    @input="updateNode"/>
-                        </div>
-                        <div class="coord-item"><span>Y</span>
-                          <el-input v-model.number="localData.interactions[selectedCompIndex].y" type="number"
-                                    @input="updateNode"/>
-                        </div>
-                        <div class="coord-item"><span>W</span>
-                          <el-input v-model.number="localData.interactions[selectedCompIndex].w" type="number"
-                                    @input="updateNode"/>
-                        </div>
-                        <div class="coord-item"><span>H</span>
-                          <el-input v-model.number="localData.interactions[selectedCompIndex].h" type="number"
-                                    @input="updateNode"/>
-                        </div>
+                    <template v-else>
+                      <img v-if="localData.screenshot" :src="localData.screenshot" class="preview-img"/>
+                      <div v-else class="upload-placeholder">
+                        <el-icon class="upload-icon">
+                          <Camera/>
+                        </el-icon>
+                        <span>点击上传截图 (自动OCR)</span>
                       </div>
-                    </div>
-                    <div class="form-group" style="margin-top: 20px">
-                      <el-button type="danger" plain style="width: 100%" @click="deleteComp(selectedCompIndex)">
-                        删除此组件
-                      </el-button>
-
-                      <!-- 🔥 2.1 组件骨架训练 (新增) -->
-                      <div class="form-group" style="margin-top: 20px">
-                        <el-collapse>
-                          <el-collapse-item title="组件骨架配置 (Skeleton)" name="1">
-                            <div style="margin-bottom: 10px">
-                              <el-button size="small" :icon="Picture" @click="openComponentImageSelector">
-                                从页面样本选择 ({{ compSkeletonFileList.length }})
-                              </el-button>
-                            </div>
-                            <!-- 🔥 3. 移除 el-upload，改为展示已选图片列表 -->
-                            <div class="selected-samples-grid" v-if="compSkeletonFileList.length > 0">
-                              <div v-for="(file, idx) in compSkeletonFileList" :key="idx" class="sample-thumb-item">
-                                <img :src="file.url" class="sample-img"/>
-                                <div class="sample-actions">
-                                  <el-icon class="remove-icon" @click="handleRemoveCompSkeletonImage(idx)">
-                                    <Delete/>
-                                  </el-icon>
-                                </div>
-                              </div>
-                            </div>
-                            <div v-else class="empty-samples-text">
-                              暂未选择样本，请点击上方按钮从页面截图库中选择
-
-                            </div>
-                            <div v-if="localData.interactions[selectedCompIndex].skeleton_config?.mask_url"
-                                 class="skeleton-preview-mini">
-                              <span class="label">已生成蒙版:</span>
-                              <img
-                                  :src="getStateImageUrl(localData.interactions[selectedCompIndex].skeleton_config.mask_url)"
-                                  class="mini-mask"/>
-                            </div>
-                            <el-button type="primary" plain size="small" style="width: 100%; margin-top: 10px"
-                                       :disabled="compSkeletonFileList.length < 1"
-                                       @click="trainComponentSkeleton">
-                              生成组件骨架
-                            </el-button>
-                          </el-collapse-item>
-                        </el-collapse>
+                      <div v-if="localData.screenshot" class="reupload-overlay">
+                        <el-icon>
+                          <Camera/>
+                        </el-icon>
                       </div>
-                    </div>
-                  </ElTabPane>
+                    </template>
+                  </div>
+                </div>
+              </ElTabPane>
+            </ElTabs>
+          </div>
 
-                  <ElTabPane label="多态 (States)" name="states">
-                    <div v-for="(state, sIdx) in localData.interactions[selectedCompIndex].states" :key="sIdx"
-                         class="state-card"
-                         :class="{ active: selectedStateIndex === sIdx }"
-                         @click="selectedStateIndex = sIdx">
-                      <div class="state-header">
+
+          <!-- 详情模式 -->
+          <div v-else class="detail-view">
+            <div class="comp-preview-large"
+                 :style="getThumbStyle(localData.interactions[selectedCompIndex], 280, 100)"></div>
+            <!-- 🔥 画布底图切换 (全局) -->
+            <div class="form-group" style="margin-bottom: 12px; padding: 0 2px;">
+              <el-select v-model="currentCanvasSource" size="small" style="width: 100%"
+                         @change="handleCanvasSourceChange" placeholder="切换画布底图">
+                <template #prefix>
+                  <el-icon>
+                    <Picture/>
+                  </el-icon>
+                </template>
+                <el-option label="主截图 (Main Screenshot)" value="main"/>
+                <el-option v-for="(file, idx) in skeletonFileList" :key="idx" :label="file.name" :value="idx"/>
+              </el-select>
+            </div>
+
+            <ElTabs v-model="activeTab" class="comp-tabs">
+              <ElTabPane label="基础属性" name="props">
+                <div class="form-group">
+                  <div class="form-label">组件名称</div>
+                  <el-input v-model="localData.interactions[selectedCompIndex].label" @input="updateNode"/>
+                </div>
+                <!-- 🔥 适配服务端分类与确认逻辑 -->
+                <div class="form-group"
+                     v-if="localData.interactions[selectedCompIndex].component_type || localData.interactions[selectedCompIndex].needs_confirmation">
+                  <div class="form-label">智能分类 (AI Classification)</div>
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <el-tag size="small" effect="plain">
+                      {{ localData.interactions[selectedCompIndex].component_type || 'Custom' }}
+                    </el-tag>
+                    <el-tag v-if="localData.interactions[selectedCompIndex].needs_confirmation" type="warning"
+                            size="small" effect="dark">需确认
+                    </el-tag>
+                  </div>
+                  <el-button v-if="localData.interactions[selectedCompIndex].needs_confirmation" type="warning" plain
+                             size="small" style="width: 100%" @click="confirmComponent(selectedCompIndex)">
+                    <el-icon>
+                      <Check/>
+                    </el-icon>
+                    确认此区域有效
+                  </el-button>
+                </div>
+                <!-- 🔥 1. 业务逻辑断层修复：增加业务动作定义 -->
+                <div class="form-group">
+                  <div class="form-label">业务动作 (SOP Action)</div>
+                  <el-select v-model="localData.interactions[selectedCompIndex].action" size="small" filterable
+                             allow-create default-first-option placeholder="定义业务含义" style="width: 100%"
+                             @change="updateNode">
+                    <el-option label="点击 (Click/Tap)" value="click"/>
+                    <el-option label="输入 (Input)" value="input"/>
+                    <el-option label="断言 (Assert)" value="assert"/>
+                    <el-option label="导航 (Navigate)" value="navigate"/>
+                    <el-option label="关闭 (Close)" value="close"/>
+                  </el-select>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">坐标区域</div>
+                  <div class="coord-inputs-grid">
+                    <div class="coord-item"><span>X</span>
+                      <el-input v-model.number="localData.interactions[selectedCompIndex].x" type="number"
+                                @input="updateNode"/>
+                    </div>
+                    <div class="coord-item"><span>Y</span>
+                      <el-input v-model.number="localData.interactions[selectedCompIndex].y" type="number"
+                                @input="updateNode"/>
+                    </div>
+                    <div class="coord-item"><span>W</span>
+                      <el-input v-model.number="localData.interactions[selectedCompIndex].w" type="number"
+                                @input="updateNode"/>
+                    </div>
+                    <div class="coord-item"><span>H</span>
+                      <el-input v-model.number="localData.interactions[selectedCompIndex].h" type="number"
+                                @input="updateNode"/>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-top: 20px">
+                  <el-button type="danger" plain style="width: 100%" @click="deleteComp(selectedCompIndex)">
+                    删除此组件
+                  </el-button>
+
+                  <!-- 🔥 2.1 组件骨架训练 (新增) -->
+                  <div class="form-group" style="margin-top: 20px">
+                    <el-collapse>
+                      <el-collapse-item title="组件骨架配置 (Skeleton)" name="1">
+                        <div style="margin-bottom: 10px">
+                          <el-button size="small" :icon="Picture" @click="openComponentImageSelector">
+                            从页面样本选择 ({{ compSkeletonFileList.length }})
+                          </el-button>
+                        </div>
+                        <!-- 🔥 3. 移除 el-upload，改为展示已选图片列表 -->
+                        <div class="selected-samples-grid" v-if="compSkeletonFileList.length > 0">
+                          <div v-for="(file, idx) in compSkeletonFileList" :key="idx" class="sample-thumb-item">
+                            <img :src="file.url" class="sample-img"/>
+                            <div class="sample-actions">
+                              <el-icon class="remove-icon" @click="handleRemoveCompSkeletonImage(idx)">
+                                <Delete/>
+                              </el-icon>
+                            </div>
+                          </div>
+                        </div>
+                        <div v-else class="empty-samples-text">
+                          暂未选择样本，请点击上方按钮从页面截图库中选择
+
+                        </div>
+                        <div v-if="localData.interactions[selectedCompIndex].skeleton_config?.mask_url"
+                             class="skeleton-preview-mini">
+                          <span class="label">已生成蒙版:</span>
+                          <img
+                              :src="getStateImageUrl(localData.interactions[selectedCompIndex].skeleton_config.mask_url)"
+                              class="mini-mask"/>
+                        </div>
+                        <el-button type="primary" plain size="small" style="width: 100%; margin-top: 10px"
+                                   :disabled="compSkeletonFileList.length < 1"
+                                   @click="trainComponentSkeleton">
+                          生成组件骨架
+                        </el-button>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </div>
+                </div>
+              </ElTabPane>
+
+              <ElTabPane label="Training & States" name="states">
+                <div class="training-header"
+                     style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                  <span class="title" style="font-weight: 600; font-size: 13px;">Multi-State Training</span>
+                  <el-button type="primary" size="small" @click="trainComponent">Train Model</el-button>
+                </div>
+
+                <div class="states-list">
+                  <div v-for="(state, sIdx) in localData.interactions[selectedCompIndex].states" :key="sIdx"
+                       class="state-card"
+                       :class="{ active: selectedStateIndex === sIdx }"
+                       @click="selectedStateIndex = sIdx">
+
+                    <!-- State Header -->
+                    <div class="state-header">
+                      <div style="display: flex; align-items: center; gap: 8px;">
                         <span class="state-idx">#{{ sIdx + 1 }}</span>
-                        <el-select v-model="state.state_type" size="small" style="width: 100px" @change="updateNode">
+                        <el-select v-model="state.state_type" size="small" style="width: 110px" @change="updateNode">
                           <el-option v-for="opt in stateTypeOptions" :key="opt.value" :label="opt.label"
                                      :value="opt.value"/>
                         </el-select>
-                        <el-button link type="danger" :icon="Delete" @click="removeState(sIdx)"/>
                       </div>
-                      <div class="state-body">
-                        <!-- 🔥 1. 修改交互：点击图片切换预览，不再触发上传 -->
-                        <div class="state-img-uploader" @click="handleStateImageClick(state)">
-                          <img v-if="state.image_url" :src="getStateImageUrl(state.image_url)"
-                               class="state-img-preview"/>
-                          <img v-else-if="state.skeleton_config?.mask_url"
-                               :src="getStateImageUrl(state.skeleton_config.mask_url)"
-                               class="state-img-preview skeleton-result"/>
+                      <div class="state-actions">
+                        <el-button link size="small" @click.stop="startCrop(selectedCompIndex, sIdx)"
+                                   title="Crop new sample from canvas">
+                          <el-icon>
+                            <Crop/>
+                          </el-icon>
+                        </el-button>
+                        <el-button link type="danger" :icon="Delete" @click.stop="removeState(sIdx)"/>
+                      </div>
+                    </div>
 
-                          <div v-else class="upload-placeholder">
-                            <el-icon>
-                              <Picture/>
-                            </el-icon>
-                            <span>无图片</span>
-                          </div>
-                        </div>
-                        <div class="state-fields">
-                          <el-button size="small" link type="primary" @click="startCrop(selectedCompIndex, sIdx)">✂️
-                            从画布裁剪
-                          </el-button>
-                          <div class="state-coords-row">
-                            <div class="coord-mini"><span>X</span>
-                              <el-input v-model.number="state.x" size="small" @input="updateNode"/>
-                            </div>
-                            <div class="coord-mini"><span>Y</span>
-                              <el-input v-model.number="state.y" size="small" @input="updateNode"/>
-                            </div>
-                            <div class="coord-mini"><span>W</span>
-                              <el-input v-model.number="state.w" size="small" @input="updateNode"/>
-                            </div>
-                            <div class="coord-mini"><span>H</span>
-                              <el-input v-model.number="state.h" size="small" @input="updateNode"/>
-                            </div>
-                          </div>
-                          <el-input v-model="state.description" size="small" placeholder="描述 (可选)"
-                                    @input="updateNode"/>
-                          <el-input v-model="state.attributes" type="textarea" :rows="2" size="small"
-                                    placeholder='{"color": "red"}' @input="updateNode"/>
-                        </div>
+                    <!-- Samples Management -->
+                    <div class="state-samples-area"
+                         style="margin-top: 8px; background: #fff; padding: 8px; border-radius: 6px; border: 1px solid #f1f5f9;">
+                      <div
+                          style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; color: #64748b;">
+                        <span>Training Samples</span>
+                        <span style="font-weight: 600;">{{ (stateSelectedImages[sIdx] || []).length }} selected</span>
                       </div>
-                      <!-- 🔥 2.2 状态骨架训练 (新增) -->
-                      <div class="state-skeleton-row">
-                        <div class="skeleton-label">状态骨架:</div>
-                        <div class="mini-uploader">
-                          <el-button size="small" :icon="Picture" @click="openImageSelector(sIdx)">
-                            选择样本 ({{ (stateSelectedImages[sIdx] || []).length }})
-                          </el-button>
-                          <el-button size="small" type="primary" link @click="trainStateSkeleton(sIdx)"
-                                     :disabled="!(stateSelectedImages[sIdx] && stateSelectedImages[sIdx].length > 0)">训练
-                          </el-button>
+
+                      <div class="samples-thumbs-row" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <!-- Add Button -->
+                        <div class="add-sample-btn" @click.stop="openImageSelector(sIdx)"
+                             style="width: 32px; height: 32px; border: 1px dashed #cbd5e1; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6366f1;">
+                          <el-icon>
+                            <Plus/>
+                          </el-icon>
+                        </div>
+
+                        <!-- Thumbnails (Limit 5) -->
+                        <div v-for="(name, imgIdx) in (stateSelectedImages[sIdx] || []).slice(0, 5)" :key="imgIdx"
+                             class="mini-thumb"
+                             style="width: 32px; height: 32px; border-radius: 4px; overflow: hidden; border: 1px solid #e2e8f0;">
+                          <img :src="getStateImageUrl(name)" style="width: 100%; height: 100%; object-fit: cover;"/>
+                        </div>
+                        <div v-if="(stateSelectedImages[sIdx] || []).length > 5"
+                             style="font-size: 10px; color: #94a3b8; line-height: 32px;">
+                          +{{ (stateSelectedImages[sIdx] || []).length - 5 }}
                         </div>
                       </div>
                     </div>
-                    <el-button class="add-state-btn" @click="addState" :icon="Plus" style="width: 100%">添加状态
-                    </el-button>
-                  </ElTabPane>
-                </ElTabs>
-              </div>
-            </el-scrollbar>
-          </el-aside>
-        </el-container>
-        <!-- 🔥 图片选择弹窗 -->
-        <el-dialog v-model="showImageSelector" title="选择训练样本" width="600px" append-to-body>
-          <div class="img-selector-grid">
-            <div v-for="(file, idx) in selectorCandidateList" :key="idx"
-                 class="img-select-item"
-                 :class="{ selected: tempSelectedImageNames.includes(file.name) }"
-                 @click="toggleImageSelection(file.name)">
-              <img :src="file.url" class="select-thumb"/>
-              <div class="select-overlay">
-                <el-icon v-if="tempSelectedImageNames.includes(file.name)">
-                  <Check/>
-                </el-icon>
-              </div>
-              <div class="img-name">{{ file.name }}</div>
-            </div>
+                  </div>
+
+                  <el-button class="add-state-btn" @click="addState" :icon="Plus"
+                             style="width: 100%; margin-top: 10px;">Add State
+                  </el-button>
+                </div>
+              </ElTabPane>
+            </ElTabs>
           </div>
-          <template #footer>
-            <el-button @click="showImageSelector = false">取消</el-button>
-            <el-button type="primary" @click="confirmImageSelection">确定 ({{
-                tempSelectedImageNames.length
-              }})
-            </el-button>
-          </template>
-        </el-dialog>
-      </el-container>
-    </div>
+        </el-scrollbar>
+      </el-aside>
+    </el-container>
+
+    <!-- 🔥 图片选择弹窗 -->
+    <el-dialog v-model="showImageSelector" title="选择训练样本" width="600px" append-to-body>
+      <div class="img-selector-grid">
+        <div v-for="(file, idx) in selectorCandidateList" :key="idx"
+             class="img-select-item"
+             :class="{ selected: tempSelectedImageNames.includes(file.name) }"
+             @click="toggleImageSelection(file.name)">
+          <img :src="file.url" class="select-thumb"/>
+          <div class="select-overlay">
+            <el-icon v-if="tempSelectedImageNames.includes(file.name)">
+              <Check/>
+            </el-icon>
+          </div>
+          <div class="img-name">{{ file.name }}</div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showImageSelector = false">取消</el-button>
+        <el-button type="primary" @click="confirmImageSelection">确定 ({{
+            tempSelectedImageNames.length
+          }})
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -454,7 +586,9 @@ import {
   ElSwitch,
   ElCollapse,
   ElCollapseItem,
-  ElCheckbox
+  ElCheckbox,
+  ElDialog,
+  ElInputNumber
 } from 'element-plus'
 import {
   ZoomIn,
@@ -470,7 +604,12 @@ import {
   Plus,
   Upload,
   View,
-  Picture
+  Picture,
+  Refresh,
+  Connection,
+  Crop,
+  Lock,
+  Unlock
 } from '@element-plus/icons-vue'
 import * as api from '@/api/appGraph'
 import {wsUploadFile, wsGetFile} from '@/api/mWebSocket'
@@ -493,8 +632,11 @@ const localData = reactive({
   ignored_top: 0, // 🔥 7. 顶部忽略高度
   ignored_bottom: 0 // 🔥 7. 底部忽略高度
 })
+const isSafeLineLocked = ref(false)
+const pageTrainingSelectedUids = ref(new Set())
 const ocrLoading = ref(false)
 const selectedCompIndex = ref(-1)
+const selectedCompIndices = ref(new Set()) // 🔥 多选集合
 const activeTab = ref('props')
 const pageActiveTab = ref('list')
 const uploadContext = ref(null)
@@ -510,36 +652,114 @@ const tempSelectedImageNames = ref([])
 const selectorCandidateList = ref([])
 const selectorMode = ref('state') // 'state' | 'component'
 
+// 🔥 3. 数据清洗函数 (Sanitize) - 解决 [object Object] 与数据污染
+const sanitizeComponent = (comp) => {
+  const base = {
+    id: comp.id || comp.uid || `gen-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    label: comp.label || '未命名',
+    x: Math.round(Number(comp.x) || 0),
+    y: Math.round(Number(comp.y) || 0),
+    w: Math.round(Number(comp.w) || 0),
+    h: Math.round(Number(comp.h) || 0),
+    skeleton_config: comp.skeleton_config || {},
+    action: comp.action || 'click',
+    component_type: comp.component_type || 'custom',
+    needs_confirmation: comp.needs_confirmation || false
+  }
+  // Deep sanitize states
+  base.states = (Array.isArray(comp.states) ? comp.states : []).map(s => ({
+    ...s,
+    skeleton_config: s.skeleton_config || {},
+    x: s.x !== undefined ? s.x : base.x,
+    y: s.y !== undefined ? s.y : base.y,
+    w: s.w !== undefined ? s.w : base.w,
+    h: s.h !== undefined ? s.h : base.h
+  }))
+  return base
+}
+
+// 🔥 新增：骨架蒙版高亮样式
+const skeletonMaskStyle = computed(() => {
+  const maskUrl = getStateImageUrl(localData.skeletonMask);
+  if (maskUrl) {
+    return {
+      'mask-image': `url(${maskUrl})`,
+      '-webkit-mask-image': `url(${maskUrl})`,
+      'mask-size': '100% 100%',
+      '-webkit-mask-size': '100% 100%',
+      'mask-mode': 'luminance',
+      '-webkit-mask-mode': 'luminance',
+    };
+  }
+  return {};
+});
+// 🔥 2. 数据模型混乱修复：统一后端路径解析工具
+const resolveBackendPath = (data) => {
+  if (!data) return ''
+  if (typeof data === 'string') return data
+  // 优先取 path (绝对路径), 其次 url, 最后 filename
+  return data.path || data.url || data.filename || ''
+}
+
 
 // 🔥 预览相关
 const previewImage = ref('') // 当前临时预览的图片 URL
 const currentDisplayScreenshot = computed(() => previewImage.value || localData.screenshot)
 
-// 🔥 新增：通用文件获取转 URL 方法
+// 🔥 Image Lifecycle Management
+const activeBlobUrls = new Set()
+const screenshotCache = ref({}) // path -> url
+
+const registerBlobUrl = (url) => {
+  if (url && url.startsWith('blob:')) {
+    activeBlobUrls.add(url)
+  }
+  return url
+}
+
+// Helper: Process raw file data into a usable URL (Blob or Base64)
+const processFileDataToUrl = (data, fileName = '') => {
+  if (!data) return ''
+
+  // 1. Blob / ArrayBuffer -> Blob URL
+  if (data instanceof Blob) return registerBlobUrl(URL.createObjectURL(data))
+  if (data instanceof ArrayBuffer) return registerBlobUrl(URL.createObjectURL(new Blob([data])))
+  if (data.type === 'Buffer' && Array.isArray(data.data)) {
+    return registerBlobUrl(URL.createObjectURL(new Blob([new Uint8Array(data.data)])))
+  }
+
+  // 2. Complex Object { content, name } -> Base64
+  if (data.content && typeof data.content === 'string') {
+    let rawStr = data.content
+    if (!rawStr.startsWith('data:')) {
+      let mime = 'image/png'
+      if (fileName && (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg'))) mime = 'image/jpeg'
+      else if (data.name && (data.name.endsWith('.jpg') || data.name.endsWith('.jpeg'))) mime = 'image/jpeg'
+      rawStr = `data:${mime};base64,${rawStr}`
+    }
+    return rawStr
+  }
+
+  // 3. String -> Base64
+  if (typeof data === 'string') {
+    return data.startsWith('data:') ? data : `data:image/png;base64,${data}`
+  }
+  return ''
+}
+
+// 🔥 Unified File Getter (Checks Cache -> Fetches -> Caches)
 const getFileUrl = async (path) => {
   if (!path) return ''
   if (path.startsWith('data:') || path.startsWith('http')) return path
+  if (screenshotCache.value[path]) return screenshotCache.value[path]
 
   try {
     const res = await wsGetFile(path)
     if (res.code === 200 && res.data) {
-      const data = res.data
-      if (data instanceof Blob) return URL.createObjectURL(data)
-      if (data instanceof ArrayBuffer) return URL.createObjectURL(new Blob([data]))
-      if (data.type === 'Buffer' && Array.isArray(data.data)) {
-        return URL.createObjectURL(new Blob([new Uint8Array(data.data)]))
-      }
-      if (data.content && typeof data.content === 'string') {
-        let rawStr = data.content
-        if (!rawStr.startsWith('data:')) {
-          let mime = 'image/png'
-          if (path.endsWith('.jpg') || path.endsWith('.jpeg')) mime = 'image/jpeg'
-          rawStr = `data:${mime};base64,${rawStr}`
-        }
-        return rawStr
-      }
-      if (typeof data === 'string') {
-        return data.startsWith('data:') ? data : `data:image/png;base64,${data}`
+      const url = processFileDataToUrl(res.data, path)
+      if (url) {
+        screenshotCache.value[path] = url
+        return url
       }
     }
   } catch (e) {
@@ -557,9 +777,6 @@ const stateTypeOptions = [
   {label: 'Custom', value: 'custom'}
 ]
 
-// --- 截图预览逻辑 (移动到顶部以避免 ReferenceError) ---
-const screenshotCache = ref({}) // path -> url
-
 const loadOneScreenshot = async (path, retryCount = 0) => {
   if (!path) return
   if (screenshotCache.value[path]) return
@@ -576,20 +793,9 @@ const loadOneScreenshot = async (path, retryCount = 0) => {
     console.log('Load screenshot result:', path, res)
     if (res.code === 200) {
       const data = res.data
-      let url = ''
-      if (data instanceof Blob) url = URL.createObjectURL(data)
-      else if (data && typeof data === 'object' && data.content) {
-        let rawStr = data.content
-        if (!rawStr.startsWith('data:')) {
-          let mime = 'image/png'
-          if (data.name && (data.name.endsWith('.jpg') || data.name.endsWith('.jpeg'))) mime = 'image/jpeg'
-          rawStr = `data:${mime};base64,${rawStr}`
-        }
-        url = rawStr
-      } else if (typeof data === 'string') {
-        url = data.startsWith('data:') ? data : `data:image/png;base64,${data}`
-      }
+      const url = processFileDataToUrl(data, path)
       if (url) screenshotCache.value[path] = url
+
     } else if (retryCount < maxRetries) {
       // 🔥 失败重试逻辑
       console.log(`Load failed, retrying (${retryCount + 1}/${maxRetries})...`)
@@ -671,8 +877,8 @@ const handleFileUpload = async (e) => {
       // 1. Upload via WebSocket
       const res = await wsUploadFile(file.name, base64)
       if (res.code === 200) {
-        // 🔥 修复：如果后端返回的是对象 {filename, path, url}，优先取 path (绝对路径)
-        const path = (res.data && typeof res.data === 'object' && res.data.path) ? res.data.path : res.data
+        // 🔥 使用统一解析器，防止 [object Object]
+        const path = resolveBackendPath(res.data)
 
         if (uploadContext.value?.type === 'state') {
           const {compIndex, stateIndex} = uploadContext.value
@@ -835,6 +1041,8 @@ const getStateImageUrl = (path) => {
 
 const selectComp = (index) => {
   selectedCompIndex.value = index
+  // 🔥 修复：重新赋值 Set 以触发 Vue 响应式更新，确保多选 UI (合并按钮) 能正确显示
+  selectedCompIndices.value = new Set(index !== -1 ? [index] : [])
   nextTick(() => {
     const el = itemRefs.value[index]
     if (el) {
@@ -854,7 +1062,25 @@ const handleHotspotMouseDown = (e, index) => {
   }
 
   e.stopPropagation()
-  selectComp(index)
+  // 🔥 支持 Shift 多选
+  if (e.shiftKey) {
+    // 🔥 修复：克隆 Set 进行操作，然后重新赋值以触发响应式
+    const newSet = new Set(selectedCompIndices.value)
+    if (newSet.has(index)) {
+      newSet.delete(index)
+      // 如果取消的是当前主选，尝试转移主选
+      if (selectedCompIndex.value === index) {
+        const next = Array.from(newSet).pop()
+        selectedCompIndex.value = next !== undefined ? next : -1
+      }
+    } else {
+      newSet.add(index)
+      selectedCompIndex.value = index
+    }
+    selectedCompIndices.value = newSet
+  } else {
+    selectComp(index)
+  }
 }
 
 const focusComponent = (index) => {
@@ -892,7 +1118,7 @@ const handleCanvasMouseDown = (e) => {
 
   if (isSpacePan || isMiddlePan || isLeftPan) {
     e.preventDefault() // 防止文字选中等默认行为
-    if (isLeftPan) selectedCompIndex.value = -1 // 点击空白处取消选中
+    if (isLeftPan) clearSelection()
     startPan(e)
     return
   }
@@ -917,6 +1143,7 @@ const handleCanvasMouseDown = (e) => {
     e.preventDefault()
     isDrawing.value = true;
     selectedCompIndex.value = -1;
+    selectedCompIndices.value.clear();
     drawStart.value = getRelativePos(e);
     currentBox.value = {...drawStart.value, w: 0, h: 0}
   }
@@ -985,6 +1212,8 @@ const handleCanvasMouseUp = () => {
     localData.interactions.push({label: 'New Area', ...currentBox.value});
     selectedCompIndex.value = localData.interactions.length - 1
     updateNode()
+    selectComp(selectedCompIndex.value) // 统一使用 selectComp 更新多选状态
+    updateNode()
   }
   currentBox.value = null
 }
@@ -995,9 +1224,68 @@ const startDragSafeLine = (type, e) => {
 
 const deleteComp = (i) => {
   localData.interactions.splice(i, 1);
-  selectedCompIndex.value = -1
+  clearSelection()
   updateNode()
 }
+
+ const clearSelection = () => {
+   selectedCompIndex.value = -1
+   selectedCompIndices.value = new Set()
+ }
+
+const confirmComponent = (index) => {
+  if (localData.interactions[index]) {
+    localData.interactions[index].needs_confirmation = false
+    updateNode()
+  }
+}
+// 🔥 合并选中的热区
+ const mergeSelectedComponents = () => {
+   const indices = Array.from(selectedCompIndices.value).sort((a, b) => a - b)
+   if (indices.length < 2) return
+
+   const comps = indices.map(i => localData.interactions[i])
+
+   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+   comps.forEach(c => {
+     if (c.x < minX) minX = c.x
+     if (c.y < minY) minY = c.y
+     if (c.x + c.w > maxX) maxX = c.x + c.w
+     if (c.y + c.h > maxY) maxY = c.y + c.h
+   })
+
+   const newComp = {
+     ...JSON.parse(JSON.stringify(comps[0])), // 继承第一个组件的属性
+     id: `gen-${Date.now()}`,
+     label: 'Merged Area',
+     x: minX,
+     y: minY,
+     w: maxX - minX,
+     h: maxY - minY,
+     states: [], // 重置状态
+     component_type: 'custom',
+     needs_confirmation: false
+   }
+// 从后往前删除，避免索引偏移
+   for (let i = indices.length - 1; i >= 0; i--) {
+     localData.interactions.splice(indices[i], 1)
+   }
+
+   localData.interactions.push(newComp)
+   selectComp(localData.interactions.length - 1)
+   updateNode()
+   ElMessage.success('热区合并成功')
+ }
+
+ const deleteSelectedComponents = () => {
+   const indices = Array.from(selectedCompIndices.value).sort((a, b) => a - b)
+   for (let i = indices.length - 1; i >= 0; i--) {
+     localData.interactions.splice(indices[i], 1)
+   }
+   clearSelection()
+   updateNode()
+ }
+
 
 const addState = () => {
   const comp = localData.interactions[selectedCompIndex.value]
@@ -1083,13 +1371,25 @@ const confirmCrop = () => {
 }
 
 // --- 骨架训练逻辑 ---
+const togglePageSampleSelection = (file) => {
+  if (pageTrainingSelectedUids.value.has(file.uid)) {
+    pageTrainingSelectedUids.value.delete(file.uid)
+  } else {
+    pageTrainingSelectedUids.value.add(file.uid)
+  }
+}
+
 const handleSkeletonImgChange = (uploadFile, uploadFiles) => {
   skeletonFileList.value = uploadFiles
+  if (uploadFile.status === 'ready') {
+    pageTrainingSelectedUids.value.add(uploadFile.uid)
+  }
 }
 
 const handleRemoveSkeleton = (file) => {
   const idx = skeletonFileList.value.indexOf(file)
   if (idx > -1) skeletonFileList.value.splice(idx, 1)
+  pageTrainingSelectedUids.value.delete(file.uid)
 }
 
 // 🔥 预览骨架图片（不改变节点数据，仅改变画布显示）
@@ -1209,32 +1509,14 @@ watch(selectedCompIndex, (newVal) => {
 })
 
 const trainSkeleton = async () => {
-  if (skeletonFileList.value.length < 2) return
+  const selectedFiles = skeletonFileList.value.filter(f => pageTrainingSelectedUids.value.has(f.uid))
+  if (selectedFiles.length < 1) {
+    ElMessage.warning('Please select at least 1 sample')
+    return
+  }
 
   // 1. 上传所有样本图片
-  const uploadedNames = []
-  for (const file of skeletonFileList.value) {
-    const reader = new FileReader()
-    const p = new Promise((resolve) => {
-      reader.onload = async (e) => {
-        console.log('Uploading skeleton sample:', file.name)
-        const res = await wsUploadFile(file.name, e.target.result)
-        if (res.code === 200) {
-          const path = (res.data && typeof res.data === 'object' && res.data.path) ? res.data.path : res.data
-          // 假设后端 train_skeleton 接收的是文件名列表
-          const filename = path.split(/[/\\]/).pop()
-          console.log('Uploaded success:', filename)
-          resolve(filename)
-        } else {
-          console.error('Upload failed:', res)
-          resolve(null)
-        }
-      }
-    })
-    reader.readAsDataURL(file.raw)
-    const name = await p
-    if (name) uploadedNames.push(name)
-  }
+  const uploadedNames = await uploadFilesList(selectedFiles.filter(f => f.raw))
 
   console.log('All samples uploaded, starting training with:', uploadedNames)
 
@@ -1244,18 +1526,45 @@ const trainSkeleton = async () => {
       graph_id: props.graphId,
       node_id: props.node.id,
       image_names: uploadedNames,
-      threshold: 10
+      threshold: 10,
+      ignored_areas: [localData.ignored_top, localData.ignored_bottom]
     })
     console.log('Train response:', res)
     if (res.code === 200 && res.data) {
-      localData.skeletonImages = res.data.images || uploadedNames // 🔥 优先使用后端返回的 images 列表
-      localData.skeletonMask = res.data.filename || res.data.url || res.data.path // 🔥 优先使用 filename
+      localData.skeletonImages = res.data.images || uploadedNames
+      localData.skeletonMask = resolveBackendPath(res.data)
       // 🔥 关键修复：立即加载骨架图内容，以便在画布上显示
       await loadOneScreenshot(localData.skeletonMask)
 
-      ElMessage.success('骨架生成成功')
+      let newComps = []
+      // 🔥 优先使用后端返回的 hotspots 字段
+      const backendHotspots = res.data.hotspots || res.data.detected_components || []
+
+      if (backendHotspots.length > 0) {
+        newComps = backendHotspots.map((c, i) => ({
+          x: Math.round(c.x),
+          y: Math.round(c.y),
+          w: Math.round(c.w),
+          h: Math.round(c.h),
+          label: c.label || c.type || `Auto Area ${i + 1}`,
+          component_type: c.type || 'custom',
+          needs_confirmation: c.needs_confirmation || false,
+          states: [],
+          skeleton_config: {}
+        }))
+      }
+
+      if (newComps.length > 0) {
+        localData.interactions = newComps
+        clearSelection()
+        ElMessage.success(`骨架生成成功，后端识别出 ${newComps.length} 个热区`)
+      } else {
+        ElMessage.warning('骨架生成成功，但未检测到有效区域')
+      }
+
       // 🔥 关键修复：生成后立即触发更新，确保 mask 被保存
       updateNode()
+      showSkeletonMask.value = true // 自动开启蒙版显示
     } else {
       ElMessage.error(res.msg || '训练失败')
     }
@@ -1378,7 +1687,7 @@ const uploadFilesList = async (fileList) => {
       reader.onload = async (e) => {
         const res = await wsUploadFile(file.name, e.target.result)
         if (res.code === 200) {
-          const path = (res.data && typeof res.data === 'object' && res.data.path) ? res.data.path : res.data
+          const path = resolveBackendPath(res.data)
           const filename = path.split(/[/\\]/).pop()
           resolve(filename)
         } else {
@@ -1392,6 +1701,7 @@ const uploadFilesList = async (fileList) => {
   }
   return uploadedNames
 }
+
 const trainComponentSkeleton = async () => {
   const comp = localData.interactions[selectedCompIndex.value]
   if (!comp) return
@@ -1405,7 +1715,7 @@ const trainComponentSkeleton = async () => {
 
   if (res.code === 200 && res.data) {
     comp.skeleton_config = {
-      mask_url: res.data.filename || res.data.url || res.data.path,
+      mask_url: resolveBackendPath(res.data),
       images: res.data.images || names
     }
     ElMessage.success('组件骨架生成成功')
@@ -1434,7 +1744,7 @@ const trainStateSkeleton = async (sIdx) => {
 
   if (res.code === 200 && res.data) {
     state.skeleton_config = {
-      mask_url: res.data.filename || res.data.url || res.data.path,
+      mask_url: resolveBackendPath(res.data),
       images: res.data.images || names
     };
     ElMessage.success(`状态 ${state.state_type} 骨架生成成功`)
@@ -1444,6 +1754,50 @@ const trainStateSkeleton = async (sIdx) => {
   }
 }
 
+const trainComponent = async () => {
+  const comp = localData.interactions[selectedCompIndex.value]
+  if (!comp) return
+
+  const statesPayload = []
+  const allFilesToUpload = new Set()
+
+  // 1. Prepare Payload & Collect Files
+  for (const [sIdx, state] of comp.states.entries()) {
+    const sampleNames = stateSelectedImages.value[sIdx] || []
+
+    if (sampleNames.length > 0) {
+      statesPayload.push({
+        name: state.state_type,
+        samples: sampleNames
+      })
+      // Collect files that need to be uploaded
+      sampleNames.forEach(name => allFilesToUpload.add(name))
+    }
+  }
+
+  if (statesPayload.length === 0) {
+    ElMessage.warning('Please select samples for at least one state.')
+    return
+  }
+
+  // 2. Upload Files (Reuse existing logic)
+  // Find file objects from skeletonFileList or compSkeletonFileList
+  const filesToUpload = skeletonFileList.value.filter(f => allFilesToUpload.has(f.name))
+  await uploadFilesList(filesToUpload)
+
+  // 3. Send Request
+  const res = await wsTrainSkeleton({
+    component_id: comp.uid || comp.id,
+    states: statesPayload, // 🔥 New Payload Structure
+    threshold: 10
+  })
+
+  if (res.code === 200) {
+    ElMessage.success('Component multi-state model training started!')
+  } else {
+    ElMessage.error(res.msg || 'Training failed')
+  }
+}
 
 const zoomIn = () => scale.value = Math.min(5, scale.value * 1.2)
 const zoomOut = () => scale.value = Math.max(0.1, scale.value * 0.8)
@@ -1519,7 +1873,7 @@ onMounted(async () => {
     localData.ignored_bottom = ignored.bottom || 0
 
     // 🔥 关键修复：加载已保存的骨架蒙版
-    localData.skeletonMask = props.node.data?.skeleton_config?.filename || props.node.data?.skeleton_config?.mask_url || ''
+    localData.skeletonMask = resolveBackendPath(props.node.data?.skeleton_config) || props.node.data?.skeleton_config?.mask_url || ''
 
     // 🔥 关键修复：如果存在骨架蒙版，加载其内容
     if (localData.skeletonMask) loadOneScreenshot(localData.skeletonMask)
@@ -1527,17 +1881,14 @@ onMounted(async () => {
     // 🔥 关键修复：回显已上传的训练图片
     const savedImages = props.node.data?.skeleton_config?.images || []
     localData.skeletonImages = savedImages
-    skeletonFileList.value = savedImages.map(name => ({name: name, url: ''})) // URL 留空，切换 Tab 时懒加载
+    skeletonFileList.value = savedImages.map(name => ({name: name, url: '', uid: name})) // URL 留空，切换 Tab 时懒加载
+    // Auto-select saved images
+    savedImages.forEach(name => pageTrainingSelectedUids.value.add(name))
 
 
     // 🔥 修复：安全地获取截图路径字符串，防止因数据为对象而崩溃
     const screenshotData = props.node.data.screenshot
-    let path = ''
-    if (screenshotData && typeof screenshotData === 'object') {
-      path = screenshotData.path || screenshotData.url || ''
-    } else if (typeof screenshotData === 'string') {
-      path = screenshotData
-    }
+    let path = resolveBackendPath(screenshotData)
     localData.screenshotPath = path
 
     // 🔥 修复：如果已经是 Base64 或 HTTP URL，直接显示，无需请求后端
@@ -1588,18 +1939,8 @@ onMounted(async () => {
       localData.screenshot = path
     }
 
-    localData.interactions = JSON.parse(JSON.stringify(props.node.data.interactions || [])).map(i => ({
-      ...i,
-      skeleton_config: i.skeleton_config || {},
-      states: (i.states || []).map(s => ({
-        ...s,
-        skeleton_config: s.skeleton_config || {},
-        x: s.x !== undefined ? s.x : i.x,
-        y: s.y !== undefined ? s.y : i.y,
-        w: s.w !== undefined ? s.w : i.w,
-        h: s.h !== undefined ? s.h : i.h
-      }))
-    }))
+    // 🔥 使用 sanitizeComponent 进行严格的数据清洗
+    localData.interactions = JSON.parse(JSON.stringify(props.node.data.interactions || [])).map(sanitizeComponent)
 
     // 🔥 修复：预加载所有状态图片的缓存
     localData.interactions.forEach(comp => {
@@ -1623,109 +1964,78 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
-  if (localData.screenshot && localData.screenshot.startsWith('blob:')) {
-    URL.revokeObjectURL(localData.screenshot)
-  }
+  // 🔥 Robust Cleanup: Revoke all tracked blob URLs
+  activeBlobUrls.forEach(url => URL.revokeObjectURL(url))
+  activeBlobUrls.clear()
 })
 </script>
 
 <style scoped>
-.saas-header.blocking-header {
-  background: #fef2f2; /* 红色背景警示 */
-  border-bottom-color: #fee2e2;
-}
-
-.saas-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 2000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding-top: 40px;
-}
-
-.saas-window {
-  width: 95vw;
-  height: 90vh;
-  background: #fff;
-  border-radius: 12px;
-  overflow: hidden !important;;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
-  border: 1px solid #e2e8f0;
-}
-
-.h-full {
+/* 🔥 Focus Mode Layout */
+.focus-editor-root {
+  width: 100%;
   height: 100%;
-}
-
-.saas-header {
-  background: white;
-  border-bottom: 1px solid #e2e8f0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-}
-
-.header-left, .header-center, .header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.header-center {
-  flex: 1;
-  justify-content: center;
-}
-
-.saas-input-title {
-  width: 200px;
-}
-
-:deep(.saas-input-title .el-input__wrapper) {
-  box-shadow: none !important;
+  flex-direction: column;
   background: transparent;
 }
 
-:deep(.saas-input-title .el-input__inner) {
-  font-size: 16px;
+.editor-layout {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+}
+
+/* 🔥 Teleport Toolbar Styles */
+.focus-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 100%;
+  width: 100%;
+  justify-content: center;
+}
+
+.focus-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.focus-input-title {
+  width: 160px;
+}
+
+:deep(.focus-input-title .el-input__wrapper) {
+  box-shadow: none !important;
+  background: transparent;
+  border-bottom: 1px dashed #ccc;
+  padding: 0;
+}
+
+:deep(.focus-input-title .el-input__inner) {
+  font-size: 14px;
   font-weight: 600;
   color: #1e293b;
 }
 
-.saas-input-desc {
-  width: 180px;
-  margin-left: 8px;
-}
-
-:deep(.saas-input-desc .el-input__wrapper) {
-  box-shadow: none !important;
-  background: transparent;
-}
-
-:deep(.saas-input-desc .el-input__inner) {
-  font-size: 13px;
-  color: #64748b;
+.focus-divider {
+  width: 1px;
+  height: 16px;
+  background: #e5e7eb;
+  margin: 0 4px;
 }
 
 .zoom-label {
   font-size: 12px;
   color: #64748b;
-  margin-left: 4px;
-  min-width: 40px;
+  min-width: 36px;
   text-align: center;
-}
-
-.editor-body {
-  overflow: hidden !important;
-  height: calc(100% - 60px);
 }
 
 .visual-container {
   flex: 1;
-  background: #e2e8f0;
+  background: transparent; /* Transparent to show underlying canvas context if needed, or just clean look */
   position: relative;
   overflow: hidden;
   display: flex;
@@ -1746,7 +2056,8 @@ onUnmounted(() => {
 
 .artboard {
   position: relative;
-  background: white;
+  background: #fff;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15); /* Floating effect */
 }
 
 .base-img {
@@ -1780,6 +2091,24 @@ onUnmounted(() => {
   z-index: 20;
 }
 
+.hotspot-box.needs-confirm {
+  border-style: dashed;
+  border-color: #e6a23c;
+  background: rgba(230, 162, 60, 0.15);
+}
+
+.hotspot-box.is-system {
+  border-color: #909399;
+  background: rgba(144, 147, 153, 0.05);
+}
+
+/* 🔥 Style for backend-detected containers */
+.hotspot-box.is-container {
+  border-color: #a1a1aa; /* zinc-400 */
+  background: rgba(212, 212, 216, 0.1); /* zinc-200 */
+  border-style: dotted;
+}
+
 .label-tag {
   position: absolute;
   top: -22px;
@@ -1801,8 +2130,9 @@ onUnmounted(() => {
 }
 
 .props-sidebar {
-  background: white;
-  border-left: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  border-left: 1px solid rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
   z-index: 20;
@@ -2092,38 +2422,45 @@ onUnmounted(() => {
   background: #f8fafc;
 }
 
-/* 🔥 7. 安全区域样式 */
+/* 🔥 4. 安全区域交互优化：影院模式 (Dimmed) */
 .safe-area-overlay {
   position: absolute;
   left: 0;
   width: 100%;
-  background: rgba(255, 0, 0, 0.15);
-  border-bottom: 1px dashed rgba(255, 0, 0, 0.5);
+  background: transparent; /* 🔥 1. 透明背景，仅保留线条 */
   pointer-events: none;
   z-index: 50;
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  transition: background 0.2s;
+}
+
+/* 拖拽时稍微显示背景，方便感知区域 */
+.safe-area-overlay.is-dragging {
+  background: rgba(245, 108, 108, 0.1);
 }
 
 .safe-area-overlay.top {
   top: 0;
-  border-bottom: 2px solid rgba(255, 0, 0, 0.4);
+  border-bottom: 2px solid #f56c6c; /* 仅保留清晰的边界线 */
 }
 
 .safe-area-overlay.bottom {
   bottom: 0;
-  border-top: 2px solid rgba(255, 0, 0, 0.4);
+  border-top: 2px solid #f56c6c;
   border-bottom: none;
   align-items: flex-start;
 }
 
 .safe-area-label {
   font-size: 10px;
-  color: red;
-  background: rgba(255, 255, 255, 0.8);
-  padding: 0 4px;
+  color: white;
+  background: #f56c6c;
+  padding: 1px 6px;
+  border-radius: 0 0 4px 4px;
   pointer-events: none;
+  font-weight: 600;
 }
 
 .safe-area-handle {
@@ -2263,15 +2600,14 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.skeleton-mask {
+.skeleton-highlight-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100%;
   height: 100%;
+  mix-blend-mode: screen; /* 🔥 2. 混合模式：滤色 (Screen) - 实现特征图叠加预览 */
   pointer-events: none;
-  opacity: 0.6;
-  mix-blend-mode: multiply;
+  opacity: 0.8;
 }
 
 .crop-box {
@@ -2501,6 +2837,99 @@ onUnmounted(() => {
   top: 4px;
   right: 4px;
   z-index: 10;
+}
+
+.config-section {
+  margin-bottom: 20px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.section-header .title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.control-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 12px;
+}
+
+.control-row .label {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.control-inputs {
+  display: flex;
+  align-items: center;
+}
+
+.divider-line {
+  height: 1px;
+  background: #f1f5f9;
+  margin: 20px -12px;
+}
+
+.helper-text {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.gallery-item {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.gallery-item.selected {
+  border-color: #6366f1;
+}
+
+.selection-overlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  background: #6366f1;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.gallery-item.selected .selection-overlay {
+  opacity: 1;
+}
+
+.mini-uploader :deep(.el-upload--picture-card) {
+  width: 80px;
+  height: 80px;
+  line-height: 80px;
+}
+
+.mini-uploader :deep(.el-upload-list--picture-card .el-upload-list__item) {
+  width: 80px;
+  height: 80px;
 }
 
 </style>

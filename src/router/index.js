@@ -1,9 +1,10 @@
 // src/router/index.js
 import {createRouter, createWebHashHistory} from 'vue-router'
 import { getNodeStatus } from '@/api/system'
+import { useAppStore } from '@/store/appStore'
+import { ElMessageBox } from 'element-plus'
 import ResourceList from '../views/ResourceList.vue'
 import WorkflowEditor from '../views/WorkflowEditor/index.vue'
-import WorkReport from '../views/WorkReport/index.vue'
 import DeviceManage from '../views/DeviceManage/index.vue'
 import Schedule from '../views/Schedule/index.vue'
 import Timeline from '../views/Timeline/index.vue'
@@ -25,63 +26,61 @@ const routes = [
     },
     {
         path: '/',
-        component: WorkReport,
-        redirect: '/report/apps', // 默认跳转到应用列表
-        meta: { requiresAuth: true },
-        children: [
-            {
-                path: 'report/apps',
-                name: 'AppList',
-                component: AppList,
-                meta: {title: '应用列表'}
-            },
-            {
-                path: 'report/tasks',
-                name: 'TaskList',
-                component: TaskList,
-                meta: {title: '测试任务'}
-            },
-            {
-                path: 'report/task/:id',
-                name: 'TaskDetail',
-                component: TaskDetailMap,
-                meta: {title: '任务详情'}
-            },
-            {
-                path: 'report/case/:id',
-                name: 'CaseResult',
-                component: CaseResult,
-                meta: {title: '用例报告'}
-            },
-            {
-                path: 'report/editor/:appId',
-                name: 'CaseEditor',
-                component: CaseEditor,
-                meta: {title: '用例编辑'}
-            },
-            {
-                path: 'resources',
-                name: 'ResourceList',
-                component: ResourceList
-            },
-            {
-                path: 'device',
-                name: 'DeviceManage',
-                component: DeviceManage
-            },
-            {
-                path: 'schedule',
-                name: 'Schedule',
-                component: Schedule,
-                meta: { title: '定时任务' }
-            },
-            {
-                path: 'timeline',
-                name: 'Timeline',
-                component: Timeline,
-                meta: { title: '时间线' }
-            }
-        ]
+        redirect: '/report/apps'
+    },
+    {
+        path: '/report/apps',
+        name: 'AppList',
+        component: AppList,
+        meta: {title: '应用列表', requiresAuth: true}
+    },
+    {
+        path: '/report/tasks',
+        name: 'TaskList',
+        component: TaskList,
+        meta: {title: '测试任务', requiresAuth: true}
+    },
+    {
+        path: '/report/task/:id',
+        name: 'TaskDetail',
+        component: TaskDetailMap,
+        meta: {title: '任务详情', requiresAuth: true}
+    },
+    {
+        path: '/report/case/:id',
+        name: 'CaseResult',
+        component: CaseResult,
+        meta: {title: '用例报告', requiresAuth: true}
+    },
+    {
+        path: '/report/editor/:appId',
+        name: 'CaseEditor',
+        component: CaseEditor,
+        meta: {title: '用例编辑', requiresAuth: true}
+    },
+    {
+        path: '/resources',
+        name: 'ResourceList',
+        component: ResourceList,
+        meta: { requiresAuth: true }
+    },
+    {
+        path: '/device',
+        name: 'DeviceManage',
+        component: DeviceManage,
+        meta: { requiresAuth: true }
+    },
+    {
+        path: '/schedule',
+        name: 'Schedule',
+        component: Schedule,
+        meta: { title: '定时任务', requiresAuth: true }
+    },
+    {
+        path: '/timeline',
+        name: 'Timeline',
+        component: Timeline,
+        meta: { title: '时间线', requiresAuth: true }
     },
     {
         // 修复：添加可选的 :id 参数以支持编辑现有工作流
@@ -98,6 +97,29 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, from, next) => {
+    // In a real app, Pinia is available here because `app.use(router)` is called after `app.use(pinia)`.
+    const appStore = useAppStore()
+
+    // 🔥 Dirty State Protection
+    if (appStore.isCanvasDirty) {
+        try {
+            await ElMessageBox.confirm(
+                'You have unsaved changes. Are you sure you want to leave?',
+                'Unsaved Changes',
+                {
+                    confirmButtonText: 'Leave',
+                    cancelButtonText: 'Stay',
+                    type: 'warning',
+                }
+            )
+            // User confirmed, reset dirty state and proceed
+            appStore.setCanvasDirty(false)
+        } catch (e) {
+            // User cancelled, abort navigation
+            return next(false)
+        }
+    }
+
     // 1. 如果不需要鉴权，直接放行
     if (!to.meta.requiresAuth && !to.meta.requiresGuest) return next()
 

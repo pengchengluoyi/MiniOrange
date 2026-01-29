@@ -1,0 +1,99 @@
+<template>
+  <header class="app-titlebar">
+    <!-- Mac Traffic Lights Spacer -->
+    <div class="mac-spacer" v-if="isMac"></div>
+
+    <!-- Dynamic Content Portal -->
+    <div id="titlebar-center-portal" class="titlebar-center"></div>
+
+    <!-- Windows Controls -->
+    <div class="win-controls" v-if="!isMac">
+      <div class="control-btn minimize" @click="handleMinimize">
+        <el-icon><Minus /></el-icon>
+      </div>
+      <div class="control-btn maximize" @click="handleMaximize">
+        <el-icon><FullScreen /></el-icon>
+      </div>
+      <div class="control-btn close" @click="handleClose">
+        <el-icon><Close /></el-icon>
+      </div>
+    </div>
+  </header>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue'
+import { ElIcon } from 'element-plus'
+import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
+
+const isMac = ref(false)
+
+onMounted(() => {
+  isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
+})
+
+const handleMinimize = () => window.electronAPI?.minimize()
+const handleMaximize = () => window.electronAPI?.maximize()
+const handleClose = () => window.electronAPI?.close()
+</script>
+
+<style scoped>
+.app-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 50px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.mac-spacer {
+  width: 80px;
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.titlebar-center {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+  overflow: hidden;
+}
+
+.win-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.control-btn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s;
+  color: #666;
+}
+
+.control-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.control-btn.close:hover {
+  background: #e81123;
+  color: white;
+}
+</style>
