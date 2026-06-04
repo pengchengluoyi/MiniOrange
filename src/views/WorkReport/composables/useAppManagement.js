@@ -1,13 +1,9 @@
 import { ref } from 'vue'
 import * as api from '@/api/workReport'
 
-const platformOptions = [
-  { label: 'Android', value: 'android' },
-  { label: 'iOS', value: 'ios' },
-  { label: 'Windows', value: 'windows' },
-  { label: 'Mac', value: 'mac' },
-  { label: 'Web', value: 'web' }
-]
+import { APP_PLATFORM_OPTIONS } from '@/constants/appPlatforms'
+
+const platformOptions = APP_PLATFORM_OPTIONS
 
 export function useAppManagement() {
   const apps = ref([])

@@ -136,8 +136,8 @@
         <template v-for="field in nodeInputs" :key="field.name">
           <div v-if="shouldShowTopLevelField(field)" class="form-group">
             <label class="field-label">
-              {{ field.label || field.name }}
-              <span class="field-tip" v-if="field.desc">{{ field.desc }}</span>
+              {{ envTargetLabel(field) }}
+              <span class="field-tip" v-if="fieldTip(field)">{{ fieldTip(field) }}</span>
             </label>
 
             <!-- 4.1 列表类型 List -->
@@ -260,8 +260,19 @@
 
             <!-- 4.2 常规类型 -->
             <div v-else>
-              <!-- 变量锁定状态 -->
-              <div v-if="isVariable(node.data[field.name])" class="var-tag big-var">
+              <!-- 项目环境目标字段（含 {{app.*}} 占位符） -->
+              <EnvTargetField
+                  v-if="isEnvTargetField(field.name)"
+                  :key="`${node.id}-${field.name}`"
+                  :model-value="node.data[field.name] || ''"
+                  :field-name="field.name"
+                  :platform="node.data.platform"
+                  @update:model-value="node.data[field.name] = $event"
+                  @pick-var="$emit('pick-var', field.name)"
+              />
+
+              <!-- 变量锁定状态（非 env target 字段） -->
+              <div v-else-if="isVariable(node.data[field.name])" class="var-tag big-var">
                 <span class="var-icon">🔗</span>
                 <span class="var-text">{{ getVarDisplayName(node.data[field.name]) }}</span>
                 <button @click="node.data[field.name] = undefined" class="clear-var" title="清除变量">×</button>
@@ -384,9 +395,29 @@
                        :placeholder="field.placeholder || '输入值'"
                        class="panel-input"/>
 
-                <!-- 变量 Picker -->
-                <button v-if="field.type !== 'bool'" class="pick-btn" @click="$emit('pick-var', field.name)"
-                        title="选择变量">🎯
+                <!-- 其他配置环境字段（如 target_pc 无项目 env） -->
+                <div
+                    v-if="isConfigEnvField(field.name) && !isEnvTargetField(field.name) && !isVariable(node.data[field.name])"
+                    class="config-var-chips"
+                >
+                  <button
+                      v-for="opt in getConfigVarsForField(field.name, node.data.platform)"
+                      :key="opt.key"
+                      type="button"
+                      class="config-chip"
+                      @click="applyConfigVar(field.name, opt.key)"
+                  >
+                    {{ opt.label }}
+                  </button>
+                </div>
+
+                <!-- 变量 Picker（env target 在自定义模式由 EnvTargetField 内 🎯 处理） -->
+                <button
+                    v-if="field.type !== 'bool' && !isEnvTargetField(field.name)"
+                    class="pick-btn"
+                    @click="handlePickVar(field.name)"
+                    :title="isConfigEnvField(field.name) ? '选择配置变量' : '选择变量'"
+                >🎯
                 </button>
               </div>
             </div>
@@ -402,9 +433,22 @@
 import {computed, ref, watch} from 'vue'
 import {getIcon} from '../config/iconMap'
 import { wsGetFile } from '@/api/mWebSocket'
+import EnvTargetField from './EnvTargetField.vue'
+import {
+  isConfigEnvField,
+  getConfigVarsForField,
+  wrapConfigVar,
+  displayConfigOrNodeVar,
+  normalizePlatformKey,
+  targetMobileFieldHint,
+  targetWebFieldHint,
+  resolveEnvTargetOnPlatformChange,
+} from '@/views/WorkflowEditor/constants/configVars'
+
+const ENV_TARGET_FIELDS = ['target_mobile', 'target_web']
 
 const props = defineProps(['show', 'node', 'schema', 'allNodes'])
-const emit = defineEmits(['close', 'pick-var'])
+const emit = defineEmits(['close', 'pick-var', 'pick-config-var'])
 
 // --- 状态管理 ---
 const activeSelectField = ref(null)
@@ -499,14 +543,44 @@ const removeListItem = (fieldName, index) => {
 // --- 变量解析 ---
 const isVariable = (val) => typeof val === 'string' && val.startsWith('{{') && val.endsWith('}}')
 
-const getVarDisplayName = (val) => {
-  if (!val) return ''
-  const match = val.match(/^{{(.+?)\.(.+?)}}$/)
-  if (!match) return val
-  const nodeId = match[1]
-  const varKey = match[2]
-  const targetNode = props.allNodes.find(n => n.id === nodeId)
-  return targetNode ? `${targetNode.label}.${varKey}` : `${nodeId}.${varKey}`
+const getVarDisplayName = (val) => displayConfigOrNodeVar(val, props.allNodes || [])
+
+const applyConfigVar = (fieldName, key) => {
+  if (!props.node?.data) return
+  props.node.data[fieldName] = wrapConfigVar(key)
+}
+
+const isEnvTargetField = (name) => ENV_TARGET_FIELDS.includes(name)
+
+const envTargetLabel = (field) => {
+  if (field.name === 'target_mobile') return '应用标识'
+  if (field.name === 'target_web') return 'Web 地址'
+  return field.label || field.name
+}
+
+const fieldTip = (field) => {
+  if (isEnvTargetField(field.name)) return ''
+  if (field.name === 'target_mobile') return targetMobileFieldHint(props.node?.data?.platform)
+  if (field.name === 'target_web') return targetWebFieldHint()
+  return field.desc || ''
+}
+
+const syncEnvTargetsForPlatform = () => {
+  if (!props.node?.data) return
+  const platform = props.node.data.platform
+  for (const fname of ENV_TARGET_FIELDS) {
+    const cur = props.node.data[fname]
+    const next = resolveEnvTargetOnPlatformChange(cur, fname, platform)
+    if (next !== cur) props.node.data[fname] = next
+  }
+}
+
+const handlePickVar = (fieldName) => {
+  if (isConfigEnvField(fieldName)) {
+    emit('pick-config-var', fieldName)
+  } else {
+    emit('pick-var', fieldName)
+  }
 }
 
 const getRightType = (leftValue) => {
@@ -530,10 +604,10 @@ const shouldShowTopLevelField = (field) => {
 
   // 2. If field has show_if
   if (field.show_if) {
-    const currentPlatform = props.node.data.platform
+    const currentPlatform = normalizePlatformKey(props.node.data.platform)
     if (!currentPlatform) return false
     if (Array.isArray(field.show_if)) {
-      return field.show_if.includes(currentPlatform)
+      return field.show_if.map((x) => normalizePlatformKey(x)).includes(currentPlatform)
     }
     return false
   }
@@ -545,13 +619,13 @@ const shouldShowSubField = (subField, item) => {
   if (subField.name === 'platform') return true
 
   // 2. 获取当前生效的平台 (优先取行内 item.platform，其次取全局 node.data.platform)
-  const currentPlatform = item.platform || props.node.data.platform
+  const currentPlatform = normalizePlatformKey(item.platform || props.node.data.platform)
 
   // 3. 如果有 show_if 配置，检查是否匹配当前平台
   if (subField.show_if) {
     if (!currentPlatform) return false
     if (Array.isArray(subField.show_if)) {
-      return subField.show_if.includes(currentPlatform)
+      return subField.show_if.map((x) => normalizePlatformKey(x)).includes(currentPlatform)
     }
     return false
   }
@@ -575,10 +649,10 @@ const closeSelect = () => {
 }
 
 const handleSelect = (fieldName, option) => {
-  // 优先存储 value
   const val = (typeof option === 'object' && option.value !== undefined) ? option.value : option
   props.node.data[fieldName] = val
   closeSelect()
+  if (fieldName === 'platform') syncEnvTargetsForPlatform()
 }
 
 const handleListSelect = (item, fieldName, option) => {
@@ -1205,6 +1279,38 @@ const getThumbStyle = (interaction) => {
 .pick-btn.small {
   font-size: 12px;
   right: 6px;
+}
+
+.config-var-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.config-chip {
+  border: 1px solid rgba(5, 150, 105, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: #047857;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.config-chip.recommended {
+  border-color: rgba(255, 77, 0, 0.45);
+  background: rgba(255, 247, 237, 0.95);
+  color: #c2410c;
+  font-weight: 650;
+}
+
+.config-chip:hover {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(5, 150, 105, 0.45);
 }
 
 .var-tag {

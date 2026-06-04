@@ -109,7 +109,14 @@
   </Teleport>
 
   <!-- 设备选择弹窗 -->
-  <el-dialog v-model="deviceDialogVisible" title="选择执行设备" width="600px" append-to-body>
+  <el-dialog v-model="deviceDialogVisible" title="运行 Workflow" width="640px" append-to-body>
+    <div class="run-env-row">
+      <span class="run-env-label">运行环境</span>
+      <el-radio-group v-model="selectedEnvProfile" size="small">
+        <el-radio-button v-for="p in ENV_PROFILES" :key="p.key" :value="p.key">{{ p.label }}</el-radio-button>
+      </el-radio-group>
+    </div>
+    <div class="run-device-title">选择设备</div>
     <el-table :data="deviceList" v-loading="loadingDevices" @row-click="confirmSelection" highlight-current-row style="cursor: pointer">
       <el-table-column property="sn" label="SN" width="180" show-overflow-tooltip />
       <el-table-column property="model" label="型号" width="120" />
@@ -133,7 +140,8 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import managementWsService from '@/api/managementWebSocket'
-import { ElDialog, ElTable, ElTableColumn, ElTag, ElButton, ElEmpty, ElMessage, vLoading } from 'element-plus'
+import { ElDialog, ElTable, ElTableColumn, ElTag, ElButton, ElEmpty, ElMessage, ElRadioGroup, ElRadioButton, vLoading } from 'element-plus'
+import { ENV_PROFILES, getStoredRunEnvProfile, setStoredRunEnvProfile } from '@/constants/envProfiles'
 
 const props = defineProps({
   flowName: String,
@@ -155,6 +163,7 @@ const saveStatusClass = computed(() => props.isSaving ? 'status-saving' : (props
 const deviceDialogVisible = ref(false)
 const deviceList = ref([])
 const loadingDevices = ref(false)
+const selectedEnvProfile = ref(getStoredRunEnvProfile())
 
 const handleDeviceListUpdate = (data) => {
   deviceList.value = Array.isArray(data) ? data : []
@@ -180,9 +189,10 @@ const confirmSelection = (row) => {
     ElMessage.error('设备SN缺失，无法执行')
     return
   }
+  setStoredRunEnvProfile(selectedEnvProfile.value)
   deviceDialogVisible.value = false
-  console.log('Selected device SN:', row.sn)
-  emit('run', row.sn)
+  console.log('Selected device SN:', row.sn, 'env:', selectedEnvProfile.value)
+  emit('run', { sn: row.sn, envProfile: selectedEnvProfile.value })
 }
 
 onMounted(() => {
@@ -195,6 +205,25 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.run-env-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.run-env-label,
+.run-device-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.run-device-title {
+  margin-bottom: 8px;
+}
+
 .save-time {
   margin-left: 6px;
   color: #94a3b8;

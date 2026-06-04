@@ -16,6 +16,7 @@ const TaskList = () => import('../views/WorkReport/components/TaskList.vue')
 const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap.vue')
 const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
+const Dialogue = () => import('../views/Dialogue/index.vue')
 
 const routes = [
     {
@@ -26,7 +27,13 @@ const routes = [
     },
     {
         path: '/',
-        redirect: '/report/apps'
+        redirect: '/dialogue'
+    },
+    {
+        path: '/dialogue',
+        name: 'Dialogue',
+        component: Dialogue,
+        meta: { title: '对话流', requiresAuth: true }
     },
     {
         path: '/report/apps',
@@ -130,7 +137,7 @@ router.beforeEach(async (to, from, next) => {
 
         // 3. 鉴权逻辑
         if (role === 'client' && to.meta.requiresAuth) return next('/login')
-        if (role === 'node' && to.meta.requiresGuest) return next('/')
+        if (role === 'node' && to.meta.requiresGuest) return next('/dialogue')
         
         next()
     } catch (e) {

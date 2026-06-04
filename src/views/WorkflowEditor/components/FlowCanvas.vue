@@ -133,6 +133,15 @@
         @close="showVarPicker = false"
     />
 
+    <ConfigVariablePicker
+        v-if="showConfigVarPicker"
+        :field-name="configPickField"
+        :platform="configPickPlatform"
+        @select="confirmConfigVariable"
+        @pick-upstream="switchConfigPickToUpstream"
+        @close="cancelConfigVarPick"
+    />
+
     <!-- 8. 可视化热区选择器 (CaseEditor) -->
     <Teleport to="body">
       <div v-if="showVisualPicker" class="visual-picker-overlay" @click.self="showVisualPicker = false">
@@ -179,7 +188,9 @@ import ResultNode from '@/views/WorkflowEditor/components/ResultNode.vue'
 
 import LogPanel from './LogPanel.vue'
 import VariablePicker from './VariablePicker.vue'
+import ConfigVariablePicker from './ConfigVariablePicker.vue'
 import FlowInfoModal from './FlowInfoModal.vue'
+import { wrapConfigVar } from '../constants/configVars'
 
 import {scanComponentsApi, fetchWorkflowDetailSimple} from '@/api/workflow'
 import {useGraphOperations} from '../composables/useGraphOperations'
@@ -247,6 +258,9 @@ const showLogPanel = ref(false)
 const showInfoModal = ref(false)
 
 const showVarPicker = ref(false)
+const showConfigVarPicker = ref(false)
+const configPickField = ref('')
+const configPickPlatform = ref('')
 const showVisualPicker = ref(false)
 const pickedNode = ref(null)
 const pickingTargetField = ref('')
@@ -328,10 +342,15 @@ const getFieldType = (node, fieldKey) => {
   return 'any'
 }
 
-const startPickMode = async (node, fieldKey) => {
+const startPickMode = async (node, fieldKey, opts = {}) => {
   if (!node) return
   selectedNodeForPick.value = node
   pickingTargetField.value = fieldKey
+
+  if (!opts.skipConfig && ['target_mobile', 'target_web', 'target_pc'].includes(fieldKey)) {
+    startConfigVarPick(node, fieldKey)
+    return
+  }
 
   // 🔥 优化：如果是热区选择，直接打开 AppGraph 选择器，不再需要先选节点
   const type = getFieldType(node, fieldKey)
@@ -373,11 +392,47 @@ const startPickMode = async (node, fieldKey) => {
 const cancelPickMode = () => {
   isPickingMode.value = false
   showVarPicker.value = false
+  showConfigVarPicker.value = false
   showVisualPicker.value = false
   pickingTargetField.value = ''
   pickedNode.value = null
   selectedNodeForPick.value = null
   getNodes.value.forEach(n => n.class = '')
+}
+
+const startConfigVarPick = (node, fieldKey) => {
+  if (!node) return
+  selectedNodeForPick.value = node
+  pickingTargetField.value = fieldKey
+  configPickField.value = fieldKey
+  configPickPlatform.value = node.data?.platform || ''
+  showConfigVarPicker.value = true
+}
+
+const cancelConfigVarPick = () => {
+  showConfigVarPicker.value = false
+  pickingTargetField.value = ''
+  selectedNodeForPick.value = null
+}
+
+const confirmConfigVariable = (varKey) => {
+  if (!selectedNodeForPick.value || !pickingTargetField.value) return
+  const currentNode = findNode(selectedNodeForPick.value.id)
+  if (currentNode) {
+    const newData = {...currentNode.data}
+    newData[pickingTargetField.value] = wrapConfigVar(varKey)
+    currentNode.data = newData
+  }
+  cancelConfigVarPick()
+}
+
+const switchConfigPickToUpstream = () => {
+  const node = selectedNodeForPick.value
+  const fieldKey = pickingTargetField.value
+  showConfigVarPicker.value = false
+  if (node && fieldKey) {
+    startPickMode(node, fieldKey, { skipConfig: true })
+  }
 }
 
 const confirmVariable = (varKey) => {
@@ -678,6 +733,7 @@ defineExpose({
   toggleSelector,
   openInfoModal,
   startPickMode,
+  startConfigVarPick,
   toggleLogPanel
 })
 

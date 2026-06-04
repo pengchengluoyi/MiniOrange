@@ -12,6 +12,12 @@
  */
 export const actions = [
   {
+    id: 'nav.dialogue',
+    title: 'Go to Dialogue / Copilot',
+    keywords: ['dialogue', 'copilot', '对话', '助手', 'home'],
+    handler: (router) => router.push({ name: 'Dialogue' }),
+  },
+  {
     id: 'nav.apps',
     title: 'Go to App List / Dashboard',
     keywords: ['home', 'dashboard', 'apps', 'start', 'work report'],

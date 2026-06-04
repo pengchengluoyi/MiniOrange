@@ -1,5 +1,5 @@
 <template>
-  <div class="focus-editor-root" tabindex="0" @keydown.esc="$emit('close')">
+  <div class="focus-editor-root" tabindex="0" @keydown.esc="handleClose">
     <!-- 🔥 Teleport Controls to Global TitleBar -->
     <Teleport to="#titlebar-center-portal">
       <div class="focus-toolbar">
@@ -22,6 +22,7 @@
 
         <!-- 🔥 新增：骨架蒙版显隐控制 -->
         <el-switch v-model="showSkeletonMask" inline-prompt active-text="Mask On" inactive-text="Mask Off" size="small"
+                   title="骨架叠加仅用于预览结构，编辑热区建议关闭以免画面发花"/>
                    style="margin-right: 12px; --el-switch-on-color: #6366f1;"/>
 
         <div class="focus-divider"></div>
@@ -41,7 +42,7 @@
           </el-icon>
           Done
         </el-button>
-        <el-button size="small" circle @click="$emit('close')">
+        <el-button size="small" circle @click="handleClose">
           <el-icon>
             <Close/>
           </el-icon>
@@ -61,25 +62,10 @@
              @mousemove="handleCanvasMouseMove"
              @mouseup="handleCanvasMouseUp">
 
-          <!-- 🔥 7. 安全区域 (Safe Areas) 遮罩与拖拽线 -->
-          <div class="safe-area-overlay top" :style="{ height: localData.ignored_top + 'px' }"
-               :class="{ 'is-dragging': isDraggingSafeLine === 'top' }">
-            <div class="safe-area-label">Top Bar ({{ localData.ignored_top }}px)</div>
-            <div v-if="!isSafeLineLocked" class="safe-area-handle"
-                 @mousedown.stop="startDragSafeLine('top', $event)"></div>
-          </div>
-          <div class="safe-area-overlay bottom" :style="{ height: localData.ignored_bottom + 'px' }"
-               :class="{ 'is-dragging': isDraggingSafeLine === 'bottom' }">
-            <div class="safe-area-label">Bottom Bar ({{ localData.ignored_bottom }}px)</div>
-            <div v-if="!isSafeLineLocked" class="safe-area-handle"
-                 @mousedown.stop="startDragSafeLine('bottom', $event)"></div>
-          </div>
-
-          <!-- 🔥 预览模式提示条 -->
+          <!-- 预览模式提示条 -->
           <div v-if="previewImage" class="preview-banner">
             <span>正在预览骨架素材</span>
             <el-button link type="primary" size="small" @click="exitPreview">退出预览</el-button>
-            <el-button link type="success" size="small" @click="setPreviewAsMain">设为页面主图</el-button>
           </div>
           <div class="transform-layer" :style="transformStyle">
             <div class="artboard" ref="imageRef" :style="imageWrapperStyle">
@@ -91,7 +77,7 @@
                    class="skeleton-highlight-overlay"
                    draggable="false"/>
               <div v-else-if="!currentDisplayScreenshot" class="empty-artboard">
-                <el-empty description="暂无截图，请点击右上角上传"/>
+                <el-empty description="暂无截图，请先在 Page Config 上传训练图片"/>
               </div>
 
               <!-- 现有热区 -->
@@ -101,7 +87,8 @@
                           selected: selectedCompIndices.has(index),
                           'needs-confirm': comp.needs_confirmation,
                          'is-system': comp.component_type === 'System Areas',
-                         'is-container': comp.component_type === 'container'
+                         'is-container': comp.component_type === 'container',
+                         'is-shared-nav': comp.component_type === 'tab_item' && !!comp.shared_region
                        }"
                    :style="{
                           left: comp.x + 'px',
@@ -197,6 +184,23 @@
           <div v-else-if="selectedCompIndex === -1">
             <ElTabs v-model="pageActiveTab" class="comp-tabs">
               <ElTabPane label="组件清单" name="list">
+                <div v-if="!localData.interactions.length" class="comp-empty-state">
+                  <p>暂无组件热区</p>
+                  <span v-if="localData.screenshotPath || localData.skeletonMask">
+                    以骨架蒙版白色连通域为热区；宽顶/底条按列切分。可配合 OCR 补文案
+                  </span>
+                  <span v-else>请先在 Page Config 训练页面骨架</span>
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :loading="detectingComponents || ocrLoading"
+                    :disabled="!localData.screenshotPath && !localData.skeletonMask"
+                    style="margin-top: 12px"
+                    @click="syncHotspotsAfterScreenshot(false)"
+                  >
+                    识别热区
+                  </el-button>
+                </div>
                 <div v-for="(comp, index) in localData.interactions" :key="index"
                      :ref="(el) => setItemRef(el, index)"
                      class="comp-card"
@@ -212,51 +216,28 @@
                   </div>
                   <el-button link type="danger" class="delete-btn" :icon="Delete" @click.stop="deleteComp(index)"/>
                 </div>
+                <div v-if="localData.interactions.length" class="comp-list-actions">
+                  <el-button
+                    size="small"
+                    plain
+                    :loading="detectingComponents"
+                    :disabled="!localData.skeletonMask"
+                    @click="syncHotspotsAfterScreenshot(true)"
+                  >
+                    重新识别热区
+                  </el-button>
+                </div>
               </ElTabPane>
 
               <ElTabPane label="Page Config" name="config">
-                <!-- 🔥 System Bar Exclusion -->
+                <!-- 页面结构模型训练 -->
                 <div class="config-section">
                   <div class="section-header">
-                    <span class="title">Ignored Areas (System Bars)</span>
-                    <el-button link size="small" @click="isSafeLineLocked = !isSafeLineLocked">
-                      <el-icon :color="isSafeLineLocked ? '#F56C6C' : '#909399'">
-                        <Lock v-if="isSafeLineLocked"/>
-                        <Unlock v-else/>
-                      </el-icon>
-                    </el-button>
-                  </div>
-                  <div class="control-row">
-                    <span class="label">Top (Status Bar)</span>
-                    <div class="control-inputs">
-                      <el-slider v-model="localData.ignored_top" :max="300" :disabled="isSafeLineLocked" size="small"
-                                 style="flex: 1; margin-right: 10px"/>
-                      <el-input-number v-model="localData.ignored_top" :min="0" :max="localData.naturalH" size="small"
-                                       :disabled="isSafeLineLocked" controls-position="right" style="width: 70px"/>
-                    </div>
-                  </div>
-                  <div class="control-row">
-                    <span class="label">Bottom (Home Bar)</span>
-                    <div class="control-inputs">
-                      <el-slider v-model="localData.ignored_bottom" :max="300" :disabled="isSafeLineLocked" size="small"
-                                 style="flex: 1; margin-right: 10px"/>
-                      <el-input-number v-model="localData.ignored_bottom" :min="0" :max="localData.naturalH"
-                                       size="small" :disabled="isSafeLineLocked" controls-position="right"
-                                       style="width: 70px"/>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="divider-line"></div>
-
-                <!-- 🔥 Page Structure Training -->
-                <div class="config-section">
-                  <div class="section-header">
-                    <span class="title">Page Structure Model</span>
-                    <el-tag size="small" type="info">{{ pageTrainingSelectedUids.size }} Selected</el-tag>
+                    <span class="title">页面结构模型</span>
+                    <el-tag size="small" type="info">{{ pageTrainingSelectedUids.size }} 已选</el-tag>
                   </div>
                   <div class="helper-text">
-                    Upload screenshots of the same page with different content to train the structural model.
+                    上传同一页面、不同内容的多张截图，训练静态骨架。Run 执行时会用骨架识别当前页面。
                   </div>
 
                   <div class="skeleton-gallery">
@@ -297,37 +278,15 @@
                   </div>
 
                   <el-button type="primary" style="width: 100%; margin-top: 12px"
-                             :disabled="pageTrainingSelectedUids.size < 1"
+                             :disabled="pageTrainingSelectedUids.size < 2"
                              @click="trainSkeleton">
-                    Train Page Structure
+                    训练页面骨架
                   </el-button>
-                </div>
-
-                <div class="divider-line"></div>
-
-                <div class="form-group">
-                  <div class="form-label">Main Screenshot</div>
-                  <div class="main-screenshot-uploader" @click="triggerUpload">
-                    <div v-if="ocrLoading" class="uploader-loading">
-                      <el-icon class="is-loading">
-                        <Refresh/>
-                      </el-icon>
-                      <span>识别中...</span>
-                    </div>
-                    <template v-else>
-                      <img v-if="localData.screenshot" :src="localData.screenshot" class="preview-img"/>
-                      <div v-else class="upload-placeholder">
-                        <el-icon class="upload-icon">
-                          <Camera/>
-                        </el-icon>
-                        <span>点击上传截图 (自动OCR)</span>
-                      </div>
-                      <div v-if="localData.screenshot" class="reupload-overlay">
-                        <el-icon>
-                          <Camera/>
-                        </el-icon>
-                      </div>
-                    </template>
+                  <div v-if="pageTrainingSelectedUids.size < 2" class="helper-text" style="margin-top: 8px">
+                    至少选择 2 张截图（同页面、内容不同）才能提取静态骨架
+                  </div>
+                  <div class="helper-text" style="margin-top: 8px">
+                    训练时自动排除顶部状态栏与底部系统导航栏，主截图默认使用第一张训练图
                   </div>
                 </div>
               </ElTabPane>
@@ -594,7 +553,6 @@ import {
   ZoomIn,
   ZoomOut,
   FullScreen,
-  Camera,
   Check,
   Close,
   Delete,
@@ -605,17 +563,15 @@ import {
   Upload,
   View,
   Picture,
-  Refresh,
   Connection,
   Crop,
-  Lock,
-  Unlock
 } from '@element-plus/icons-vue'
 import * as api from '@/api/appGraph'
+import { ocrRecognition } from '@/api/workReport'
 import {wsUploadFile, wsGetFile} from '@/api/mWebSocket'
-import {wsTrainSkeleton} from '@/api/wsAppGraph'
+import {wsTrainSkeleton, wsDetectPageComponents} from '@/api/wsAppGraph'
 
-const props = defineProps({node: Object, graphId: [String, Number]})
+const props = defineProps({node: Object, graphId: [String, Number], sharedComponents: { type: Array, default: () => [] }})
 const emit = defineEmits(['close', 'update'])
 
 const localData = reactive({
@@ -626,13 +582,11 @@ const localData = reactive({
   interactions: [],
   naturalW: 0,
   naturalH: 0,
-  skeletonMask: '', // 骨架蒙版 URL
+  skeletonMask: '',
   is_blocking: false,
-  skeletonImages: [], // 🔥 新增：用于存储训练用的图片列表
-  ignored_top: 0, // 🔥 7. 顶部忽略高度
-  ignored_bottom: 0 // 🔥 7. 底部忽略高度
+  skeletonImages: [],
 })
-const isSafeLineLocked = ref(false)
+const detectingComponents = ref(false)
 const pageTrainingSelectedUids = ref(new Set())
 const ocrLoading = ref(false)
 const selectedCompIndex = ref(-1)
@@ -641,7 +595,7 @@ const activeTab = ref('props')
 const pageActiveTab = ref('list')
 const uploadContext = ref(null)
 const skeletonFileList = ref([])
-const showSkeletonMask = ref(true)
+const showSkeletonMask = ref(false)
 const currentCanvasSource = ref('main')
 const compSkeletonFileList = ref([])
 const selectedStateIndex = ref(-1) // 🔥 2. 追踪当前选中的状态索引
@@ -652,7 +606,52 @@ const tempSelectedImageNames = ref([])
 const selectorCandidateList = ref([])
 const selectorMode = ref('state') // 'state' | 'component'
 
-// 🔥 3. 数据清洗函数 (Sanitize) - 解决 [object Object] 与数据污染
+// 过滤过大/过时的热区（旧版「内容区块」或 OCR 整行条）
+const isOversizedHotspot = (comp, imgW, imgH) => {
+  if (!imgW || !imgH) return false
+  const w = Number(comp.w) || 0
+  const h = Number(comp.h) || 0
+  const x = Number(comp.x) || 0
+  const y = Number(comp.y) || 0
+  const ct = comp.component_type || ''
+  if (ct === 'tab_item') {
+    // 仅去掉几乎占满屏宽的整条导航（细分 Tab 宽度通常 < 屏宽 40%）
+    if (h > imgH * 0.11 || w > imgW * 0.92) return true
+    if (h < 18 || w < 20) return true
+    const cy = y + h / 2
+    if (comp.shared_region === 'bottom_tab' && (y < imgH * 0.91 || cy > imgH * 0.99)) return true
+    if (comp.shared_region === 'top_header' && (y > imgH * 0.13 || y + h < imgH * 0.055)) return true
+    return false
+  }
+  if (ct === 'container') return true
+  if (ct === 'repeat_card') {
+    // 骨架内容白块允许较宽；仅去掉几乎整屏的块
+    return w >= imgW * 0.94 && h >= imgH * 0.42
+  }
+  if (!imgW || !imgH) return false
+  if (w >= imgW * 0.58 && h >= imgH * 0.06) return true
+  if (w * h >= imgW * imgH * 0.09) return true
+  return false
+}
+
+const filterDisplayInteractions = (list, imgW, imgH, nodeId) => {
+  if (!imgW || !imgH) return [...(list || [])]
+  const allowedRegions = new Set()
+  for (const sc of props.sharedComponents || []) {
+    if ((sc.members || []).some(m => m.node_id === nodeId) && sc.region) {
+      allowedRegions.add(sc.region)
+    }
+  }
+  return (list || []).filter((c) => {
+    if (isOversizedHotspot(c, imgW, imgH)) return false
+    // 仅隐藏图谱登记的共用组件；本页骨架识别的 Tab/卡片始终展示
+    if (c.shared_component_uid) {
+      return allowedRegions.has(c.shared_region)
+    }
+    return true
+  })
+}
+
 const sanitizeComponent = (comp) => {
   const base = {
     id: comp.id || comp.uid || `gen-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -664,7 +663,9 @@ const sanitizeComponent = (comp) => {
     skeleton_config: comp.skeleton_config || {},
     action: comp.action || 'click',
     component_type: comp.component_type || 'custom',
-    needs_confirmation: comp.needs_confirmation || false
+    needs_confirmation: comp.needs_confirmation || false,
+    is_shared_navigation: !!comp.is_shared_navigation,
+    shared_region: comp.shared_region || ''
   }
   // Deep sanitize states
   base.states = (Array.isArray(comp.states) ? comp.states : []).map(s => ({
@@ -820,7 +821,6 @@ const currentBox = ref(null)
 const isCropping = ref(false);
 const cropBox = ref(null);
 const cropTargetState = ref(null)
-const isDraggingSafeLine = ref(null) // 'top' | 'bottom'
 
 // 列表滚动相关
 const itemRefs = ref([])
@@ -857,8 +857,6 @@ const cropBoxStyle = computed(() => cropBox.value ? {
   height: cropBox.value.h + 'px'
 } : {})
 
-const triggerUpload = () => fileInput.value.click()
-
 const triggerStateUpload = (cIndex, sIndex) => {
   uploadContext.value = {type: 'state', compIndex: cIndex, stateIndex: sIndex}
   fileInput.value.value = ''
@@ -883,14 +881,8 @@ const handleFileUpload = async (e) => {
         if (uploadContext.value?.type === 'state') {
           const {compIndex, stateIndex} = uploadContext.value
           localData.interactions[compIndex].states[stateIndex].image_url = path
-          // 🔥 修复：手动缓存图片，确保立即显示
           if (path && base64) screenshotCache.value[path] = base64
           updateNode()
-        } else {
-          localData.screenshotPath = path
-          localData.screenshot = base64 // Use base64 for immediate display
-          // 2. Perform OCR
-          await performOCR(localData.screenshotPath)
         }
       } else {
         ElMessage.error(res.msg || '上传失败')
@@ -906,39 +898,78 @@ const handleFileUpload = async (e) => {
   reader.readAsDataURL(file)
 }
 
-const performOCR = async (imageUrl) => {
+const performOCR = async (imageUrl, replace = false) => {
+  if (!imageUrl) return 0
   ocrLoading.value = true
   try {
-    const results = await api.ocrRecognition(imageUrl)
-    if (!localData.interactions) localData.interactions = []
+    const results = await ocrRecognition(imageUrl)
+    const ocrItems = results?.data?.ocr_result || []
+    if (!ocrItems.length) return 0
 
-    results["data"]["ocr_result"].forEach(item => {
-      // 将 OCR 的 box (4个点) 转换为 bounding box (x, y, w, h)
-      const xs = item.coordinates.box.map(p => p[0])
-      const ys = item.coordinates.box.map(p => p[1])
-      // 🔥 6. 强制整数坐标
+    if (replace) {
+      localData.interactions = []
+    } else if (!localData.interactions) {
+      localData.interactions = []
+    }
+
+    ocrItems.forEach(item => {
+      const box = item.coordinates?.box
+      if (!box?.length) return
+      const xs = box.map(p => p[0])
+      const ys = box.map(p => p[1])
       const x = Math.round(Math.min(...xs))
       const y = Math.round(Math.min(...ys))
       const w = Math.round(Math.max(...xs) - x)
       const h = Math.round(Math.max(...ys) - y)
+      if (w <= 0 || h <= 0) return
+      const nw = localData.naturalW || 1280
+      const nh = localData.naturalH || 800
+      if (w >= nw * 0.55 || h >= nh * 0.18 || w * h >= nw * nh * 0.08) return
+      // 顶/底导航带内的 OCR 文字不单独加热区（与骨架 Tab 重复、易误检图标区）
+      if (y < nh * 0.13 || y + h > nh * 0.90) return
 
       localData.interactions.push({
         x, y, w, h,
-        label: item.text
+        label: item.text || '文本热区',
+        category: 'action',
+        component_type: 'text',
+        action: 'click',
+        states: [],
       })
     })
     updateNode()
-    ElMessage.success(`识别成功，添加了 ${results.length} 个热区`)
+    return localData.interactions.length
   } catch (e) {
     console.error(e)
     ElMessage.error('OCR 识别失败')
+    return 0
   } finally {
     ocrLoading.value = false
   }
 }
 
+const generateHotspotsFromScreenshot = async (replace = true, silent = false) => {
+  const path = localData.screenshotPath
+  if (!path) return 0
+
+  const prevCount = localData.interactions.length
+  const count = await performOCR(path, replace)
+  const added = replace ? count : count - prevCount
+  if (added > 0 && !silent) {
+    ElMessage.success(`OCR 识别成功，添加了 ${added} 个热区`)
+  }
+  return count
+}
+
 const handleSave = async () => {
   updateNode()
+  emit('update', props.node, { flush: true })
+  emit('close')
+}
+
+const handleClose = () => {
+  updateNode()
+  emit('update', props.node, { flush: true })
   emit('close')
 }
 
@@ -946,12 +977,29 @@ const onImgLoad = (e) => {
   localData.naturalW = e.target.naturalWidth
   localData.naturalH = e.target.naturalHeight
 
-  // 图片加载后，自动适应屏幕
+  // 图片真实尺寸与库内不一致时，按比例修正热区坐标
+  const stored = props.node.data?.naturalSize
+  if (stored?.w > 0 && stored?.h > 0
+      && (stored.w !== localData.naturalW || stored.h !== localData.naturalH)
+      && localData.interactions.length > 0) {
+    const sx = localData.naturalW / stored.w
+    const sy = localData.naturalH / stored.h
+    localData.interactions.forEach((c) => {
+      c.x = Math.round(c.x * sx)
+      c.y = Math.round(c.y * sy)
+      c.w = Math.round(c.w * sx)
+      c.h = Math.round(c.h * sy)
+    })
+  }
+
   nextTick(() => {
     fitToScreen()
   })
 
-  updateNode()
+  if (stored?.w > 0 && stored?.h > 0
+      && (stored.w !== localData.naturalW || stored.h !== localData.naturalH)) {
+    updateNode()
+  }
 }
 
 const updateNode = () => {
@@ -963,11 +1011,7 @@ const updateNode = () => {
   props.node.data.screenshot = localData.screenshotPath || localData.screenshot
   props.node.data.interactions = localData.interactions
   props.node.data.naturalSize = {w: localData.naturalW, h: localData.naturalH}
-  // 🔥 7. 保存安全区域配置
-  if (!props.node.data.skeleton_config) props.node.data.skeleton_config = {}
-  props.node.data.skeleton_config.ignored_areas = {top: localData.ignored_top, bottom: localData.ignored_bottom}
 
-  // 🔥 关键修复：将骨架蒙版同步回节点数据
   if (!props.node.data.skeleton_config) props.node.data.skeleton_config = {}
   // 🔥 优先存储 filename，同时兼容 mask_url
   props.node.data.skeleton_config.filename = localData.skeletonMask
@@ -1110,26 +1154,17 @@ const startPan = (e) => {
 }
 
 const handleCanvasMouseDown = (e) => {
-  // 1. 平移逻辑：中键 OR 空格+左键 OR (左键+无Command)
-  // 这里实现了"左键直接拖拽画布"的需求，同时通过 if/else 解决了与 Command+左键 的冲突
   const isSpacePan = e.code === 'Space'
   const isMiddlePan = e.button === 1
   const isLeftPan = e.button === 0 && !e.metaKey && !e.ctrlKey
 
   if (isSpacePan || isMiddlePan || isLeftPan) {
-    e.preventDefault() // 防止文字选中等默认行为
+    e.preventDefault()
     if (isLeftPan) clearSelection()
     startPan(e)
     return
   }
 
-  // 🔥 7. 安全区域拖拽逻辑
-  if (isDraggingSafeLine.value) {
-    e.preventDefault()
-    // 逻辑在 MouseMove 中处理，这里只是占位防止冲突
-    return
-  }
-  // 3. 裁剪逻辑 (复用绘制交互)
   if (isCropping.value && e.button === 0) {
     e.preventDefault()
     isDrawing.value = true // 复用 isDrawing 状态来追踪鼠标移动
@@ -1153,20 +1188,6 @@ const handleCanvasMouseMove = (e) => {
   if (isPanning.value) {
     translate.value.x = e.clientX - panStart.value.x;
     translate.value.y = e.clientY - panStart.value.y;
-    return
-  }
-  // 🔥 7. 安全区域拖拽更新
-  if (isDraggingSafeLine.value) {
-    const pos = getRelativePos(e)
-    const y = Math.max(0, Math.round(pos.y)) // 6. 整数
-
-    if (isDraggingSafeLine.value === 'top') {
-      localData.ignored_top = Math.min(y, localData.naturalH - localData.ignored_bottom - 10)
-    } else {
-      // Bottom 是从底部往上的距离
-      const bottomY = localData.naturalH - y
-      localData.ignored_bottom = Math.max(0, Math.min(bottomY, localData.naturalH - localData.ignored_top - 10))
-    }
     return
   }
 
@@ -1197,11 +1218,6 @@ const handleCanvasMouseMove = (e) => {
 const handleCanvasMouseUp = () => {
   isPanning.value = false;
   isDrawing.value = false;
-  if (isDraggingSafeLine.value) {
-    isDraggingSafeLine.value = null
-    updateNode() // 拖拽结束保存
-    return
-  }
   if (isCropping.value) {
     // 裁剪模式下，松开鼠标只停止绘制，等待用户确认
     return
@@ -1217,9 +1233,16 @@ const handleCanvasMouseUp = () => {
   }
   currentBox.value = null
 }
-const startDragSafeLine = (type, e) => {
-  isDraggingSafeLine.value = type
-  e.preventDefault()
+
+const setMainScreenshotFromFilename = async (filename) => {
+  if (!filename) return
+  localData.screenshotPath = filename
+  const url = await getFileUrl(filename)
+  if (url) {
+    localData.screenshot = url
+    screenshotCache.value[filename] = url
+  }
+  previewImage.value = ''
 }
 
 const deleteComp = (i) => {
@@ -1370,6 +1393,152 @@ const confirmCrop = () => {
   }
 }
 
+// --- 组件识别 ---
+/** 检测坐标常为骨架原图像素；若与画布 naturalSize 不一致则按比例缩放到画布 */
+const scaleDetectedToCanvas = (mapped) => {
+  const nw = localData.naturalW
+  const nh = localData.naturalH
+  if (!nw || !nh || !mapped?.length) return mapped
+
+  const maxR = Math.max(...mapped.map((c) => c.x + c.w))
+  const maxB = Math.max(...mapped.map((c) => c.y + c.h))
+  if (maxR <= nw * 1.08 && maxB <= nh * 1.08) return mapped
+  if (maxR < nw * 0.55 && maxB < nh * 0.55) return mapped
+
+  const sx = nw / maxR
+  const sy = nh / maxB
+  const uniform = Math.abs(sx - sy) < 0.12 ? (sx + sy) / 2 : null
+  const fx = uniform ?? sx
+  const fy = uniform ?? sy
+  return mapped.map((c) => ({
+    ...c,
+    x: Math.round(c.x * fx),
+    y: Math.round(c.y * fy),
+    w: Math.max(8, Math.round(c.w * fx)),
+    h: Math.max(8, Math.round(c.h * fy)),
+  }))
+}
+
+const mapDetectedComponents = (list) => {
+  return (list || []).map((c, i) => ({
+    id: c.uid || c.id || `gen-${Date.now()}-${i}`,
+    uid: c.uid || c.id || `gen-${Date.now()}-${i}`,
+    x: Math.round(c.x),
+    y: Math.round(c.y),
+    w: Math.round(c.w || c.width),
+    h: Math.round(c.h || c.height),
+    label: c.label || c.type || `组件 ${i + 1}`,
+    category: c.category || 'action',
+    component_type: c.component_type || c.type || 'custom',
+    needs_confirmation: c.needs_confirmation !== false,
+    is_shared_navigation: !!c.is_shared_navigation,
+    shared_region: c.shared_region || '',
+    action: 'click',
+    states: [],
+    skeleton_config: c.skeleton_config || {}
+  }))
+}
+
+const boxIoU = (a, b) => {
+  const x1 = Math.max(a.x, b.x)
+  const y1 = Math.max(a.y, b.y)
+  const x2 = Math.min(a.x + a.w, b.x + b.w)
+  const y2 = Math.min(a.y + a.h, b.y + b.h)
+  if (x2 <= x1 || y2 <= y1) return 0
+  const inter = (x2 - x1) * (y2 - y1)
+  const union = a.w * a.h + b.w * b.h - inter
+  return inter / Math.max(union, 1)
+}
+
+const applyDetectedComponents = (list, replace = true) => {
+  let mapped = scaleDetectedToCanvas(mapDetectedComponents(list))
+  if (!mapped.length) return 0
+
+  if (replace || !localData.interactions.length) {
+    localData.interactions = mapped
+  } else {
+    mapped.forEach((c) => {
+      const dup = localData.interactions.some((ex) => boxIoU(ex, c) >= 0.35)
+      if (!dup) localData.interactions.push(c)
+    })
+  }
+  clearSelection()
+  localData.interactions = filterDisplayInteractions(
+    localData.interactions,
+    localData.naturalW,
+    localData.naturalH,
+    props.node?.id
+  )
+  updateNode()
+  return localData.interactions.length
+}
+
+const detectComponentsFromSkeletonCore = async (replace = false, silent = false) => {
+  const res = await wsDetectPageComponents({
+    graph_id: props.graphId,
+    node_id: props.node.id
+  })
+  if (res.code !== 200) {
+    if (!silent) ElMessage.error(res.msg || '组件识别失败')
+    return 0
+  }
+  const list = res.data?.detected_components || res.data?.hotspots || []
+  const count = applyDetectedComponents(list, replace)
+  if (!silent) {
+    if (count > 0) {
+      ElMessage.success(`识别出 ${count} 个可能组件，请确认后保存`)
+    } else {
+      ElMessage.info('未识别到明显组件区域，可手动框选热区')
+    }
+  }
+  return count
+}
+
+const syncHotspotsAfterScreenshot = async (replace = true, silent = false) => {
+  detectingComponents.value = true
+  try {
+    if (replace) {
+      localData.interactions = []
+    }
+
+    const ocrBefore = localData.interactions.length
+    if (localData.screenshotPath) {
+      await performOCR(localData.screenshotPath, false)
+    }
+    const ocrAdded = localData.interactions.length - ocrBefore
+
+    let visionAdded = 0
+    if (localData.skeletonMask || localData.screenshotPath) {
+      const beforeVision = localData.interactions.length
+      await detectComponentsFromSkeletonCore(false, true)
+      visionAdded = localData.interactions.length - beforeVision
+    }
+
+    const total = localData.interactions.length
+    if (total > 0 && !silent) {
+      const parts = []
+      if (ocrAdded > 0) parts.push(`OCR ${ocrAdded} 个`)
+      if (visionAdded > 0) parts.push(`结构/重复 ${visionAdded} 个`)
+      ElMessage.success(
+        parts.length
+          ? `识别出 ${total} 个热区（${parts.join('，')}）`
+          : `识别出 ${total} 个热区，请确认后保存`
+      )
+    }
+    return total
+  } finally {
+    detectingComponents.value = false
+  }
+}
+
+const detectComponentsFromSkeleton = async (replace = false) => {
+  if (!localData.skeletonMask && !localData.screenshotPath) {
+    ElMessage.warning('请先训练页面骨架或准备主截图')
+    return
+  }
+  await syncHotspotsAfterScreenshot(replace, false)
+}
+
 // --- 骨架训练逻辑 ---
 const togglePageSampleSelection = (file) => {
   if (pageTrainingSelectedUids.value.has(file.uid)) {
@@ -1407,49 +1576,7 @@ const exitPreview = () => {
   nextTick(() => fitToScreen())
 }
 
-// 🔥 将骨架图片设为主图
-const handleSetMainFromSkeleton = async (file) => {
-  let url = file.url
-  if (!url) url = await getFileUrl(file.name)
-
-  // 如果是本地 Blob URL，尝试读取为 Base64 (为了保存)
-  // 如果是远程 URL (http/static)，直接用
-  if (url.startsWith('blob:')) {
-    // 这里简化处理：如果是 blob，说明是刚上传的 File 对象，file.raw 存在
-    if (file.raw) {
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        localData.screenshot = e.target.result
-        localData.screenshotPath = '' // 清空 path，保存时会触发 base64 保存逻辑
-        previewImage.value = '' // 退出预览模式
-        updateNode()
-      }
-      reader.readAsDataURL(file.raw)
-      return
-    }
-  }
-
-  // 如果是远程文件或已有路径
-  localData.screenshot = url
-  localData.screenshotPath = file.name // 假设 name 是 path 或 filename
-  previewImage.value = ''
-  updateNode()
-}
-
-const setPreviewAsMain = () => {
-  if (previewImage.value) {
-    localData.screenshot = previewImage.value
-    // 尝试从 skeletonFileList 中找到对应的 file 对象以获取 path
-    const file = skeletonFileList.value.find(f => f.url === previewImage.value)
-    if (file) {
-      localData.screenshotPath = file.name
-    }
-    previewImage.value = ''
-    updateNode()
-  }
-}
-
-// 🔥 切换画布底图
+// 切换画布底图
 const handleCanvasSourceChange = async (val) => {
   if (val === 'main') {
     previewImage.value = ''
@@ -1491,6 +1618,7 @@ const loadSkeletonImages = async () => {
 watch(pageActiveTab, (val) => {
   if (val === 'config') loadSkeletonImages()
 })
+
 // 监听组件选择，加载对应的骨架文件列表
 watch(selectedCompIndex, (newVal) => {
   if (newVal !== -1) {
@@ -1510,61 +1638,40 @@ watch(selectedCompIndex, (newVal) => {
 
 const trainSkeleton = async () => {
   const selectedFiles = skeletonFileList.value.filter(f => pageTrainingSelectedUids.value.has(f.uid))
-  if (selectedFiles.length < 1) {
-    ElMessage.warning('Please select at least 1 sample')
+  if (selectedFiles.length < 2) {
+    ElMessage.warning('请至少选择 2 张同页面、不同内容的截图')
     return
   }
 
-  // 1. 上传所有样本图片
-  const uploadedNames = await uploadFilesList(selectedFiles.filter(f => f.raw))
+  const uploadedNames = await uploadFilesList(selectedFiles)
 
   console.log('All samples uploaded, starting training with:', uploadedNames)
 
-  // 2. 调用训练接口
   try {
     const res = await wsTrainSkeleton({
       graph_id: props.graphId,
       node_id: props.node.id,
       image_names: uploadedNames,
       threshold: 10,
-      ignored_areas: [localData.ignored_top, localData.ignored_bottom]
     })
     console.log('Train response:', res)
     if (res.code === 200 && res.data) {
       localData.skeletonImages = res.data.images || uploadedNames
       localData.skeletonMask = resolveBackendPath(res.data)
-      // 🔥 关键修复：立即加载骨架图内容，以便在画布上显示
       await loadOneScreenshot(localData.skeletonMask)
 
-      let newComps = []
-      // 🔥 优先使用后端返回的 hotspots 字段
-      const backendHotspots = res.data.hotspots || res.data.detected_components || []
+      const masterName = res.data.master_path || (res.data.images || uploadedNames)[0]
+      await setMainScreenshotFromFilename(masterName)
 
-      if (backendHotspots.length > 0) {
-        newComps = backendHotspots.map((c, i) => ({
-          x: Math.round(c.x),
-          y: Math.round(c.y),
-          w: Math.round(c.w),
-          h: Math.round(c.h),
-          label: c.label || c.type || `Auto Area ${i + 1}`,
-          component_type: c.type || 'custom',
-          needs_confirmation: c.needs_confirmation || false,
-          states: [],
-          skeleton_config: {}
-        }))
-      }
+      const hotspotCount = await syncHotspotsAfterScreenshot(true, true)
 
-      if (newComps.length > 0) {
-        localData.interactions = newComps
-        clearSelection()
-        ElMessage.success(`骨架生成成功，后端识别出 ${newComps.length} 个热区`)
-      } else {
-        ElMessage.warning('骨架生成成功，但未检测到有效区域')
-      }
-
-      // 🔥 关键修复：生成后立即触发更新，确保 mask 被保存
       updateNode()
-      showSkeletonMask.value = true // 自动开启蒙版显示
+      showSkeletonMask.value = false
+      if (hotspotCount > 0) {
+        ElMessage.success(`页面骨架训练成功，并识别出 ${hotspotCount} 个热区`)
+      } else {
+        ElMessage.success('页面骨架训练成功，Run 时将用于页面识别')
+      }
     } else {
       ElMessage.error(res.msg || '训练失败')
     }
@@ -1738,8 +1845,7 @@ const trainStateSkeleton = async (sIdx) => {
     component_id: comp.uid || comp.id,
     state_type: state.state_type,
     image_names: names,
-    threshold: 10,
-    ignored_areas: [localData.ignored_top, localData.ignored_bottom] // 🔥 7. 传递安全区域
+    threshold: 10
   })
 
   if (res.code === 200 && res.data) {
@@ -1867,12 +1973,6 @@ onMounted(async () => {
     // 初始化阻断状态
     localData.is_blocking = props.node.data?.is_blocking || false
 
-    // 🔥 7. 加载安全区域配置
-    const ignored = props.node.data?.skeleton_config?.ignored_areas || {}
-    localData.ignored_top = ignored.top || 0
-    localData.ignored_bottom = ignored.bottom || 0
-
-    // 🔥 关键修复：加载已保存的骨架蒙版
     localData.skeletonMask = resolveBackendPath(props.node.data?.skeleton_config) || props.node.data?.skeleton_config?.mask_url || ''
 
     // 🔥 关键修复：如果存在骨架蒙版，加载其内容
@@ -1939,8 +2039,18 @@ onMounted(async () => {
       localData.screenshot = path
     }
 
-    // 🔥 使用 sanitizeComponent 进行严格的数据清洗
-    localData.interactions = JSON.parse(JSON.stringify(props.node.data.interactions || [])).map(sanitizeComponent)
+    if (!localData.screenshot && savedImages.length > 0) {
+      const master = props.node.data?.skeleton_config?.master_path || savedImages[0]
+      await setMainScreenshotFromFilename(master)
+    }
+
+    localData.naturalW = props.node.data.naturalSize?.w || 0
+    localData.naturalH = props.node.data.naturalSize?.h || 0
+
+    // 打开页面时只做清洗，不按尺寸过滤（避免 naturalSize 未就绪时误删 Tab 等热区）
+    localData.interactions = JSON.parse(
+      JSON.stringify(props.node.data.interactions || [])
+    ).map(sanitizeComponent)
 
     // 🔥 修复：预加载所有状态图片的缓存
     localData.interactions.forEach(comp => {
@@ -1951,12 +2061,13 @@ onMounted(async () => {
       }
     })
 
-    localData.naturalW = props.node.data.naturalSize?.w || 0
-    localData.naturalH = props.node.data.naturalSize?.h || 0
-
     // 如果已有图片，尝试适应屏幕
     if (localData.naturalW) {
       nextTick(() => fitToScreen())
+    }
+
+    if ((localData.screenshotPath || localData.skeletonMask) && localData.interactions.length === 0) {
+      nextTick(() => syncHotspotsAfterScreenshot(false))
     }
   }
   window.addEventListener('keydown', handleKeydown)
@@ -2104,9 +2215,19 @@ onUnmounted(() => {
 
 /* 🔥 Style for backend-detected containers */
 .hotspot-box.is-container {
-  border-color: #a1a1aa; /* zinc-400 */
-  background: rgba(212, 212, 216, 0.1); /* zinc-200 */
+  border-color: #a1a1aa;
+  background: rgba(212, 212, 216, 0.1);
   border-style: dotted;
+}
+
+.hotspot-box.is-shared-nav {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border-style: solid;
+}
+
+.hotspot-box.is-shared-nav .label-tag {
+  background: #f59e0b;
 }
 
 .label-tag {
@@ -2165,6 +2286,31 @@ onUnmounted(() => {
 .list-content {
   flex: 1;
   padding: 12px;
+}
+
+.comp-empty-state {
+  text-align: center;
+  padding: 28px 16px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.comp-empty-state p {
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.comp-empty-state span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.comp-list-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
 }
 
 .comp-card {
@@ -2605,9 +2751,10 @@ onUnmounted(() => {
   inset: 0;
   width: 100%;
   height: 100%;
-  mix-blend-mode: screen; /* 🔥 2. 混合模式：滤色 (Screen) - 实现特征图叠加预览 */
   pointer-events: none;
-  opacity: 0.8;
+  opacity: 0.35;
+  /* 不用 screen 混合，避免与正文叠层后文字发花、出现块状噪点 */
+  mix-blend-mode: normal;
 }
 
 .crop-box {

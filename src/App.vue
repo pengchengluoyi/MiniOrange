@@ -7,8 +7,8 @@
       <router-view />
     </div>
 
-    <!-- 🔥 Floating AI Copilot -->
-    <CopilotWidget />
+    <!-- 对话流页使用全屏界面，隐藏底部浮层 -->
+    <CopilotWidget v-if="!isDialogueRoute" />
     
     <!-- Global Overlays -->
     <CommandPalette ref="commandPaletteRef" />
@@ -18,7 +18,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import UpdatePrompt from './components/UpdatePrompt.vue'
 import GlobalAlert from './components/GlobalAlert.vue'
 import TitleBar from './components/Core/TitleBar.vue'
@@ -26,7 +27,9 @@ import CommandPalette from './components/Core/CommandPalette.vue'
 import CopilotWidget from './components/Ai/CopilotWidget.vue'
 import { initWebSocket } from '@/api/mWebSocket'
 
+const route = useRoute()
 const commandPaletteRef = ref(null)
+const isDialogueRoute = computed(() => route.name === 'Dialogue')
 
 const handleGlobalKeydown = (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {

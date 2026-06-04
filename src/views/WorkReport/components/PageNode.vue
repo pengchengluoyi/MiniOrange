@@ -72,12 +72,14 @@ const {updateNodeInternals} = useVueFlow()
 const displayScreenshot = ref('')
 const displaySkeleton = ref('')
 
+const loadedNaturalSize = ref({ w: 0, h: 0 })
+
 const onImageLoaded = (event) => {
   const img = event.target;
   const realW = img.naturalWidth;
   const realH = img.naturalHeight;
+  loadedNaturalSize.value = { w: realW, h: realH };
 
-  // 核心逻辑：如果库里没存尺寸，或者存的是默认的 375，立即纠正
   if (!props.data.naturalSize || props.data.naturalSize.w !== realW) {
     emit('update-size', { w: realW, h: realH });
   }
@@ -220,9 +222,10 @@ onUnmounted(() => {
 
 // 关键逻辑：确保 naturalSize 存在，否则百分比会计算错误导致偏移
 const naturalSize = computed(() => {
+  if (loadedNaturalSize.value.w > 0) return loadedNaturalSize.value
   const size = props.data.naturalSize;
   if (size && size.w > 0) return size;
-  return { w: 1920, h: 1080 }; // 默认给个大分母，防止红点跳出屏幕
+  return { w: 1080, h: 1920 };
 })
 
 const getHotspotStyle = (comp) => {
@@ -326,8 +329,8 @@ const iconMap = {page: Document, component: Cpu, case: Aim}
   left: 0;
   width: 100%;
   height: 100%;
-  opacity: 0.6;
-  mix-blend-mode: multiply;
+  opacity: 0.28;
+  mix-blend-mode: normal;
   pointer-events: none;
 }
 

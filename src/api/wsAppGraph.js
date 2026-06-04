@@ -133,3 +133,36 @@ export const wsCreateWorkflow = (params) => {
 export const wsTrainSkeleton = (params) => {
   return sendWsRequest('app_graph/train_skeleton', params)
 }
+
+export const wsDetectSharedComponents = (params) => {
+  return sendWsRequest('app_graph/detect_shared_components', params)
+}
+
+export const wsSaveSharedComponents = (params) => {
+  return sendWsRequest('app_graph/save_shared_components', params)
+}
+
+export const wsDetectPageComponents = (params) => {
+  return sendWsRequest('app_graph/detect_page_components', params)
+}
+
+/**
+ * 根据骨架蒙版识别截图属于图谱中的哪个页面
+ * Action: app_graph/identify_page
+ * @param {Object} params - { graph_id, content|image_name, min_score?, top_k? }
+ */
+export const wsIdentifyPage = (params) => {
+  return sendWsRequest('app_graph/identify_page', params)
+}
+
+/**
+ * 跑图：遍历应用页面并写入图谱
+ * Action: app_graph/crawl
+ */
+export const wsCrawlApp = (params) => {
+  return sendWsRequest('app_graph/crawl', params, { timeout: 3600000 })
+}
+
+export const wsGetDeviceList = () => {
+  return sendWsRequest('get_device_list', {})
+}

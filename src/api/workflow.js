@@ -111,7 +111,7 @@ export const fetchWorkflowSaveSimple = (id, name, desc) => {
 /**
  * 运行某个flow (通过 WebSocket)
  */
-export const fetchWorkflowRun = (workflow_id, sn) => {
+export const fetchWorkflowRun = (workflow_id, sn, envProfile) => {
     return new Promise((resolve, reject) => {
         // 1. 定义一个一次性的响应处理器
         const handler = (data) => {
@@ -135,8 +135,10 @@ export const fetchWorkflowRun = (workflow_id, sn) => {
 
         // 4. 发送运行指令, 假设后端的 action 是 'run_workflow'
         // 后端期望参数为 flow_id
-        console.log('Sending run_workflow:', { flow_id: workflow_id, sn: sn })
-        managementWsService.sendMessage('run_workflow', { flow_id: workflow_id, sn: sn });
+        const payload = { flow_id: workflow_id, sn }
+        if (envProfile) payload.env_profile = envProfile
+        console.log('Sending run_workflow:', payload)
+        managementWsService.sendMessage('run_workflow', payload);
     })
 }
 

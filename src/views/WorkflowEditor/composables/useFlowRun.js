@@ -145,7 +145,13 @@ export function useFlowRun(performSave, workflowId, showLogPanel, elements) {
         }, 1500)
     }
 
-    const handleRunCase = async (sn) => {
+    const handleRunCase = async (snOrPayload, envProfileArg) => {
+        let sn = snOrPayload
+        let envProfile = envProfileArg
+        if (snOrPayload && typeof snOrPayload === 'object') {
+            sn = snOrPayload.sn
+            envProfile = snOrPayload.envProfile ?? snOrPayload.env_profile
+        }
         if (!sn) {
             console.warn('handleRunCase called without SN!')
         }
@@ -160,7 +166,7 @@ export function useFlowRun(performSave, workflowId, showLogPanel, elements) {
         addLog('info', '正在请求服务端运行...')
 
         try {
-            const res = await fetchWorkflowRun(workflowId.value, sn)
+            const res = await fetchWorkflowRun(workflowId.value, sn, envProfile)
             if (res.code === 200 && res.run_id) {
                 addLog('info', `✅ 任务已启动 (ID: ${res.run_id})`)
                 pollLogs(res.run_id)

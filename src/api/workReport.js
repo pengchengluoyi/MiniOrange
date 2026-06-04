@@ -1,6 +1,7 @@
 // src/api/workReport.js
 
 import request from '@/utils/request'
+import { serializePlatformSelection } from '@/constants/appPlatforms'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -24,9 +25,10 @@ export const createProject = (data) => {
 }
 
 export const createAppInProject = (projectId, appData) => {
-    const platforms = Array.isArray(appData.platforms)
-        ? appData.platforms.join(',')
-        : appData.platforms
+    const list = Array.isArray(appData.platforms)
+        ? appData.platforms
+        : (appData.platforms || '').split(',').filter(Boolean)
+    const platforms = serializePlatformSelection(list).join(',')
 
     return request({
         url: '/project/app/create',
@@ -38,6 +40,36 @@ export const createAppInProject = (projectId, appData) => {
             platforms: platforms,
             env: appData.env || {}
         }
+    })
+}
+
+export const getAppDetail = (appId) => {
+    return request({
+        url: `/project/app/${appId}`,
+        method: 'get'
+    })
+}
+
+export const updateAppEnv = (appId, env) => {
+    return request({
+        url: `/project/app/${appId}/env`,
+        method: 'put',
+        data: { env }
+    })
+}
+
+export const getProjectEnv = (projectId) => {
+    return request({
+        url: `/project/${projectId}/env`,
+        method: 'get'
+    })
+}
+
+export const updateProjectEnv = (projectId, payload) => {
+    return request({
+        url: `/project/${projectId}/env`,
+        method: 'put',
+        data: payload
     })
 }
 

@@ -10,21 +10,47 @@
 
     <div class="vertical-scroll-view">
       <div v-for="project in projects" :key="project.id" class="project-section-island">
-        <div class="island-head">
-          <div class="head-main">
-            <h3>{{ project.name }}</h3>
-            <el-button link class="add-sub-btn" icon="Plus" @click.stop="openCreateAppDialog(project)">添加应用</el-button>
+        <div class="island-toolbar">
+          <div class="island-identity">
+            <span class="island-badge">{{ projectInitial(project.name) }}</span>
+            <div class="island-meta">
+              <h3 class="island-name">{{ project.name }}</h3>
+              <span class="island-stat">{{ appCountLabel(project) }}</span>
+            </div>
+          </div>
+
+          <div class="island-actions">
+            <button type="button" class="island-action" @click.stop="openCreateAppDialog(project)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              添加应用
+            </button>
+            <button type="button" class="island-action island-action-primary" @click.stop="openProjectEnv(project)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+              </svg>
+              环境配置
+            </button>
           </div>
         </div>
 
-        <div class="apps-vertical-grid">
+        <div v-if="!project.apps?.length" class="island-empty">
+          <p>暂无应用，点击「添加应用」开始</p>
+        </div>
+
+        <div v-else class="apps-vertical-grid">
           <div v-for="app in project.apps" :key="app.id" class="app-vertical-card">
             <div class="card-body" @click="enterApp(app)">
               <div class="info">
                 <span class="name">{{ app.name }}</span>
                 <span class="platform">ID: {{ app.id?.slice(0,8) }}</span>
+                <div class="platform-tags">
+                  <span v-for="tag in formatPlatformTags(app.platforms)" :key="tag" class="platform-tag">{{ tag }}</span>
+                </div>
               </div>
-              <div class="platform-indicator">{{ getPlatformIcon(normalizePlatforms(app.platforms)[0]) }}</div>
+              <div class="platform-indicator">{{ getPlatformIcon(collapsePlatforms(app.platforms)[0]) }}</div>
             </div>
 
             <div class="card-footer-actions">
@@ -37,39 +63,24 @@
       </div>
     </div>
 
-    <!-- 创建项目弹窗 -->
-    <el-dialog v-model="showProjectDialog" title="新建项目" width="500px">
-      <el-form :model="projectForm" label-width="80px">
-        <el-form-item label="项目名称">
-          <el-input v-model="projectForm.name" placeholder="例如：电商业务线" />
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="projectForm.description" type="textarea" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showProjectDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleCreateProject">确定</el-button>
-      </template>
-    </el-dialog>
+    <CreateProjectDialog
+        v-model="showProjectDialog"
+        :submitting="creatingProject"
+        @submit="handleCreateProject"
+    />
 
-    <!-- 创建应用弹窗 -->
-    <el-dialog v-model="showAppDialog" :title="`在 [${currentProject?.name}] 下创建应用`" width="500px">
-      <el-form :model="appForm" label-width="80px">
-        <el-form-item label="应用名称">
-          <el-input v-model="appForm.name" placeholder="例如：买家端 App" />
-        </el-form-item>
-        <el-form-item label="覆盖端">
-          <el-checkbox-group v-model="appForm.platforms">
-            <el-checkbox v-for="opt in platformOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAppDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleCreateApp">确定</el-button>
-      </template>
-    </el-dialog>
+    <CreateAppDialog
+        v-model="showAppDialog"
+        :project-name="currentProject?.name"
+        :submitting="creatingApp"
+        @submit="handleCreateApp"
+    />
+
+    <ProjectEnvSettings
+        v-model="showEnvDialog"
+        :project-id="envProjectId"
+        :project-name="envProjectName"
+    />
   </div>
 </template>
 
@@ -90,10 +101,135 @@
 
 .vertical-scroll-view { flex: 1; overflow-y: auto; padding-right: 15px; }
 
+.project-section-island {
+  margin-bottom: 36px;
+}
+
+/* 项目岛工具栏 */
+.island-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 4px 20px rgba(31, 38, 135, 0.06);
+}
+
+.island-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.island-badge {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.22);
+}
+
+.island-meta {
+  min-width: 0;
+}
+
+.island-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 750;
+  color: #111827;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.island-stat {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.island-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.island-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.island-action:hover {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #111827;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.island-action-primary {
+  background: rgba(255, 247, 237, 0.9);
+  border-color: rgba(255, 77, 0, 0.28);
+  color: #c2410c;
+}
+
+.island-action-primary:hover {
+  background: #ff4d00;
+  border-color: #ff4d00;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(255, 77, 0, 0.28);
+}
+
+.island-empty {
+  margin-top: 16px;
+  padding: 28px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1px dashed rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.island-empty p {
+  margin: 0;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
 /* 卡片容器网格 */
 .apps-vertical-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 24px; margin-top: 20px;
+  gap: 24px; margin-top: 16px;
 }
 
 /* --- 核心玻璃卡片样式 --- */
@@ -122,6 +258,22 @@
 .card-body { padding: 24px; cursor: pointer; }
 .card-body .name { font-size: 18px; font-weight: 700; color: #1f2937; margin-bottom: 4px; display: block; }
 .card-body .platform { font-size: 12px; color: #9ca3af; font-family: 'JetBrains Mono', monospace; }
+.platform-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.platform-tag {
+  font-size: 10px; font-weight: 600; color: #6b7280;
+  background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 6px;
+}
+
+@media (max-width: 640px) {
+  .island-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .island-actions {
+    justify-content: flex-end;
+  }
+}
 
 /* 卡片操作栏：更通透的分割 */
 .card-footer-actions {
@@ -152,43 +304,40 @@
   box-shadow: 0 6px 20px rgba(255, 77, 0, 0.4);
 }
 
-/* 覆盖 Element Plus 的弹窗，使其也具备玻璃感 */
-:deep(.el-dialog) {
-  background: rgba(255, 255, 255, 0.6) !important;
-  backdrop-filter: blur(30px) !important;
-  border-radius: 24px !important;
-  border: 1px solid rgba(255, 255, 255, 0.6) !important;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15) !important;
-}
 </style>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getProjects, createProject, createAppInProject } from '../../../api/workReport'
-import { ElButton, ElTag, ElDialog, ElForm, ElFormItem, ElInput, ElCheckboxGroup, ElCheckbox, vLoading } from 'element-plus'
+import ProjectEnvSettings from './ProjectEnvSettings.vue'
+import CreateAppDialog from './CreateAppDialog.vue'
+import CreateProjectDialog from './CreateProjectDialog.vue'
+import { collapsePlatforms, formatPlatformTags, getPlatformIcon } from '@/constants/appPlatforms'
+import { ElMessage } from 'element-plus'
+
+const projectInitial = (name) => {
+  const s = String(name || 'P').trim()
+  return s ? s.charAt(0).toUpperCase() : 'P'
+}
+
+const appCountLabel = (project) => {
+  const n = project.apps?.length || 0
+  return n ? `${n} 个应用` : '暂无应用'
+}
 
 const router = useRouter()
 const projects = ref([])
 const loading = ref(false)
 
-const platformOptions = [
-  { label: 'Windows', value: 'Windows' },
-  { label: 'Mac', value: 'Mac' },
-  { label: 'Android', value: 'Android' },
-  { label: 'iOS', value: 'iOS' },
-  { label: 'Web', value: 'Web' }
-]
-
 const showProjectDialog = ref(false)
 const showAppDialog = ref(false)
+const creatingProject = ref(false)
+const creatingApp = ref(false)
+const showEnvDialog = ref(false)
+const envProjectId = ref('')
+const envProjectName = ref('')
 const currentProject = ref(null)
-
-const projectForm = reactive({ name: '', description: '' })
-const appForm = reactive({
-  name: '',
-  platforms: []
-})
 
 const fetchProjectsData = async () => {
   loading.value = true
@@ -203,27 +352,12 @@ onMounted(() => {
   fetchProjectsData()
 })
 
-const normalizePlatforms = (platforms) => {
-  if (Array.isArray(platforms)) return platforms
-  if (typeof platforms === 'string') return platforms.split(',').filter(Boolean)
-  return []
-}
-
-const getPlatformIcon = (p) => {
-  const map = { Windows: '🪟', Mac: '🍎', Android: '🤖', iOS: '🍏', Web: '🌐' }
-  return map[p] || '📱'
-}
-
 const openCreateProjectDialog = () => {
-  projectForm.name = ''
-  projectForm.description = ''
   showProjectDialog.value = true
 }
 
 const openCreateAppDialog = (project) => {
   currentProject.value = project
-  appForm.name = ''
-  appForm.platforms = []
   showAppDialog.value = true
 }
 
@@ -238,17 +372,38 @@ const editCases = (app) => {
   router.push(`/report/editor/${app.id}`)
 }
 
-const handleCreateProject = async () => {
-  if (!projectForm.name) return
-  await createProject({ ...projectForm })
-  await fetchProjectsData()
-  showProjectDialog.value = false
+const openProjectEnv = (project) => {
+  envProjectId.value = project.id
+  envProjectName.value = project.name || ''
+  showEnvDialog.value = true
 }
 
-const handleCreateApp = async () => {
-  if (!appForm.name || appForm.platforms.length === 0) return
-  await createAppInProject(currentProject.value.id, { ...appForm })
-  await fetchProjectsData()
-  showAppDialog.value = false
+const handleCreateProject = async (payload) => {
+  creatingProject.value = true
+  try {
+    await createProject(payload)
+    await fetchProjectsData()
+    showProjectDialog.value = false
+    ElMessage.success('项目已创建')
+  } catch {
+    ElMessage.error('创建项目失败')
+  } finally {
+    creatingProject.value = false
+  }
+}
+
+const handleCreateApp = async (payload) => {
+  if (!currentProject.value?.id) return
+  creatingApp.value = true
+  try {
+    await createAppInProject(currentProject.value.id, payload)
+    await fetchProjectsData()
+    showAppDialog.value = false
+    ElMessage.success('应用已创建')
+  } catch {
+    ElMessage.error('创建应用失败')
+  } finally {
+    creatingApp.value = false
+  }
 }
 </script>

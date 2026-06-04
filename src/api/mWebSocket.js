@@ -89,7 +89,7 @@ export const removeMessageListener = (callback) => {
   listeners = listeners.filter(l => l !== callback)
 }
 
-export const sendWsRequest = (action, data = {}) => {
+export const sendWsRequest = (action, data = {}, options = {}) => {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error('WebSocket not connected'))
@@ -97,13 +97,14 @@ export const sendWsRequest = (action, data = {}) => {
     }
 
     const req_id = Date.now().toString(36) + Math.random().toString(36).substr(2)
+    const timeoutMs = options.timeout || (action === 'app_graph/crawl' ? 3600000 : 10000)
     
     const timer = setTimeout(() => {
       if (pendingRequests.has(req_id)) {
         pendingRequests.delete(req_id)
         reject(new Error('Request timeout'))
       }
-    }, 10000)
+    }, timeoutMs)
 
     pendingRequests.set(req_id, { 
       resolve: (res) => { clearTimeout(timer); resolve(res) }, 

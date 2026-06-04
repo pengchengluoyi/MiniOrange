@@ -72,6 +72,7 @@
             :schema="dynamicSchema"
             @close="selectedNode = null"
             @pick-var="handlePickVar"
+            @pick-config-var="handlePickConfigVar"
         />
       </div>
     </main>
@@ -146,7 +147,7 @@ let startX = 0, startWidth = 0
 
 const goBack = () => router.back()
 
-const handleRun = (sn) => flowCanvasRef.value?.handleRunCase(sn)
+const handleRun = (payload) => flowCanvasRef.value?.handleRunCase(payload)
 const handleStop = () => flowCanvasRef.value?.stopRun()
 const handleToggleSelector = () => flowCanvasRef.value?.toggleSelector()
 const handleEditInfo = () => flowCanvasRef.value?.openInfoModal()
@@ -155,6 +156,12 @@ const handleToggleLog = () => flowCanvasRef.value?.toggleLogPanel()
 const handlePickVar = (fieldKey) => {
   if (selectedNode.value) {
     flowCanvasRef.value?.startPickMode(selectedNode.value, fieldKey)
+  }
+}
+
+const handlePickConfigVar = (fieldKey) => {
+  if (selectedNode.value) {
+    flowCanvasRef.value?.startConfigVarPick(selectedNode.value, fieldKey)
   }
 }
 const handleAppView = () => console.log('App View TODO')

@@ -25,6 +25,20 @@
         <div class="portal-divider"></div>
 
         <div class="portal-group">
+          <el-button type="primary" link size="small" @click="openSharedPanel" title="跨页面共有组件">
+            <el-icon><Connection /></el-icon> 共用组件
+          </el-button>
+          <el-button type="success" link size="small" @click="openIdentifyPageDialog" title="上传截图，按骨架匹配页面">
+            <el-icon><Search /></el-icon> 识别页面
+          </el-button>
+          <el-button type="warning" link size="small" @click="openCrawlDialog" title="连接真机自动跑图">
+            跑图
+          </el-button>
+        </div>
+
+        <div class="portal-divider"></div>
+
+        <div class="portal-group">
           <el-button type="danger" link size="small" :icon="Delete" :disabled="selectedElements.length === 0" @click="removeSelected" title="删除选中">
           </el-button>
           <el-button type="info" link size="small" :icon="Refresh" @click="fitView" title="重置视图"></el-button>
@@ -92,7 +106,17 @@
         <div class="panel-header">
           <span class="panel-title">SOP Graph</span>
           <div class="header-actions">
-            <el-button type="info" link size="small" @click="openGraphSettings">
+            <el-button
+                type="success"
+                link
+                size="small"
+                :disabled="!currentProjectId"
+                @click="showProjectEnvSettings = true"
+                title="项目环境（开发/测试/预发/正式）"
+            >
+              项目环境
+            </el-button>
+            <el-button type="info" link size="small" @click="openGraphSettings" title="图谱变量 (graph.*)">
               <el-icon><Setting /></el-icon>
             </el-button>
             <el-button type="primary" link size="small" @click="createNewSOP">
@@ -226,34 +250,175 @@
       </div>
     </Transition>
 
+    <!-- 共用组件面板 -->
+    <Transition name="slide-fade-right">
+      <div class="floating-card right shared-components-card" v-if="!isPicker && showSharedPanel">
+        <SharedComponentsPanel
+            :graph-id="graphId"
+            :initial-shared="sharedComponents"
+            @close="showSharedPanel = false"
+            @focus-node="focusSharedNode"
+            @saved="onSharedComponentsSaved"
+        />
+      </div>
+    </Transition>
+
     <!-- 🔥 Layer 20: Focus Mode Overlay -->
     <transition name="fade">
       <div v-if="selectedNode" class="focus-mode-overlay" @click.self="clearSelection">
         <PageDetailEditor
             :node="selectedNode"
             :graph-id="graphId"
+            :shared-components="sharedComponents"
             @close="clearSelection"
             @update="onNodeUpdate"
         />
       </div>
     </transition>
 
-    <!-- App Graph Global Settings Dialog -->
-    <el-dialog v-model="showGraphSettings" title="App Graph Global Variables" width="500px">
+    <!-- 图谱变量 (graph.*) — 不含包名/URL -->
+    <el-dialog v-model="showGraphSettings" title="图谱变量 (graph.*)" width="500px">
       <div class="form-wrapper" style="padding: 0">
+        <p class="env-hint">API 地址、环境名等图谱级参数。包名/Web 请在项目「环境配置」中按 dev/test/pre/prod 维护。</p>
         <div class="form-item">
-          <div class="label">Global Variables (JSON)</div>
+          <div class="label">Variables (JSON)</div>
           <el-input 
             v-model="graphVariablesStr" 
             type="textarea" 
             :rows="10" 
-            placeholder='{"base_url": "...", "env": "test"}'
+            placeholder='{"api_host": "https://api.test.com"}'
           />
         </div>
       </div>
       <template #footer>
         <el-button @click="showGraphSettings = false">Cancel</el-button>
         <el-button type="primary" @click="saveGraphSettings">Save</el-button>
+      </template>
+    </el-dialog>
+
+    <ProjectEnvSettings
+        v-model="showProjectEnvSettings"
+        :project-id="currentProjectId"
+        :project-name="currentProjectName"
+    />
+
+    <el-dialog v-model="showCrawlDialog" title="自动跑图" width="560px" destroy-on-close :close-on-click-modal="!crawlLoading">
+      <p class="env-hint">
+        在已连接的手机节点上自动探索页面：每页 5 张截图（相似度 50%~85%），在<strong>热区内滑动</strong>采图、点击<strong>底栏/热区</strong>跳转并写边。
+        首次使用请在终端执行一次：<code>python -m uiautomator2 init</code>。
+        小米/红米若出现 <code>INJECT_EVENTS</code>：开启「USB 调试(安全设置)」与无障碍 ATX/uiautomator。
+      </p>
+      <div class="form-item">
+        <div class="label">执行节点（已连接设备）</div>
+        <el-select
+            v-model="crawlForm.sn"
+            placeholder="请选择在线节点"
+            filterable
+            style="width: 100%"
+            :loading="crawlDevicesLoading"
+        >
+          <el-option
+              v-for="d in crawlDeviceOptions"
+              :key="d.sn"
+              :label="`${d.sn} (${d.type || 'unknown'})`"
+              :value="d.sn"
+              :disabled="d.status !== 'online'"
+          />
+        </el-select>
+      </div>
+      <div class="form-item">
+        <div class="label">应用包名</div>
+        <el-input v-model="crawlForm.package" placeholder="留空则不自动启动 App" />
+      </div>
+      <div class="form-item">
+        <div class="label">最多探索页面数</div>
+        <el-input-number v-model="crawlForm.maxPages" :min="1" :max="40" />
+      </div>
+      <el-alert
+          v-if="crawlLoading"
+          type="info"
+          :closable="false"
+          show-icon
+          title="跑图进行中…"
+          description="请勿锁屏或切换 App，完成后会自动刷新图谱。"
+          style="margin-bottom: 12px"
+      />
+      <div v-if="crawlResult" class="identify-result">
+        <p class="identify-best matched">
+          完成：{{ crawlResult.pages?.length || 0 }} 页，{{ crawlResult.navigations?.length || 0 }} 条跳转
+        </p>
+        <el-table
+            v-if="crawlResult.pages?.length"
+            :data="crawlResult.pages"
+            size="small"
+            max-height="200"
+            style="margin-top: 8px"
+        >
+          <el-table-column prop="label" label="页面" min-width="120"/>
+          <el-table-column prop="node_id" label="节点 ID" min-width="140" show-overflow-tooltip/>
+          <el-table-column label="" width="72">
+            <template #default="{ row }">
+              <el-button type="primary" link size="small" @click="focusIdentifiedNode(row.node_id)">定位</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="showCrawlDialog = false" :disabled="crawlLoading">关闭</el-button>
+        <el-button type="primary" :loading="crawlLoading" @click="startCrawl">开始跑图</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showIdentifyPageDialog" title="骨架识别页面" width="520px" destroy-on-close>
+      <p class="env-hint">
+        上传一张截图，与各页面已训练的骨架蒙版比对，找出最相似的页面。请确保目标页面已训练骨架（含主图与 mask）。
+      </p>
+      <el-upload
+          drag
+          accept="image/*"
+          :auto-upload="false"
+          :show-file-list="false"
+          :disabled="identifyPageLoading"
+          @change="onIdentifyImagePick"
+      >
+        <el-icon class="el-icon--upload"><Search /></el-icon>
+        <div class="el-upload__text">拖拽或点击选择截图</div>
+      </el-upload>
+      <div v-if="identifyPreviewUrl" class="identify-preview">
+        <img :src="identifyPreviewUrl" alt="preview"/>
+      </div>
+      <div v-if="identifyPageResult" class="identify-result">
+        <div v-if="identifyPageResult.matched" class="identify-best matched">
+          最匹配：<strong>{{ identifyPageResult.label }}</strong>
+          <el-tag type="success" size="small">相似度 {{ (identifyPageResult.score * 100).toFixed(1) }}%</el-tag>
+          <el-button type="primary" link size="small" @click="focusIdentifiedNode(identifyPageResult.node_id)">定位</el-button>
+        </div>
+        <div v-else class="identify-best unmatched">
+          未达到阈值（{{ (identifyPageResult.min_score * 100).toFixed(0) }}%），最高分页面见下表
+        </div>
+        <el-table
+            v-if="identifyPageResult.rankings?.length"
+            :data="identifyPageResult.rankings"
+            size="small"
+            max-height="220"
+            style="margin-top: 10px"
+        >
+          <el-table-column prop="label" label="页面" min-width="120"/>
+          <el-table-column label="相似度" width="100">
+            <template #default="{ row }">{{ (row.score * 100).toFixed(1) }}%</template>
+          </el-table-column>
+          <el-table-column label="" width="72">
+            <template #default="{ row }">
+              <el-button type="primary" link size="small" @click="focusIdentifiedNode(row.node_id)">定位</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <p v-if="identifyPageResult.skipped_pages?.length" class="env-hint" style="margin-top: 8px">
+          {{ identifyPageResult.skipped_pages.length }} 个页面未训练骨架，未参与比对
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="showIdentifyPageDialog = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -270,12 +435,14 @@ import {MiniMap} from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
-import {ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage, ElAside, ElScrollbar, ElInput, ElInputNumber, ElEmpty, ElDialog, ElTabs, ElTabPane} from 'element-plus'
-import {Delete, Refresh, ArrowLeft, Plus, Document, Edit, Setting, Cpu, CaretLeft, CaretRight, Menu, Close} from '@element-plus/icons-vue'
+import {ElButton, ElButtonGroup, ElTag, ElContainer, ElHeader, ElMain, ElIcon, ElMessage, ElAside, ElScrollbar, ElInput, ElInputNumber, ElEmpty, ElDialog, ElTabs, ElTabPane, ElUpload, ElTable, ElTableColumn, ElSelect, ElOption, ElAlert} from 'element-plus'
+import {Delete, Refresh, ArrowLeft, Plus, Document, Edit, Setting, Cpu, CaretLeft, CaretRight, Menu, Close, Connection, Search} from '@element-plus/icons-vue'
 import PageNode from './PageNode.vue'
 import SmartJsonEditor from '@/components/Core/SmartJsonEditor.vue'
 import { useAppStore } from '@/store/appStore'
 import PageDetailEditor from './PageDetailEditor.vue'
+import ProjectEnvSettings from './ProjectEnvSettings.vue'
+import SharedComponentsPanel from './SharedComponentsPanel.vue'
 import * as api from '../../../api/workReport'
 import * as wsApi from '@/api/wsAppGraph'
 import { fetchWorkflowDetailSimple, fetchWorkflowAdd } from '@/api/workflow'
@@ -298,6 +465,9 @@ const sops = ref([]) // SOP List
 const selectedSopId = ref(null)
 const currentSopForm = ref({ name: '', desc: '', variablesStr: '{}' })
 const showGraphSettings = ref(false)
+const showProjectEnvSettings = ref(false)
+const currentProjectId = ref('')
+const currentProjectName = ref('')
 const graphVariablesStr = ref('{}')
 const router = useRouter()
 const route = useRoute()
@@ -310,6 +480,44 @@ const editorContainerRef = ref(null)
 // 🔥 Panel State
 const showLeftPanel = ref(true)
 const showRightPanel = ref(true)
+const showSharedPanel = ref(false)
+const sharedComponents = ref([])
+
+const showCrawlDialog = ref(false)
+const crawlLoading = ref(false)
+const crawlResult = ref(null)
+const crawlForm = ref({ sn: '', package: '', maxPages: 15 })
+const crawlDeviceOptions = ref([])
+const crawlDevicesLoading = ref(false)
+
+const showIdentifyPageDialog = ref(false)
+const identifyPageLoading = ref(false)
+const identifyPreviewUrl = ref('')
+const identifyPageResult = ref(null)
+
+const currentAppId = computed(() => {
+  const id = props.appId || route.params.appId || route.query.appId
+  return id ? String(id) : ''
+})
+
+const loadProjectMeta = async () => {
+  if (!currentAppId.value) {
+    currentProjectId.value = ''
+    currentProjectName.value = ''
+    return
+  }
+  try {
+    const res = await api.getAppDetail(currentAppId.value)
+    const data = res?.data || res || {}
+    currentProjectId.value = data.project_id || ''
+    currentProjectName.value = data.project_name || ''
+  } catch {
+    currentProjectId.value = ''
+    currentProjectName.value = ''
+  }
+}
+
+watch(currentAppId, () => loadProjectMeta(), { immediate: true })
 
 const onPaneReady = (instance) => {
   flowInstance.value = instance
@@ -546,12 +754,20 @@ const handleUpdateSOPVariables = async () => {
   if (!selectedSopId.value) return
   try {
     const vars = JSON.parse(currentSopForm.value.variablesStr)
+    const reserved = ['package', 'package_name', 'bundle', 'base_url']
+    const hit = Object.keys(vars).filter(k =>
+        reserved.some(r => k.toLowerCase().includes(r))
+    )
+    if (hit.length) {
+      ElMessage.warning(`包名/URL 请在项目环境配置，不要写在 SOP 变量里（${hit.join(', ')}）`)
+    }
     await wsApi.wsUpdateSOP({
       sop_id: selectedSopId.value,
       variables: vars
     })
     const sop = sops.value.find(s => s.id === selectedSopId.value)
     if (sop) sop.variables = vars
+    ElMessage.success('SOP 变量已保存')
   } catch (e) {
     ElMessage.error('Invalid JSON format')
   }
@@ -635,6 +851,7 @@ const loadGraphData = async (retryCount = 0) => {
           // Load Graph Variables
           const gVars = detailRes.data.variables || {}
           graphVariablesStr.value = JSON.stringify(gVars, null, 2)
+          sharedComponents.value = gVars.shared_components || []
 
           const allMappedNodes = rawNodes.map(n => {
             // 1. 兼容后端返回的 components 字段 (你在 save 时传的是这个)
@@ -643,10 +860,19 @@ const loadGraphData = async (retryCount = 0) => {
             // 2. 还原 interactions 结构
             const processedInteractions = rawComponents.map((c, idx) => {
               const rect = c.rect || c
+              const rules = c.rules || {}
               
               // 🔥 修复：确保 ID 存在。如果后端数据缺失 ID，使用确定性算法生成临时 ID
               const effectiveId = c.id || c.uid || `gen-${n.id}-${idx}`
-              const base = { ...c, id: effectiveId, uid: effectiveId }
+              const base = {
+                ...c,
+                id: effectiveId,
+                uid: effectiveId,
+                component_type: c.component_type || rules.component_type || 'custom',
+                shared_region: c.shared_region || rules.shared_region || '',
+                needs_confirmation: c.needs_confirmation ?? rules.needs_confirmation ?? false,
+                action: c.action || rules.action || 'click',
+              }
 
               if (c.rect) {
                 return {...base, x: Number(c.rect.x), y: Number(c.rect.y), w: Number(c.rect.w), h: Number(c.rect.h), states: c.states || []};
@@ -1057,7 +1283,35 @@ const onEdgesChange = (changes) => {
   if (changes.some(c => c.type === 'remove' || c.type === 'add')) triggerAutoSave()
 }
 
-const onNodeUpdate = (updatedNode) => {
+const buildNodeSavePayload = (updatedNode) => ({
+  graph_id: graphId.value,
+  node_id: updatedNode.id,
+  type: updatedNode.type || 'page',
+  label: updatedNode.label,
+  desc: updatedNode.data.desc || '',
+  is_blocking: updatedNode.data.is_blocking || false,
+  parentNode: updatedNode.parentNode || null,
+  naturalSize: updatedNode.data.naturalSize || null,
+  screenshot: cleanPath(getSafeScreenshot(updatedNode.data.screenshot)),
+  skeleton_config: updatedNode.data.skeleton_config || {},
+  workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
+  components: (updatedNode.data.interactions || []).map(c => ({
+    ...c,
+    uid: c.uid || c.id || null,
+    rect: {x: c.x, y: c.y, w: c.w, h: c.h},
+    rules: {
+      ...(c.rules || {}),
+      component_type: c.component_type || c.rules?.component_type || 'custom',
+      shared_region: c.shared_region || c.rules?.shared_region || '',
+      needs_confirmation: !!c.needs_confirmation,
+      action: c.action || c.rules?.action || 'click',
+    },
+    skeleton_config: c.skeleton_config || {},
+    states: (c.states || []).map(s => ({...s, skeleton_config: s.skeleton_config || {}}))
+  }))
+})
+
+const onNodeUpdate = (updatedNode, opts = {}) => {
   // 🔥 严重修复：拾取模式下禁止更新节点详情
   if (props.isPicker) return
 
@@ -1066,35 +1320,23 @@ const onNodeUpdate = (updatedNode) => {
   const nodeId = updatedNode.id
   if (saveTimers[nodeId]) clearTimeout(saveTimers[nodeId])
 
-  saveTimers[nodeId] = setTimeout(async () => {
-    const payload = {
-      graph_id: graphId.value,
-      node_id: updatedNode.id,
-      type: updatedNode.type || 'page',
-      label: updatedNode.label,
-      desc: updatedNode.data.desc || '',
-      is_blocking: updatedNode.data.is_blocking || false,
-      parentNode: updatedNode.parentNode || null,
-      naturalSize: updatedNode.data.naturalSize || null,
-      screenshot: cleanPath(getSafeScreenshot(updatedNode.data.screenshot)),
-      skeleton_config: updatedNode.data.skeleton_config || {},
-      workflow_id: updatedNode.data.workflow_id ? String(updatedNode.data.workflow_id) : null,
-      components: (updatedNode.data.interactions || []).map(c => ({
-        ...c,
-        uid: c.uid || c.id || null,
-        rect: {x: c.x, y: c.y, w: c.w, h: c.h},
-        skeleton_config: c.skeleton_config || {},
-        states: (c.states || []).map(s => ({...s, skeleton_config: s.skeleton_config || {}}))
-      }))
-    }
+  const saveNow = async () => {
+    const payload = buildNodeSavePayload(updatedNode)
     try {
-      await wsApi.wsSaveNodeDetail(payload);
+      await wsApi.wsSaveNodeDetail(payload)
       triggerAutoSave()
     } catch (error) {
       ElMessage.error('保存失败')
     }
     delete saveTimers[nodeId]
-  }, 1000)
+  }
+
+  if (opts.flush) {
+    saveNow()
+    return
+  }
+
+  saveTimers[nodeId] = setTimeout(saveNow, 1000)
 }
 
 const createNodeData = (type, position, label) => {
@@ -1290,6 +1532,159 @@ const removeSelected = () => {
 
 const fitView = () => flowInstance.value?.fitView()
 
+const openSharedPanel = () => {
+  showSharedPanel.value = true
+  showRightPanel.value = false
+}
+
+const focusSharedNode = (nodeId) => {
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node || !flowInstance.value) return
+  flowInstance.value.fitView({ nodes: [nodeId], padding: 0.4, duration: 400 })
+  selectedElements.value = [node]
+}
+
+const fetchCrawlDevices = async () => {
+  crawlDevicesLoading.value = true
+  try {
+    const res = await wsApi.wsGetDeviceList()
+    const list = res.data || []
+    crawlDeviceOptions.value = list.filter((d) => d.status === 'online')
+    if (!crawlForm.value.sn && crawlDeviceOptions.value.length === 1) {
+      crawlForm.value.sn = crawlDeviceOptions.value[0].sn
+    }
+  } catch (e) {
+    ElMessage.warning('获取设备列表失败，请确认 WebSocket 已连接')
+  } finally {
+    crawlDevicesLoading.value = false
+  }
+}
+
+const loadCrawlPackageDefault = async () => {
+  if (!currentProjectId.value || crawlForm.value.package) return
+  try {
+    const res = await api.getProjectEnv(currentProjectId.value)
+    const env = res?.data || res || {}
+    const pkg =
+      env?.android?.package ||
+      env?.dev?.android?.package ||
+      env?.test?.android?.package ||
+      ''
+    if (pkg) crawlForm.value.package = pkg
+  } catch {
+    /* ignore */
+  }
+}
+
+const openCrawlDialog = async () => {
+  if (!graphId.value) {
+    ElMessage.warning('请先加载应用图谱')
+    return
+  }
+  crawlResult.value = null
+  showCrawlDialog.value = true
+  await fetchCrawlDevices()
+  await loadCrawlPackageDefault()
+}
+
+const startCrawl = async () => {
+  if (!crawlForm.value.sn?.trim()) {
+    ElMessage.warning('请选择在线设备节点')
+    return
+  }
+  const selected = crawlDeviceOptions.value.find((d) => d.sn === crawlForm.value.sn)
+  if (selected && selected.status !== 'online') {
+    ElMessage.warning('所选设备未在线，请先在设备管理连接节点')
+    return
+  }
+  crawlLoading.value = true
+  crawlResult.value = null
+  try {
+    const res = await wsApi.wsCrawlApp({
+      graph_id: graphId.value,
+      sn: crawlForm.value.sn.trim(),
+      package: crawlForm.value.package?.trim() || undefined,
+      max_pages: crawlForm.value.maxPages,
+      max_sim: 0.85,
+      min_sim: 0.5,
+    })
+    if (res.code !== 200) {
+      ElMessage.error(res.msg || '跑图失败')
+      return
+    }
+    crawlResult.value = res.data
+    ElMessage.success(`跑图完成：${res.data?.pages?.length || 0} 个页面`)
+    await loadGraphData()
+  } catch (e) {
+    ElMessage.error(e?.message || '跑图失败')
+  } finally {
+    crawlLoading.value = false
+  }
+}
+
+const openIdentifyPageDialog = () => {
+  if (!graphId.value) {
+    ElMessage.warning('请先加载应用图谱')
+    return
+  }
+  identifyPageResult.value = null
+  identifyPreviewUrl.value = ''
+  showIdentifyPageDialog.value = true
+}
+
+const focusIdentifiedNode = (nodeId) => {
+  if (!nodeId) return
+  focusSharedNode(nodeId)
+  showIdentifyPageDialog.value = false
+}
+
+const onIdentifyImagePick = async (uploadFile) => {
+  const file = uploadFile?.raw
+  if (!file || !graphId.value) return
+  identifyPageLoading.value = true
+  identifyPageResult.value = null
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+    identifyPreviewUrl.value = base64
+    const res = await wsApi.wsIdentifyPage({
+      graph_id: graphId.value,
+      content: base64,
+      min_score: 0.55,
+      top_k: 12,
+    })
+    if (res.code !== 200) {
+      ElMessage.error(res.msg || '识别失败')
+      return
+    }
+    identifyPageResult.value = res.data || null
+    if (res.data?.matched) {
+      ElMessage.success(`识别为「${res.data.label}」(${(res.data.score * 100).toFixed(1)}%)`)
+    } else if (res.data?.rankings?.length) {
+      ElMessage.info('未达到置信阈值，请查看排行或重新训练骨架')
+    } else {
+      ElMessage.info('没有可比对的页面，请先为各页训练骨架')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '识别失败')
+  } finally {
+    identifyPageLoading.value = false
+  }
+}
+
+const onSharedComponentsSaved = (payload) => {
+  sharedComponents.value = payload
+  try {
+    const vars = JSON.parse(graphVariablesStr.value || '{}')
+    vars.shared_components = payload
+    graphVariablesStr.value = JSON.stringify(vars, null, 2)
+  } catch (_) { /* ignore */ }
+}
+
 const handleNodeSizeUpdate = (nodeId, size) => {
   const node = nodes.value.find(n => n.id === nodeId)
   if (node) {
@@ -1381,6 +1776,19 @@ const handleNodeSizeUpdate = (nodeId, size) => {
 .floating-card.right {
   right: 20px;
   width: 320px;
+}
+
+.shared-components-card {
+  width: 360px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.shared-components-card :deep(.shared-panel) {
+  height: 100%;
 }
 
 .panel-header {
@@ -1516,6 +1924,41 @@ const handleNodeSizeUpdate = (nodeId, size) => {
   color: #94a3b8;
   margin: 16px 0 12px 0;
   letter-spacing: 0.05em;
+}
+
+.env-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.identify-preview {
+  margin-top: 12px;
+  text-align: center;
+  max-height: 200px;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.identify-preview img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+}
+.identify-result {
+  margin-top: 12px;
+}
+.identify-best {
+  font-size: 13px;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.identify-best.unmatched {
+  color: #b45309;
 }
 
 .section-divider {
