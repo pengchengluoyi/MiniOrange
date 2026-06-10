@@ -1,0 +1,605 @@
+<script setup>
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import {
+  getAppAutomationConfig,
+  updateAppAutomationConfig,
+  listIconTargets,
+  saveIconTarget,
+  deleteIconTarget,
+  uploadIconImage,
+  getGraphIconCandidates,
+  importGraphIcon,
+  syncAppFigma,
+  applyFigmaAppLogic,
+  seedLoginIconTemplates,
+  seedLoginIconsFromFigma,
+} from '@/api/appAutomation'
+import { getBaseUrl } from '@/utils/config'
+import { getDeviceList } from '@/api/device'
+import { wsGetDeviceList } from '@/api/wsAppGraph'
+import { initWebSocket } from '@/api/mWebSocket'
+import { ENV_PROFILES } from '@/constants/envProfiles'
+import FeishuRegressionPanel from './FeishuRegressionPanel.vue'
+import ProjectEnvEditor from './ProjectEnvEditor.vue'
+import KnowledgePanel from './KnowledgePanel.vue'
+import { getFigmaSettings } from '@/api/settings'
+import { titlebarOwner, claimTitlebar, releaseTitlebar } from '@/composables/useTitlebar'
+
+const TITLEBAR_ID = 'app-config'
+
+const route = useRoute()
+const router = useRouter()
+const appId = computed(() => route.params.appId)
+const section = computed(() => route.params.section || 'env')
+const appName = computed(() => route.query.appName || '应用')
+const projectName = computed(() => route.query.projectName || '')
+const projectId = computed(() => String(route.query.projectId || ''))
+const envEditorRef = ref(null)
+
+const tabs = [
+  { key: 'env', label: '执行环境' },
+  { key: 'icons', label: '无字图标' },
+  { key: 'logic', label: '应用逻辑' },
+  { key: 'regression', label: '飞书回归' },
+  { key: 'figma', label: '设计稿' },
+]
+
+const figmaForm = ref({ file_url: '', file_key: '', last_sync_at: '', pages_summary: [], logic_applied_at: '' })
+const figmaTokenConfigured = ref(false)
+
+const loading = ref(false)
+const saving = ref(false)
+const figmaApplying = ref(false)
+const figmaSyncing = ref(false)
+const packageName = ref('')
+const envProfile = ref('test')
+const executionEnvMode = ref('fixed')
+const selectedDeviceSn = ref('*')
+const devices = ref([])
+const skillsDefault = ref({ pre: [], post: [] })
+const skillsDevices = ref({})
+const iconPage = ref(1)
+const iconPageSize = ref(20)
+const iconTotal = ref(0)
+const iconKeyword = ref('')
+const iconTargets = ref([])
+const graphCandidates = ref([])
+const showGraphImport = ref(false)
+const staticBase = getBaseUrl()
+
+const parseFigmaFileKeyFromUrl = (url = '') => {
+  const m = String(url || '').match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/i)
+  return m ? m[1] : ''
+}
+
+const normalizeFigmaForm = () => {
+  const url = (figmaForm.value.file_url || '').trim()
+  let key = (figmaForm.value.file_key || '').trim()
+  if (key.toLowerCase().startsWith('figd_')) {
+    key = ''
+  }
+  const fromUrl = parseFigmaFileKeyFromUrl(url)
+  if (fromUrl) {
+    figmaForm.value.file_key = fromUrl
+  } else if (key.toLowerCase().startsWith('figd_')) {
+    figmaForm.value.file_key = ''
+  }
+}
+
+const deviceSkillBlock = computed(() => {
+  if (selectedDeviceSn.value === '*') return skillsDefault.value
+  if (!skillsDevices.value[selectedDeviceSn.value]) {
+    skillsDevices.value[selectedDeviceSn.value] = { pre: [], post: [] }
+  }
+  return skillsDevices.value[selectedDeviceSn.value]
+})
+
+const preLines = computed({
+  get: () => (deviceSkillBlock.value.pre || []).join('\n'),
+  set: (v) => {
+    deviceSkillBlock.value.pre = String(v || '').split('\n').map((s) => s.trim()).filter(Boolean)
+  },
+})
+const postLines = computed({
+  get: () => (deviceSkillBlock.value.post || []).join('\n'),
+  set: (v) => {
+    deviceSkillBlock.value.post = String(v || '').split('\n').map((s) => s.trim()).filter(Boolean)
+  },
+})
+
+const switchTab = (key) => {
+  router.replace({
+    name: 'SettingsAppConfig',
+    params: { appId: appId.value, section: key },
+    query: route.query,
+  })
+}
+
+const normalizeDevices = (res) => {
+  const list = Array.isArray(res) ? res : res?.data || []
+  return list.filter((d) => d.status === 'online')
+}
+
+const load = async () => {
+  loading.value = true
+  try {
+    const res = await getAppAutomationConfig(appId.value)
+    const data = res?.data || {}
+    packageName.value = data.package || ''
+    envProfile.value = data.env_profile || data.automation?.env_profile || 'test'
+    const ex = data.automation?.execution_env || {}
+    executionEnvMode.value = ex.mode || 'fixed'
+    if (ex.profile) envProfile.value = ex.profile
+    const auto = data.automation || {}
+    skillsDefault.value = { pre: [...(auto.skills?.default?.pre || [])], post: [...(auto.skills?.default?.post || [])] }
+    skillsDevices.value = { ...(auto.skills?.devices || {}) }
+    const figma = data.automation?.figma || {}
+    figmaForm.value = {
+      file_url: figma.file_url || '',
+      file_key: figma.file_key || '',
+      last_sync_at: figma.last_sync_at || '',
+      pages_summary: figma.pages_summary || [],
+      logic_applied_at: figma.logic_applied_at || '',
+    }
+    normalizeFigmaForm()
+    if (section.value === 'icons') await loadIconTargets()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const loadDevices = async () => {
+  try {
+    let list = []
+    try {
+      list = normalizeDevices(await wsGetDeviceList())
+    } catch {
+      initWebSocket()
+      list = normalizeDevices(await getDeviceList())
+    }
+    devices.value = list
+  } catch {
+    devices.value = []
+  }
+}
+
+const loadIconTargets = async () => {
+  const res = await listIconTargets(appId.value, {
+    page: iconPage.value,
+    page_size: iconPageSize.value,
+    keyword: iconKeyword.value,
+  })
+  const data = res?.data || {}
+  iconTargets.value = data.items || []
+  iconTotal.value = data.total || 0
+}
+
+const saveFigma = async () => {
+  saving.value = true
+  try {
+    await updateAppAutomationConfig(appId.value, { figma: figmaForm.value })
+    ElMessage.success('设计稿配置已保存')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+const openKnowledge = () => {
+  router.push({ name: 'SettingsHub', query: { tab: 'knowledge', appId: appId.value } })
+}
+
+const syncFigmaPreview = async () => {
+  if (!figmaForm.value.file_url?.trim()) return ElMessage.warning('请填写 Figma 文件链接')
+  if (!figmaTokenConfigured.value) {
+    ElMessage.warning('请先在「应用与环境 → 知识库」中配置 Figma Token')
+    return
+  }
+  normalizeFigmaForm()
+  figmaSyncing.value = true
+  try {
+    const res = await syncAppFigma(appId.value, {
+      file_url: figmaForm.value.file_url,
+      file_key: figmaForm.value.file_key,
+    })
+    const figma = res?.data?.figma || {}
+    figmaForm.value = {
+      file_url: figma.file_url || figmaForm.value.file_url,
+      file_key: figma.file_key || figmaForm.value.file_key,
+      last_sync_at: figma.last_sync_at || '',
+      pages_summary: figma.pages_summary || [],
+    }
+    const pages = res?.data?.page_count ?? 0
+    const icons = res?.data?.login_icons || {}
+    const iconN = (icons.created || 0) + (icons.updated || 0)
+    const extra = iconN > 0 ? `，并导入登录图标 ${iconN} 个` : ''
+    ElMessage.success(`设计稿已同步（${pages} 个页面${extra}）`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '同步失败')
+  } finally {
+    figmaSyncing.value = false
+  }
+}
+
+const applyFigmaLogic = async () => {
+  if (!figmaForm.value.file_url?.trim()) return ElMessage.warning('请填写 Figma 文件链接')
+  if (!figmaTokenConfigured.value) {
+    ElMessage.warning('请先在「应用与环境 → 知识库」配置 Figma Token（普通账号即可，无需 Developer 应用）')
+    return
+  }
+  normalizeFigmaForm()
+  if (!figmaForm.value.file_key) {
+    return ElMessage.warning('无法从链接解析 File Key，请检查 Figma 设计稿 URL')
+  }
+  figmaApplying.value = true
+  try {
+    const res = await applyFigmaAppLogic(appId.value, {
+      file_url: figmaForm.value.file_url,
+      file_key: figmaForm.value.file_key,
+      write_knowledge: true,
+      write_graph: true,
+    })
+    const data = res?.data || {}
+    const figma = data.figma || {}
+    figmaForm.value = {
+      file_url: figma.file_url || figmaForm.value.file_url,
+      file_key: figma.file_key || figmaForm.value.file_key,
+      last_sync_at: figma.last_sync_at || '',
+      pages_summary: figma.pages_summary || [],
+      logic_applied_at: figma.logic_applied_at || '',
+    }
+    const icons = data.login_icons || {}
+    const iconN = (icons.created || 0) + (icons.updated || 0)
+    const iconPart = iconN > 0 ? `、登录图标 ${iconN} 个（${icons.frame_name || '登录页'}）` : ''
+    ElMessage.success(
+      `已从 Figma 学习：${data.pages || 0} 页 → 图谱 ${data.nodes_upserted || 0} 节点、知识库 ${data.knowledge_written || 0} 条${iconPart}`
+    )
+    if (section.value === 'icons') await loadIconTargets()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '学习失败')
+  } finally {
+    figmaApplying.value = false
+  }
+}
+
+const saveAutomation = async () => {
+  saving.value = true
+  try {
+    await updateAppAutomationConfig(appId.value, {
+      env_profile: envProfile.value,
+      execution_env: { mode: executionEnvMode.value, profile: envProfile.value },
+      skills: { default: skillsDefault.value, devices: skillsDevices.value },
+    })
+    ElMessage.success('已保存')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+const saveIconRow = async (row) => {
+  if (!row.name?.trim()) return ElMessage.warning('请填写名称')
+  await saveIconTarget(appId.value, row)
+  ElMessage.success('已保存')
+  await loadIconTargets()
+}
+
+const addIconTarget = () => {
+  iconTargets.value.unshift({ id: '', name: '', x: 0, y: 0, w: 80, h: 80, image_url: '', note: '' })
+}
+
+const seedLoginIcons = async () => {
+  try {
+    const res = await seedLoginIconTemplates(appId.value)
+    const d = res?.data || {}
+    const n = (d.created || 0) + (d.updated || 0)
+    ElMessage.success(res?.msg || (n > 0 ? `已导入 ${n} 个登录图标` : '登录图标已就绪'))
+    await loadIconTargets()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '初始化失败')
+  }
+}
+
+const importLoginIconsFromFigma = async () => {
+  try {
+    const res = await seedLoginIconsFromFigma(appId.value)
+    ElMessage.success(res?.msg || '已从 Figma 导入登录图标')
+    await loadIconTargets()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || 'Figma 导入失败')
+  }
+}
+
+const removeIconTarget = async (row) => {
+  if (row.id) await deleteIconTarget(appId.value, row.id)
+  await loadIconTargets()
+}
+
+const onIconUpload = async (row, { file }) => {
+  const res = await uploadIconImage(appId.value, file)
+  row.image_url = res?.data?.image_url || ''
+  ElMessage.success('图片已上传')
+}
+
+const imgUrl = (path) => (!path ? '' : path.startsWith('http') ? path : `${staticBase}${path}`)
+
+const openGraphImport = async () => {
+  graphCandidates.value = (await getGraphIconCandidates(appId.value))?.data?.items || []
+  showGraphImport.value = true
+}
+
+const onGraphRowClick = async (row) => {
+  if (!row?.component_uid) return
+  await importGraphIcon(appId.value, row.component_uid)
+  showGraphImport.value = false
+  await loadIconTargets()
+}
+
+const saveEnvTab = async () => {
+  await saveAutomation()
+  if (projectId.value && envEditorRef.value) {
+    const ok = await envEditorRef.value.save()
+    if (ok) await load()
+  }
+}
+
+watch(section, (s) => {
+  if (s === 'skills') {
+    openKnowledge()
+    return
+  }
+  if (s === 'icons') loadIconTargets()
+})
+
+watch(() => appId.value, load)
+
+const syncAppTitlebar = () => {
+  nextTick(() => {
+    if (titlebarOwner.value === 'feishu-report') return
+    claimTitlebar(TITLEBAR_ID)
+  })
+}
+
+watch(section, () => syncAppTitlebar())
+
+onMounted(async () => {
+  syncAppTitlebar()
+  try {
+    const res = await getFigmaSettings()
+    figmaTokenConfigured.value = !!res?.data?.configured
+  } catch {
+    figmaTokenConfigured.value = false
+  }
+  await Promise.all([load(), loadDevices()])
+})
+
+onUnmounted(() => releaseTitlebar(TITLEBAR_ID))
+</script>
+
+<template>
+  <div class="settings-panel app-config-panel" :class="{ 'wide-panel': section === 'regression' }" v-loading="loading">
+    <Teleport to="#titlebar-center-portal">
+      <div v-if="titlebarOwner === TITLEBAR_ID" class="settings-titlebar-portal">
+        <el-button text class="portal-back-btn" @click="router.push({ name: 'SettingsHub' })">← 应用与环境</el-button>
+        <div class="portal-title-block">
+          <span class="portal-title">{{ appName }}</span>
+          <span class="portal-meta">{{ projectName ? `${projectName} · ` : '' }}应用级自动化与执行策略</span>
+        </div>
+        <el-button
+          v-if="section === 'env'"
+          type="primary"
+          size="small"
+          :loading="saving || envEditorRef?.saving"
+          @click="saveEnvTab"
+        >
+          保存
+        </el-button>
+        <el-button v-else-if="section === 'figma'" size="small" plain @click="openKnowledge">知识库 / Token</el-button>
+      </div>
+    </Teleport>
+
+    <el-tabs :model-value="section" @tab-change="switchTab" class="config-tabs">
+      <el-tab-pane v-for="t in tabs" :key="t.key" :label="t.label" :name="t.key" />
+    </el-tabs>
+
+    <div v-show="section === 'env'" class="tab-body">
+      <el-card shadow="never" class="card">
+        <h3>执行时如何切换环境</h3>
+        <el-form label-width="140px" style="max-width: 640px">
+          <el-form-item label="环境策略">
+            <el-radio-group v-model="executionEnvMode">
+              <el-radio label="fixed">固定 Profile（下方选择）</el-radio>
+              <el-radio label="project_default">跟随项目默认环境</el-radio>
+              <el-radio label="task_param">由任务/飞书参数指定</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="executionEnvMode === 'fixed'" label="执行 Profile">
+            <el-select v-model="envProfile" style="width: 160px">
+              <el-option v-for="p in ENV_PROFILES" :key="p.key" :label="p.label" :value="p.key" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="当前包名">
+            <span class="mono">{{ packageName || '未配置' }}</span>
+          </el-form-item>
+        </el-form>
+        <p class="hint">飞书回归、Copilot 执行时会按此策略解析包名并拉起应用到前台。</p>
+      </el-card>
+
+      <el-card v-if="projectId" shadow="never" class="card env-config-card">
+        <h3>项目环境配置</h3>
+        <p class="hint">维护各 Profile 下的 Android 包名、iOS Bundle、Web 地址（原项目列表「环境配置」）。</p>
+        <ProjectEnvEditor ref="envEditorRef" :project-id="projectId" @saved="load" />
+      </el-card>
+      <el-alert v-else type="info" show-icon :closable="false" class="env-missing">
+        未关联项目 ID，请从「应用与环境 → 项目与应用」进入应用配置以编辑环境。
+      </el-alert>
+    </div>
+
+    <div v-show="section === 'icons'" class="tab-body">
+      <el-card shadow="never" class="card">
+        <div class="card-head">
+          <span>无字图标（{{ iconTotal }}）</span>
+          <div class="actions">
+            <el-input v-model="iconKeyword" size="small" placeholder="搜索" style="width: 120px" @keyup.enter="loadIconTargets" />
+            <el-button size="small" @click="importLoginIconsFromFigma">从 Figma 导入</el-button>
+            <el-button size="small" @click="seedLoginIcons">登录图标模板</el-button>
+            <el-button size="small" @click="openGraphImport">图谱导入</el-button>
+            <el-button size="small" @click="router.push(`/report/editor/${appId}`)">打开图谱</el-button>
+            <el-button size="small" type="primary" @click="addIconTarget">新建</el-button>
+          </div>
+        </div>
+        <p class="hint">
+          执行成功的无字目标会自动入库成为图标；此处用于人工补录或从 Figma 图谱导入。
+          「从 Figma 导入」会读取设计稿中登录/注册页底部图标（需已配置 Figma 链接与 Token）。
+          「登录图标模板」在无 Figma 时写入占位条目；执行失败时仍可人工确认标定。
+          「上传」仅用于上传一张裁剪好的小图，方便在图标库中预览，并不会触发重新学习。
+        </p>
+        <el-table :data="iconTargets" border size="small" class="icon-table">
+          <el-table-column label="图" width="80">
+            <template #default="{ row }">
+              <div class="icon-thumb">
+                <img v-if="row.image_url" :src="imgUrl(row.image_url)" class="thumb" />
+                <el-upload
+                  class="thumb-upload"
+                  :show-file-list="false"
+                  :http-request="(o) => onIconUpload(row, o)"
+                >
+                  <el-button link size="small">上传</el-button>
+                </el-upload>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="名称" width="210">
+            <template #default="{ row }">
+              <el-input v-model="row.name" size="small" style="width: 180px" />
+            </template>
+          </el-table-column>
+          <el-table-column label="区域" width="260">
+            <template #default="{ row }">
+              <el-input-number v-model="row.x" size="small" :min="0" controls-position="right" />
+              <el-input-number v-model="row.y" size="small" :min="0" controls-position="right" />
+              <el-input-number v-model="row.w" size="small" :min="0" controls-position="right" />
+              <el-input-number v-model="row.h" size="small" :min="0" controls-position="right" />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="saveIconRow(row)">存</el-button>
+              <el-button link type="danger" @click="removeIconTarget(row)">删</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-pagination
+          v-if="iconTotal > iconPageSize"
+          layout="prev, pager, next, total"
+          :total="iconTotal"
+          :page-size="iconPageSize"
+          v-model:current-page="iconPage"
+          @current-change="loadIconTargets"
+        />
+      </el-card>
+    </div>
+
+    <div v-show="section === 'logic'" class="tab-body logic-tab">
+      <el-card shadow="never" class="card logic-graph-card">
+        <h3>应用逻辑（图谱）</h3>
+        <p class="hint">页面跳转、共享组件、骨架识别等在应用图谱中维护。</p>
+        <el-button type="primary" @click="router.push(`/report/editor/${appId}`)">打开用例编排 / 应用图谱</el-button>
+      </el-card>
+      <KnowledgePanel embedded app-only :app-id="appId" :app-name="appName" />
+    </div>
+
+    <div v-show="section === 'regression'" class="tab-body">
+      <FeishuRegressionPanel :app-id="appId" :app-name="appName" embedded />
+    </div>
+
+    <div v-show="section === 'figma'" class="tab-body">
+      <el-card shadow="never" class="card">
+        <h3>Figma 设计稿 · 应用逻辑学习</h3>
+        <p class="hint">
+          使用 Figma 设计稿学习页面结构与文案，无需上传真机截图训练骨架。
+          只需普通 Figma 账号的 Personal Access Token（
+          <el-link type="primary" @click="openKnowledge">知识库</el-link>
+          中配置，勾选 file_content:read，不需要 Developer OAuth 应用）。
+          <el-tag :type="figmaTokenConfigured ? 'success' : 'warning'" size="small" style="margin-left: 6px">
+            {{ figmaTokenConfigured ? 'Token 已配置' : 'Token 未配置' }}
+          </el-tag>
+        </p>
+        <el-form label-width="120px" style="max-width: 640px">
+          <el-form-item label="文件链接">
+            <el-input
+              v-model="figmaForm.file_url"
+              placeholder="https://www.figma.com/design/..."
+              @blur="normalizeFigmaForm"
+            />
+          </el-form-item>
+          <el-form-item label="File Key">
+            <el-input
+              v-model="figmaForm.file_key"
+              placeholder="留空即可，从链接自动解析（勿填 figd_ Token）"
+              readonly
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button
+              type="primary"
+              :loading="figmaApplying"
+              :disabled="figmaSyncing"
+              @click="applyFigmaLogic"
+            >
+              从 Figma 学习应用逻辑
+            </el-button>
+            <el-button
+              plain
+              :loading="figmaSyncing"
+              :disabled="figmaApplying"
+              @click="syncFigmaPreview"
+            >
+              仅同步预览
+            </el-button>
+            <el-button plain @click="saveFigma">保存链接</el-button>
+          </el-form-item>
+        </el-form>
+        <ul v-if="figmaForm.pages_summary?.length" class="figma-summary">
+          <li v-for="(line, i) in figmaForm.pages_summary" :key="i">{{ line }}</li>
+        </ul>
+        <p v-if="figmaForm.logic_applied_at" class="hint">逻辑已写入：{{ figmaForm.logic_applied_at }}</p>
+        <p v-else-if="figmaForm.last_sync_at" class="hint">上次同步：{{ figmaForm.last_sync_at }}</p>
+      </el-card>
+    </div>
+
+    <el-dialog v-model="showGraphImport" title="从图谱导入" width="520px">
+      <el-table :data="graphCandidates" size="small" max-height="360" @row-click="onGraphRowClick">
+        <el-table-column prop="label" label="组件" />
+      </el-table>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.app-config-panel { padding-top: 0; }
+.config-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
+.tab-body { margin-top: 8px; }
+.env-config-card { margin-top: 0; }
+.env-missing { margin-top: 12px; }
+.card { border: 1px solid #e5e7eb; margin-bottom: 16px; }
+.logic-tab .logic-graph-card { margin-bottom: 20px; }
+.card h3 { margin: 0 0 12px; font-size: 15px; }
+.hint { color: #6b7280; font-size: 12px; }
+.mono { font-family: ui-monospace, monospace; font-size: 13px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.thumb { width: 40px; height: 40px; object-fit: contain; }
+.figma-summary { margin: 12px 0 0; padding-left: 20px; font-size: 12px; color: #4b5563; }
+.icon-table :deep(.el-table__body-wrapper) { overflow-x: auto; }
+.icon-thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.thumb-upload { font-size: 11px; }
+</style>

@@ -33,6 +33,24 @@ export const copilotCommands = [
     handler: (router) => router.push({ name: 'Timeline' }),
   },
   {
+    id: 'nav.settings',
+    title: '设置',
+    keywords: ['settings', '设置', '配置'],
+    handler: (router) => router.push({ name: 'SettingsHub' }),
+  },
+  {
+    id: 'nav.settings.env',
+    title: '设置 · 项目环境',
+    keywords: ['env', '环境', '包名'],
+    handler: (router) => router.push({ name: 'SettingsProjects' }),
+  },
+  {
+    id: 'nav.settings.apps',
+    title: '设置 · 应用配置',
+    keywords: ['app config', '应用配置', 'skills'],
+    handler: (router) => router.push({ name: 'SettingsApps' }),
+  },
+  {
     id: 'exec.open_app',
     title: '打开应用（示例）',
     keywords: ['open', '启动', '打开'],

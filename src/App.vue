@@ -8,7 +8,7 @@
     </div>
 
     <!-- 对话流页使用全屏界面，隐藏底部浮层 -->
-    <CopilotWidget v-if="!isDialogueRoute" />
+    <CopilotWidget v-if="!isDialogueRoute && !reportOverlayOpen" />
     
     <!-- Global Overlays -->
     <CommandPalette ref="commandPaletteRef" />
@@ -26,6 +26,7 @@ import TitleBar from './components/Core/TitleBar.vue'
 import CommandPalette from './components/Core/CommandPalette.vue'
 import CopilotWidget from './components/Ai/CopilotWidget.vue'
 import { initWebSocket } from '@/api/mWebSocket'
+import { reportOverlayOpen } from '@/composables/useOverlayState'
 
 const route = useRoute()
 const commandPaletteRef = ref(null)
@@ -76,7 +77,7 @@ body {
 
 .content-area {
   width: 100%;
-  height: 100%;
+  height: 100vh;
   padding-top: 50px; /* Space for TitleBar */
   box-sizing: border-box;
   position: relative;

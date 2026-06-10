@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElIcon, ElButton, ElInput, ElSelect, ElOption, ElTag, ElMessage } from 'element-plus'
-import { Promotion, MagicStick, User, Monitor, Calendar, Clock, ChatDotRound, Grid } from '@element-plus/icons-vue'
+import { Promotion, MagicStick, User, Monitor, Calendar, Clock, ChatDotRound, Grid, Setting } from '@element-plus/icons-vue'
 import { copilotChat, copilotExecute } from '@/api/copilot'
 import { initWebSocket } from '@/api/mWebSocket'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
@@ -46,6 +46,10 @@ const navItems = [
   { name: 'DeviceManage', label: '设备', icon: Monitor, path: '/device' },
   { name: 'Schedule', label: '定时', icon: Calendar, path: '/schedule' },
   { name: 'Timeline', label: '时间线', icon: Clock, path: '/timeline' },
+]
+
+const bottomNavItems = [
+  { name: 'SettingsHub', label: '设置', icon: Setting, path: '/settings/hub' },
 ]
 
 const filteredSlash = computed(() => {
@@ -274,6 +278,18 @@ onUnmounted(() => {
         <el-icon><component :is="item.icon" /></el-icon>
         <span>{{ item.label }}</span>
       </button>
+      <div class="nav-spacer" />
+      <button
+        v-for="item in bottomNavItems"
+        :key="item.name"
+        type="button"
+        class="nav-btn nav-btn-bottom"
+        :class="{ active: $route.name === item.name }"
+        @click="router.push({ name: item.name })"
+      >
+        <el-icon><component :is="item.icon" /></el-icon>
+        <span>{{ item.label }}</span>
+      </button>
     </aside>
 
     <main class="main-panel">
@@ -360,10 +376,24 @@ onUnmounted(() => {
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.85);
   border-right: 1px solid rgba(0, 0, 0, 0.06);
-  padding: 16px 10px;
+  padding: 16px 10px 20px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.nav-spacer {
+  flex: 1;
+  min-height: 24px;
+}
+
+.nav-btn-bottom {
+  margin-top: auto;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  padding-top: 12px;
 }
 
 .brand {

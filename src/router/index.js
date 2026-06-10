@@ -3,6 +3,7 @@ import {createRouter, createWebHashHistory} from 'vue-router'
 import { getNodeStatus } from '@/api/system'
 import { useAppStore } from '@/store/appStore'
 import { ElMessageBox } from 'element-plus'
+import { clearTitlebar } from '@/composables/useTitlebar'
 import ResourceList from '../views/ResourceList.vue'
 import WorkflowEditor from '../views/WorkflowEditor/index.vue'
 import DeviceManage from '../views/DeviceManage/index.vue'
@@ -17,7 +18,11 @@ const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap
 const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
 const Dialogue = () => import('../views/Dialogue/index.vue')
-
+const SettingsLayout = () => import('../views/Settings/index.vue')
+const SettingsFeishu = () => import('../views/Settings/FeishuBotsPanel.vue')
+const SettingsHub = () => import('../views/Settings/AppsHubPage.vue')
+const SettingsProjectEnv = () => import('../views/Settings/ProjectEnvPage.vue')
+const SettingsAppConfig = () => import('../views/Settings/AppConfigPage.vue')
 const routes = [
     {
         path: '/login',
@@ -28,6 +33,44 @@ const routes = [
     {
         path: '/',
         redirect: '/dialogue'
+    },
+    {
+        path: '/settings',
+        component: SettingsLayout,
+        meta: { title: '设置', requiresAuth: true },
+        redirect: '/settings/hub',
+        children: [
+            { path: 'hub', name: 'SettingsHub', component: SettingsHub, meta: { title: '应用与环境' } },
+            { path: 'feishu', name: 'SettingsFeishu', component: SettingsFeishu, meta: { title: '飞书机器人' } },
+            { path: 'knowledge', name: 'SettingsKnowledge', redirect: { name: 'SettingsHub', query: { tab: 'knowledge' } } },
+            { path: 'projects', redirect: '/settings/hub' },
+            { path: 'apps', redirect: '/settings/hub' },
+            { path: 'projects/:projectId/env', name: 'SettingsProjectEnv', component: SettingsProjectEnv, meta: { title: '项目环境' } },
+            {
+                path: 'apps/:appId',
+                redirect: (to) => `/settings/apps/${to.params.appId}/env`,
+            },
+            {
+                path: 'apps/:appId/:section',
+                name: 'SettingsAppConfig',
+                component: SettingsAppConfig,
+                meta: { title: '应用配置' },
+            },
+        ],
+    },
+    {
+        path: '/report/feishu/:appId',
+        redirect: (to) => ({
+            path: `/settings/apps/${to.params.appId}/regression`,
+            query: to.query,
+        }),
+    },
+    {
+        path: '/report/app/:appId/automation',
+        redirect: (to) => ({
+            path: `/settings/apps/${to.params.appId}/env`,
+            query: to.query,
+        }),
     },
     {
         path: '/dialogue',
@@ -104,6 +147,8 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, from, next) => {
+    if (to.fullPath !== from.fullPath) clearTitlebar()
+
     // In a real app, Pinia is available here because `app.use(router)` is called after `app.use(pinia)`.
     const appStore = useAppStore()
 

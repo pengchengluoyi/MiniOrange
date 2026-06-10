@@ -66,7 +66,8 @@ const handleClose = () => window.electronAPI?.close()
   height: 100%;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  min-width: 0;
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
