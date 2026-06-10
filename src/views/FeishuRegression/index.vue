@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listFeishuBots } from '@/api/settings'
@@ -18,6 +18,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import { getBaseUrl } from '@/utils/config'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
+import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
 
 const staticBase = getBaseUrl()
 const imgUrl = (path) => {
@@ -245,20 +246,10 @@ const selectCaseLog = (row) => {
   selectedCaseForLog.value = row
 }
 
-const phaseLabel = (phase) => {
-  const map = {
-    foreground: '拉起应用',
-    precondition: '前置条件',
-    skill_pre: '前置 Skills',
-    startup_overlay: '关闭启动弹层',
-    system_permission: '系统权限',
-    plan: '步骤拆解',
-    execute: '执行动作',
-    skill_post: '后置 Skills',
-    verify: '预期校验',
-    case_step: '用例步骤',
-  }
-  return map[phase] || phase
+const clearRunState = () => {
+  lastRun.value = null
+  selectedCaseForLog.value = null
+  expandedRunId.value = ''
 }
 
 const statusTag = (status) => {
@@ -352,6 +343,8 @@ const loadBots = async () => {
 onMounted(async () => {
   await Promise.all([loadConfig(), loadDevices(), loadBots(), loadCachedCases(), loadRunHistory()])
 })
+
+onBeforeUnmount(clearRunState)
 </script>
 
 <template>
@@ -508,75 +501,24 @@ onMounted(async () => {
             </el-table>
           </el-col>
           <el-col :span="14">
-            <div v-if="selectedCaseForLog" class="exec-log-panel">
-              <h3 class="log-title">{{ selectedCaseForLog.name }}</h3>
-              <p v-if="selectedCaseForLog.precondition_raw" class="log-command">
-                前置条件：{{ selectedCaseForLog.precondition_raw }}
-              </p>
-              <p class="log-command">指令：{{ selectedCaseForLog.command || '—' }}</p>
-
-              <div
-                v-for="(block, bi) in selectedCaseForLog.execution_trace || []"
-                :key="bi"
-                class="trace-block"
-              >
-                <div class="trace-head">
-                  <span class="trace-phase">{{ phaseLabel(block.phase) }}</span>
-                  <span v-if="block.command" class="trace-cmd">{{ block.command }}</span>
-                </div>
-
-                <template v-if="block.plan_log?.length">
-                  <div v-for="(e, ei) in block.plan_log" :key="'p' + ei" class="log-entry plan">
-                    <span class="log-type">Plan</span>
-                    <span v-if="e.type === 'command'">{{ e.text }}</span>
-                    <span v-else-if="e.type === 'planned_step'">
-                      {{ e.index + 1 }}. {{ e.summary }} <code>{{ e.kind }}</code>
-                    </span>
-                    <span v-else>{{ e.text }}</span>
-                  </div>
-                </template>
-
-                <img
-                  v-if="block.screenshot_before"
-                  :src="imgUrl(block.screenshot_before)"
-                  class="log-shot"
-                  alt="执行前"
-                />
-
-                <template v-if="block.execute_log?.length">
-                  <div v-for="(e, ei) in block.execute_log" :key="'e' + ei" class="log-entry" :class="{ fail: !e.ok }">
-                    <span class="log-type">{{ e.ok ? '✓' : '✗' }} Action</span>
-                    <span>{{ e.summary }}</span>
-                    <span v-if="e.method" class="muted">[{{ e.method }}]</span>
-                    <span v-if="e.duration_ms != null" class="timing">{{ e.duration_ms }} ms</span>
-                    <span v-if="e.started_at" class="muted">{{ e.started_at }}</span>
-                    <div v-if="e.msg" class="log-msg">{{ e.msg }}</div>
-                    <img v-if="e.screenshot_after" :src="imgUrl(e.screenshot_after)" class="log-shot" alt="步骤后" />
-                  </div>
-                </template>
-
-                <template v-if="block.entries?.length">
-                  <div
-                    v-for="(e, ei) in block.entries"
-                    :key="'v' + ei"
-                    class="log-entry"
-                    :class="{ fail: e.ok === false }"
-                  >
-                    <span class="log-type">{{ e.ok === false ? '✗' : '✓' }}</span>
-                    <span>{{ e.text || e.reason }}</span>
-                    <div v-if="e.msg" class="log-msg">{{ e.msg }}</div>
-                  </div>
-                </template>
-              </div>
-
-              <div v-if="!(selectedCaseForLog.execution_trace || []).length" class="empty-log">
-                暂无结构化日志（旧版执行记录）
-                <div v-for="(s, i) in selectedCaseForLog.step_results || []" :key="i" class="step-line">
-                  {{ s.ok ? '✓' : '✗' }} {{ s.summary }}: {{ s.msg }}
-                </div>
-              </div>
+            <div v-if="selectedCaseForLog" class="replayer-wrap">
+              <ExecutionReplayer
+                :app-id="String(appId)"
+                :app-name="appName"
+                :trace="selectedCaseForLog.execution_trace || []"
+                :step-results="selectedCaseForLog.step_results || []"
+                :case-name="selectedCaseForLog.name"
+                :command="selectedCaseForLog.command"
+                :steps-raw="selectedCaseForLog.steps_raw"
+                :expected-raw="selectedCaseForLog.expected_raw"
+                :step-lines="selectedCaseForLog.step_lines || []"
+                :expected-lines="selectedCaseForLog.expected_lines || []"
+                :precondition-raw="selectedCaseForLog.precondition_raw || ''"
+                :case-duration-ms="selectedCaseForLog.duration_ms"
+                :run-duration-ms="lastRun?.duration_ms"
+              />
             </div>
-            <el-empty v-else description="点击左侧用例查看执行日志" />
+            <el-empty v-else description="点击左侧用例查看执行回放" />
           </el-col>
         </el-row>
         <el-empty v-else description="执行后将展示 Midscene 风格的步骤拆解与动作日志（存服务端）" />
@@ -597,6 +539,8 @@ onMounted(async () => {
         <img
           v-if="pendingClarification.screenshot"
           :src="imgUrl(pendingClarification.screenshot)"
+          loading="lazy"
+          decoding="async"
           class="clarify-shot"
           alt="当前屏幕"
         />
@@ -734,6 +678,14 @@ onMounted(async () => {
 }
 .result-layout {
   margin-top: 8px;
+}
+.replayer-wrap {
+  min-height: 520px;
+  max-height: 72vh;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #0f172a;
 }
 .exec-log-panel {
   background: #fff;

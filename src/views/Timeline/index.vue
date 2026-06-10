@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, reactive, computed, watch } from 'vue'
 import { ElMessage, ElCard, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElIcon, ElEmpty, vLoading, ElSlider } from 'element-plus'
 import { Refresh, Back, Check, VideoPlay, VideoPause, Aim, Mouse, Reading, Close, Connection } from '@element-plus/icons-vue'
 import { initWebSocket, wsGetFile, wsGetTimelineList, wsGetTimelineDetail } from '@/api/mWebSocket'
+import { useBlobUrlCache } from '@/composables/useBlobUrlCache'
 
 // ================== 列表页状态 ==================
 const loading = ref(false)
@@ -15,7 +16,12 @@ const detailLoading = ref(false)
 const detailList = ref([]) // 所有步骤
 const currentRunId = ref('')
 const activeStepIndex = ref(0) // 当前选中的步骤索引
-const screenshotUrlMap = reactive({}) // path -> url
+const {
+  map: screenshotUrlMap,
+  set: setScreenshotUrl,
+  has: hasScreenshotUrl,
+  clear: clearScreenshotUrls,
+} = useBlobUrlCache(48)
 const currentImgNaturalSize = ref({ w: 0, h: 0 })
 const isPlaying = ref(false)
 let playTimer = null
@@ -309,6 +315,7 @@ const fetchData = async () => {
 
 // 进入详情视图
 const handleDetail = async (row) => {
+  clearScreenshotUrls()
   currentRunId.value = row.run_id
   showDetailDashboard.value = true // 切换视图
   detailLoading.value = true
@@ -353,15 +360,15 @@ const dataURLtoBlobURL = (dataurl) => {
 const loadScreenshot = async (rawPath) => {
   const path = getScreenshotPath(rawPath)
   if (!path) return
-  if (screenshotUrlMap[path]) return
+  if (hasScreenshotUrl(path)) return
   if (pendingScreenshots.has(path)) return // 🔥 如果正在加载中，跳过
 
   // 如果已经是 base64 或 http 链接，直接使用
   if (path.startsWith('data:') || path.startsWith('http')) {
     if (path.startsWith('data:')) {
-      screenshotUrlMap[path] = dataURLtoBlobURL(path)
+      setScreenshotUrl(path, dataURLtoBlobURL(path))
     } else {
-      screenshotUrlMap[path] = path
+      setScreenshotUrl(path, path)
     }
     return
   }
@@ -399,7 +406,7 @@ const loadScreenshot = async (rawPath) => {
         }
         url = dataURLtoBlobURL(dataUrl)
       }
-      screenshotUrlMap[path] = url
+      if (url) setScreenshotUrl(path, url)
     }
   } catch (e) { console.error(e) } finally {
     pendingScreenshots.delete(path)
@@ -411,6 +418,7 @@ const goBack = () => {
   showDetailDashboard.value = false
   pause()
   detailList.value = []
+  clearScreenshotUrls()
 }
 
 // 辅助：获取图标
@@ -433,7 +441,7 @@ const onImgLoad = (e) => {
 
 // 🔥 懒加载观察逻辑
 const observeItem = (el, path) => {
-  if (el && path && !screenshotUrlMap[path]) {
+  if (el && path && !hasScreenshotUrl(path)) {
     el.dataset.path = path
     if (imageObserver) imageObserver.observe(el)
   }
@@ -461,6 +469,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   pause()
+  clearScreenshotUrls()
   if (imageObserver) {
     imageObserver.disconnect()
     imageObserver = null

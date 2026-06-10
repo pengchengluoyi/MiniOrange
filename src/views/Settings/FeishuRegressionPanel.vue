@@ -286,7 +286,15 @@ watch(activeTab, (tab) => {
 })
 
 onMounted(init)
+const clearRunState = () => {
+  lastRun.value = null
+  selectedCaseForLog.value = null
+  expandedRunId.value = ''
+  resultView.value = 'list'
+}
+
 onUnmounted(() => {
+  clearRunState()
   releaseTitlebar(TITLEBAR_ID)
   document.body.style.overflow = ''
   reportOverlayOpen.value = false

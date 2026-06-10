@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getBaseUrl } from '@/utils/config'
@@ -708,6 +708,32 @@ const timelineShots = computed(() =>
 
 const current = computed(() => flatSteps.value[activeIndex.value] || null)
 
+const currentFilmstripIndex = computed(() => {
+  const shots = timelineShots.value
+  if (!shots.length) return 0
+  const cur = current.value?.screenshot
+  if (!cur) return 0
+  const src = imgUrl(cur)
+  const idx = shots.findIndex((t) => t.src === src)
+  return idx >= 0 ? idx : 0
+})
+
+/** 胶片条仅渲染当前步附近截图，避免一次解码全部步骤图 */
+const visibleFilmstripShots = computed(() => {
+  const shots = timelineShots.value
+  if (shots.length <= 5) {
+    return shots.map((t, i) => ({ ...t, globalIndex: i }))
+  }
+  const center = currentFilmstripIndex.value
+  const radius = 2
+  const start = Math.max(0, center - radius)
+  const end = Math.min(shots.length - 1, center + radius)
+  return shots.slice(start, end + 1).map((t, i) => ({
+    ...t,
+    globalIndex: start + i,
+  }))
+})
+
 const findStepAfterFallback = (step) => {
   if (!step?.stepNo) return ''
   const idx = flatSteps.value.findIndex((s) => s === step)
@@ -1175,6 +1201,10 @@ const togglePlay = () => {
     activeIndex.value = idx
   }, 1500)
 }
+
+onUnmounted(() => {
+  stopPlay()
+})
 </script>
 
 <template>
@@ -1227,14 +1257,14 @@ const togglePlay = () => {
     <section class="replayer-center">
       <div v-if="timelineShots.length > 1" class="filmstrip">
         <button
-          v-for="(t, ti) in timelineShots"
-          :key="ti"
+          v-for="t in visibleFilmstripShots"
+          :key="t.globalIndex"
           type="button"
           class="film-thumb"
           :class="{ active: current?.screenshot && imgUrl(current.screenshot) === t.src }"
           @click="selectStep(flatSteps.findIndex((s) => s.screenshot && imgUrl(s.screenshot) === t.src))"
         >
-          <img :src="t.src" alt="" />
+          <img :src="t.src" alt="" loading="lazy" decoding="async" />
         </button>
       </div>
 
@@ -1278,6 +1308,8 @@ const togglePlay = () => {
                   :src="imgUrl(current.screenshot_before)"
                   class="screen-img-fit"
                   alt="before"
+                  loading="lazy"
+                  decoding="async"
                 />
                 <div v-if="overlayStyle" class="mark-layer">
                   <template v-if="dimPanels">
@@ -1317,6 +1349,8 @@ const togglePlay = () => {
                   :src="imgUrl(effectiveAfterScreenshot)"
                   class="screen-img-fit"
                   alt="after"
+                  loading="lazy"
+                  decoding="async"
                 />
               </div>
               <div class="ba-label">After</div>
@@ -1327,12 +1361,12 @@ const togglePlay = () => {
               <span class="hint-text">输入前后画面相同（可能输入过快或截图为动作结束后统一采集）</span>
             </div>
             <div class="screen-frame" :style="screenFrameStyle">
-              <img :src="imgUrl(current.screenshot_after)" class="screen-img-fit" alt="screenshot" />
+              <img :src="imgUrl(current.screenshot_after)" class="screen-img-fit" alt="screenshot" loading="lazy" decoding="async" />
             </div>
           </template>
           <template v-else>
             <div class="screen-frame" :style="screenFrameStyle">
-              <img :src="currentScreenshot" class="screen-img-fit" alt="screenshot" />
+              <img :src="currentScreenshot" class="screen-img-fit" alt="screenshot" loading="lazy" decoding="async" />
               <div v-if="overlayStyle && current.role === 'action'" class="mark-layer">
                 <template v-if="dimPanels">
                   <div class="dim-panel" :style="dimPanels.top" />

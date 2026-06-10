@@ -125,6 +125,7 @@ import { Handle, useVueFlow } from '@vue-flow/core'
 import { getIcon } from '../config/iconMap'
 import {scanComponentsApi} from '@/api/workflow'
 import { wsGetFile } from '@/api/mWebSocket'
+import { useBlobUrlCache } from '@/composables/useBlobUrlCache'
 import ResultNode from '@/views/WorkflowEditor/components/ResultNode.vue'
 
 const props = defineProps(['id', 'data', 'label', 'selected'])
@@ -337,14 +338,18 @@ const formatTooltip = (val) => {
 }
 
 // --- 截图预览逻辑 ---
-const screenshotCache = ref({}) // path -> url
+const {
+  map: screenshotCache,
+  set: setScreenshotCache,
+  has: hasScreenshotCache,
+} = useBlobUrlCache(16)
 
 const loadOneScreenshot = async (path) => {
   if (!path) return
-  if (screenshotCache.value[path]) return
+  if (hasScreenshotCache(path)) return
 
   if (path.startsWith('data:') || path.startsWith('http')) {
-    screenshotCache.value[path] = path
+    setScreenshotCache(path, path)
     return
   }
 
@@ -365,7 +370,7 @@ const loadOneScreenshot = async (path) => {
       } else if (typeof data === 'string') {
         url = data.startsWith('data:') ? data : `data:image/png;base64,${data}`
       }
-      if (url) screenshotCache.value[path] = url
+      if (url) setScreenshotCache(path, url)
     }
   } catch (e) {
     // console.error('Failed to load screenshot in CustomNode', e)
@@ -396,7 +401,7 @@ const getInteractionLabel = (id) => {
 
 const getThumbStyle = (interaction) => {
   const path = interaction?.screenshot || props.data?.screenshot
-  const url = screenshotCache.value[path]
+  const url = screenshotCache[path]
 
   if (!url || !interaction || !interaction.w || !interaction.h) return { display: 'none' }
 
