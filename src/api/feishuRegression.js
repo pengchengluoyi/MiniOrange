@@ -16,7 +16,7 @@ export const parseFeishuUrl = (docUrl) =>
   request({ url: '/feishu/parse-url', method: 'post', data: { doc_url: docUrl } })
 
 export const runFeishuRegression = (data) =>
-  request({ url: '/feishu/run', method: 'post', data, timeout: 600000 })
+  request({ url: '/feishu/run', method: 'post', data, timeout: 120000 })
 
 export const getFeishuRun = (runId) =>
   request({ url: `/feishu/run/${runId}`, method: 'get' })

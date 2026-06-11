@@ -31,6 +31,11 @@ const flatSteps = ref([])
 const activeIndex = ref(0)
 const playing = ref(false)
 const markStyle = ref('midscene')
+const showChannelOverlay = ref(true)
+const annotateMode = ref(false)
+const annotateRect = ref(null)
+const annotateDragging = ref(false)
+const annotateStart = ref(null)
 const savingIcon = ref(false)
 const analyzingFailure = ref(false)
 const savingKnowledge = ref(false)
@@ -59,6 +64,8 @@ const pushNode = (out, node) => {
 /** 操作步骤：Plan / Tap 同级；预期动作：Plan / Assert 同级 */
 const buildFlatSteps = () => {
   const out = []
+  const seenOperationKeys = new Set()
+  let preconditionShown = false
 
   const appendOperation = (op, ctx) => {
     if (!op) return
@@ -68,21 +75,28 @@ const buildFlatSteps = () => {
       thought_meta: op.thought_meta || {},
       knowledge_hints: op.knowledge_hints || [],
     }
-    pushNode(out, {
-      ...stepCtx,
-      depth: 0,
-      role: 'operation',
-      type: 'section',
-      title: `操作步骤 ${ctx.stepNo}`,
-      subtitle: op.text || op.command,
-      thought: op.thought,
-      thought_meta: op.thought_meta || {},
-      knowledge_hints: op.knowledge_hints || [],
-      plan_log: op.plan_log || [],
-      ok: op.ok,
-      screenshot: op.screenshot || '',
-      playable: !!op.screenshot,
-    })
+    const opKey = `op:${ctx.stepIndex ?? ctx.stepNo ?? 'x'}`
+    const skipSection = ctx.skipOperationSection || seenOperationKeys.has(opKey)
+    if (!ctx.skipOperationSection && !seenOperationKeys.has(opKey)) {
+      seenOperationKeys.add(opKey)
+    }
+    if (!skipSection) {
+      pushNode(out, {
+        ...stepCtx,
+        depth: 0,
+        role: 'operation',
+        type: 'section',
+        title: ctx.operationTitle || `操作步骤 ${ctx.stepNo}`,
+        subtitle: op.text || op.command,
+        thought: op.thought,
+        thought_meta: op.thought_meta || {},
+        knowledge_hints: op.knowledge_hints || [],
+        plan_log: op.plan_log || [],
+        ok: op.ok,
+        screenshot: op.screenshot || '',
+        playable: !!op.screenshot,
+      })
+    }
 
     const flat = op.flat_items && Array.isArray(op.flat_items) ? op.flat_items : null
     const plansByIndex = new Map()
@@ -98,11 +112,12 @@ const buildFlatSteps = () => {
         role: 'plan',
         type: 'plan',
         planIndex: plan.plan_index,
-        title: plan.title || `Plan - ${plan.summary}`,
+        title: plan.title || (plan.summary?.startsWith('守卫 ·') ? plan.summary : `Plan - ${plan.summary}`),
         subtitle: plan.summary,
         kind: plan.kind,
         ok: plan.ok,
         thought: plan.detail || {},
+        run_elapsed: plan.run_elapsed,
         screenshot: planShot,
         screenshot_before: planShot,
         screenshot_after: planShot,
@@ -127,7 +142,9 @@ const buildFlatSteps = () => {
         actionName: act.action_name,
         ok: act.ok,
         duration_ms: act.duration_ms,
-        screenshot: act.screenshot_before || act.screenshot_after || op.screenshot || '',
+        run_elapsed: act.run_elapsed,
+        run_elapsed_ms: act.run_elapsed_ms,
+        screenshot: act.screenshot_before || act.screenshot_after || (act.ok === false ? '' : op.screenshot || ''),
         screenshot_before: act.screenshot_before || '',
         screenshot_after: act.screenshot_after || '',
         target_rect: act.target_rect || null,
@@ -140,7 +157,10 @@ const buildFlatSteps = () => {
         page_context: act.page_context || null,
         suggest_icon_library: act.suggest_icon_library,
         icon_auto_learned: act.icon_auto_learned,
-        playable: true,
+        locate_debug: act.locate_debug || null,
+        used_anchor: act.locate_debug?.used_anchor || act.method === 'manual_anchor',
+        anchor_manual: act.locate_debug?.anchor_manual || act.method === 'manual_anchor',
+        playable: !!(act.screenshot_before || act.screenshot_after || op.screenshot),
       })
 
     if (flat) {
@@ -154,7 +174,10 @@ const buildFlatSteps = () => {
         const plan = plansByIndex.get(item.plan_index)
         if (!plan) continue
         if (item.type === 'plan') {
-          emitPlan(plan)
+          const planView = item.run_elapsed
+            ? { ...plan, run_elapsed: item.run_elapsed, run_elapsed_ms: item.run_elapsed_ms }
+            : plan
+          emitPlan(planView)
         } else if (item.type === 'action') {
           const acts = actionsByPlan.get(item.plan_index) || []
           let act = null
@@ -163,6 +186,14 @@ const buildFlatSteps = () => {
           }
           if (!act && item.gesture_index != null) {
             act = acts.find((a) => a.gesture_index === item.gesture_index)
+          }
+          if (!act && (item.phase || item.click_attempt != null || item.guard_round != null)) {
+            act = acts.find((a) => {
+              const phaseOk = !item.phase || (a.phase || '') === item.phase
+              const attemptOk = item.click_attempt == null || a.click_attempt === item.click_attempt
+              const guardOk = item.guard_round == null || a.guard_round === item.guard_round
+              return phaseOk && attemptOk && guardOk
+            })
           }
           if (!act) {
             const ord = actionOrd.get(item.plan_index) || 0
@@ -222,6 +253,7 @@ const buildFlatSteps = () => {
   }
 
   const appendPageTrace = (pageCtx, pageRecovery, ctx, screenshot = '') => {
+    if (pageRecovery?.overlay_guard_delegated) return
     const pageShot = screenshot || pageCtx?.screenshot || ''
     const label =
       pageCtx?.current_page_label || pageCtx?.label || pageCtx?.figma_best || ''
@@ -337,10 +369,49 @@ const buildFlatSteps = () => {
     }
   }
 
+  const lastActionFromOperation = (op) => {
+    if (!op) return null
+    let last = null
+    for (const plan of op.plans || []) {
+      for (const act of plan.actions || []) {
+        if ((act.kind || 'click') === 'click' || act.action_name === 'Tap') last = act
+      }
+    }
+    if (!last && op.execute_log?.length) {
+      last = [...op.execute_log].reverse().find((e) => (e.kind || 'click') === 'click') || null
+    }
+    return last
+  }
+
   const appendExpected = (exp, ctx) => {
-    if (!exp?.text) return
+    if (!exp?.text) {
+      if (exp?.skipped) {
+        const shot =
+          exp.screenshot
+          || ctx.lastActionScreenshot
+          || ''
+        pushNode(out, {
+          ...ctx,
+          depth: 0,
+          role: 'expected_action',
+          type: 'section',
+          title: `预期动作 ${ctx.stepNo}`,
+          subtitle: exp.msg || '本步无预期，已跳过校验',
+          ok: true,
+          skipped: true,
+          screenshot: shot,
+          screenshot_before: shot,
+          screenshot_after: shot,
+          screen_size: exp.screen_size || ctx.lastScreenSize || null,
+          locate_debug: exp.locate_debug || null,
+          playable: !!shot,
+        })
+      }
+      return
+    }
     const pageCtx = exp.page_context || {}
     const pageRecovery = exp.page_recovery || null
+    const verifyShot = exp.screenshot || pageCtx?.screenshot || ''
     pushNode(out, {
       ...ctx,
       depth: 0,
@@ -350,79 +421,83 @@ const buildFlatSteps = () => {
       subtitle: exp.text,
       thought: exp.thought,
       ok: exp.ok,
-      screenshot: exp.screenshot || '',
+      screenshot: verifyShot,
+      screenshot_before: verifyShot,
+      screenshot_after: verifyShot,
       page_context: pageCtx,
       page_recovery: pageRecovery,
-      playable: false,
+      playable: !!verifyShot,
     })
 
-    appendPageTrace(pageCtx, pageRecovery, ctx, exp.screenshot || '')
+    const expectedCtx = { ...ctx, actionText: exp.text || ctx.expectedText || ctx.actionText }
+    appendPageTrace(pageCtx, pageRecovery, expectedCtx, verifyShot)
 
-    const plans = exp.plans || []
-    for (const plan of plans) {
+    const emitVerifyPlan = (plan) => {
       pushNode(out, {
         ...ctx,
         depth: 1,
         role: 'plan',
         type: 'verify_plan',
         planIndex: plan.plan_index,
-        title: plan.title || `Plan - ${plan.summary}`,
+        title: plan.title || `Plan - ${plan.summary || plan.verify_text}`,
         subtitle: plan.verify_text || plan.summary,
+        thought: exp.thought,
         ok: plan.ok,
-        screenshot: exp.screenshot || '',
-        playable: false,
+        screenshot: verifyShot,
+        screenshot_before: verifyShot,
+        screenshot_after: verifyShot,
+        page_context: pageCtx,
+        playable: !!verifyShot,
       })
+    }
 
+    const emitVerifyAssert = (chk, planOk) => {
+      pushNode(out, {
+        ...ctx,
+        depth: 1,
+        role: 'verify',
+        type: 'verify',
+        title: chk.ok ? `Assert - ${chk.text}` : `Assert ✗ - ${chk.text}`,
+        subtitle: chk.text,
+        msg: chk.reason,
+        ok: chk.ok,
+        screenshot: verifyShot,
+        screenshot_before: verifyShot,
+        screenshot_after: verifyShot,
+        screen_preview: exp.screen_preview,
+        page_context: pageCtx,
+        page_recovery: pageRecovery,
+        playable: !!verifyShot,
+      })
+    }
+
+    const plans = exp.plans || []
+    for (const plan of plans) {
+      emitVerifyPlan(plan)
       for (const chk of plan.checks || []) {
-        pushNode(out, {
-          ...ctx,
-          depth: 1,
-          role: 'verify',
-          type: 'verify',
-          title: chk.ok ? `Assert - ${chk.text}` : `Assert ✗ - ${chk.text}`,
-          subtitle: chk.text,
-          msg: chk.reason,
-          ok: chk.ok,
-          screenshot: exp.screenshot || '',
-          screen_preview: exp.screen_preview,
-          page_context: pageCtx,
-          page_recovery: pageRecovery,
-          playable: true,
-        })
+        emitVerifyAssert(chk, plan.ok)
       }
     }
 
     if (!(exp.plans || []).length && (exp.checks || []).length) {
-      pushNode(out, {
-        ...ctx,
-        depth: 1,
-        role: 'plan',
-        type: 'verify_plan',
+      emitVerifyPlan({
+        plan_index: 0,
+        summary: exp.text,
+        verify_text: exp.text,
         title: `Plan - 校验${exp.text}`,
         ok: exp.ok,
-        playable: false,
       })
       for (const chk of exp.checks) {
-        pushNode(out, {
-          ...ctx,
-          depth: 2,
-          role: 'verify',
-          type: 'verify',
-          title: `Assert - ${chk.text}`,
-          msg: chk.reason,
-          ok: chk.ok,
-          screenshot: exp.screenshot || '',
-          page_context: pageCtx,
-          page_recovery: pageRecovery,
-          playable: true,
-        })
+        emitVerifyAssert(chk, exp.ok)
       }
     }
   }
 
   const appendPrecondition = (block) => {
+    if (preconditionShown) return
     const raw = props.preconditionRaw || block.subtitle || ''
     if (!raw && !(block.entries || []).length && !block.operation) return
+    preconditionShown = true
     const preCtx = {
       stepNo: 0,
       stepIndex: -4,
@@ -441,7 +516,7 @@ const buildFlatSteps = () => {
       playable: false,
     })
     if (block.operation) {
-      appendOperation(block.operation, preCtx)
+      appendOperation(block.operation, { ...preCtx, skipOperationSection: true })
     }
     for (const e of block.entries || []) {
       pushNode(out, {
@@ -481,11 +556,50 @@ const buildFlatSteps = () => {
     })
   }
 
+  const appendDevicePrep = (block) => {
+    const prepCtx = {
+      stepNo: 0,
+      stepIndex: -6,
+      actionText: block.title || '设备准备',
+      expectedText: '',
+    }
+    pushNode(out, {
+      ...prepCtx,
+      depth: 0,
+      role: 'device_prep',
+      type: 'section',
+      title: block.title || '设备准备',
+      subtitle: block.subtitle || '唤醒 / 解锁屏幕',
+      ok: block.ok !== false,
+      playable: false,
+    })
+    if (block.operation) {
+      appendOperation(block.operation, { ...prepCtx, skipOperationSection: true })
+    } else {
+      for (const e of block.execute_log || []) {
+        pushNode(out, {
+          ...prepCtx,
+          depth: 1,
+          role: 'action',
+          type: 'action',
+          title: e.summary || e.kind || '设备准备',
+          ok: e.ok !== false,
+          msg: e.msg,
+          screenshot: e.screenshot_before || e.screenshot_after || '',
+          screenshot_before: e.screenshot_before || '',
+          screenshot_after: e.screenshot_after || '',
+          playable: !!(e.screenshot_before || e.screenshot_after),
+        })
+      }
+    }
+  }
+
   const phaseRank = (phase) => {
     const order = {
       skill_pre: 10,
-      foreground: 20,
-      precondition: 25,
+      device_prep: 15,
+      precondition: 18,
+      foreground: 22,
       startup_overlay: 35,
       system_permission: 40,
       case_step: 100,
@@ -499,6 +613,49 @@ const buildFlatSteps = () => {
   for (const block of sortedTrace) {
     if (block.phase === 'precondition') {
       appendPrecondition(block)
+      continue
+    }
+    if (block.phase === 'device_prep') {
+      appendDevicePrep(block)
+      continue
+    }
+    if (block.phase === 'foreground') {
+      const fgCtx = {
+        stepNo: 0,
+        stepIndex: -5,
+        actionText: block.title || '拉起被测应用',
+        expectedText: '',
+      }
+      pushNode(out, {
+        ...fgCtx,
+        depth: 0,
+        role: 'foreground',
+        type: 'section',
+        title: block.title || '拉起被测应用',
+        subtitle: block.subtitle || block.entries?.[0]?.text || '',
+        ok: block.ok !== false,
+        playable: false,
+      })
+      if (block.operation) {
+        appendOperation(block.operation, { ...fgCtx, skipOperationSection: true })
+      } else {
+        for (const e of block.execute_log || []) {
+          pushNode(out, {
+            ...fgCtx,
+            depth: 1,
+            role: 'action',
+            type: 'action',
+            title: e.summary || e.kind || '拉起被测应用',
+            msg: e.msg,
+            ok: e.ok !== false,
+            run_elapsed: e.run_elapsed,
+            run_elapsed_ms: e.run_elapsed_ms,
+            duration_ms: e.duration_ms,
+            screenshot: e.screenshot_after || e.screenshot_before || '',
+            playable: !!(e.screenshot_after || e.screenshot_before),
+          })
+        }
+      }
       continue
     }
     if (block.phase === 'skill_pre' && (block.command || block.execute_log?.length)) {
@@ -594,8 +751,9 @@ const buildFlatSteps = () => {
       const startupCtx = {
         stepNo: 0,
         stepIndex: -1,
-        actionText: '关闭启动弹层',
+        actionText: '阻塞弹窗守卫（历史）',
         expectedText: '',
+        operationTitle: '阻塞弹窗守卫',
       }
       if (block.operation) {
         const pc = block.page_recovery?.current_page_before || {}
@@ -645,13 +803,18 @@ const buildFlatSteps = () => {
       expectedText: block.expected_text,
     }
     const op = block.operation || block.action
-    if (op?.page_recovery) {
-      const pc =
-        op.page_recovery.current_page_before || op.page_recovery.current_page_after || {}
-      appendPageTrace(pc, op.page_recovery, ctx, op.screenshot || pc?.screenshot || '')
-    }
     appendOperation(op, ctx)
-    appendExpected(block.expected_action || block.expected, ctx)
+    const lastAct = lastActionFromOperation(op)
+    appendExpected(block.expected_action || block.expected, {
+      ...ctx,
+      lastActionScreenshot:
+        (block.expected_action || block.expected)?.screenshot
+        || op?.screenshot
+        || lastAct?.screenshot_before
+        || lastAct?.screenshot_after
+        || '',
+      lastScreenSize: lastAct?.screen_size || null,
+    })
   }
 
   // 旧格式兼容
@@ -698,15 +861,35 @@ const buildFlatSteps = () => {
   activeIndex.value = first >= 0 ? first : 0
 }
 
-watch(() => [props.trace, props.stepResults], buildFlatSteps, { immediate: true, deep: true })
+watch(
+  () => [props.trace, props.stepResults, props.preconditionRaw],
+  buildFlatSteps,
+  { immediate: true, deep: true },
+)
 
 const timelineShots = computed(() =>
   flatSteps.value
     .filter((s) => s.playable && s.screenshot)
-    .map((s, i) => ({ id: i, src: imgUrl(s.screenshot), title: s.title })),
+    .map((s, i) => ({
+      id: i,
+      src: imgUrl(s.screenshot),
+      title: s.title,
+      run_elapsed: s.run_elapsed || '',
+    })),
 )
 
 const current = computed(() => flatSteps.value[activeIndex.value] || null)
+
+/** Information · Param：预期/校验节点展示预期文案，操作节点展示步骤指令 */
+const currentParamText = computed(() => {
+  const step = current.value
+  if (!step) return ''
+  const expectedRoles = ['expected_action', 'verify', 'page_identify', 'page_recovery', 'page_recovery_step']
+  if (expectedRoles.includes(step.role)) {
+    return step.expectedText || step.subtitle || ''
+  }
+  return step.actionText || step.expectedText || ''
+})
 
 const currentFilmstripIndex = computed(() => {
   const shots = timelineShots.value
@@ -759,14 +942,31 @@ const effectiveAfterScreenshot = computed(() => {
   return after
 })
 
+const rolesWithBeforeAfter = new Set([
+  'action',
+  'verify',
+  'expected_action',
+  'page_identify',
+  'verify_plan',
+])
+
+const screenshotForStep = (step) => {
+  if (!step) return ''
+  let shot = step.screenshot_before || step.screenshot || step.screenshot_after || ''
+  if (!shot && step.role === 'expected_action' && step.stepNo) {
+    const acts = flatSteps.value.filter(
+      (s) => s.stepNo === step.stepNo && s.role === 'action' && (s.screenshot || s.screenshot_before),
+    )
+    const last = acts[acts.length - 1]
+    shot = last?.screenshot_before || last?.screenshot || last?.screenshot_after || ''
+  }
+  return shot
+}
+
 const currentScreenshot = computed(() => {
   const step = current.value
   if (!step) return ''
-  // 对于动作节点，优先展示 before，右侧信息里仍然能看到 after
-  if (step.role === 'action') {
-    return imgUrl(step.screenshot_before || step.screenshot || step.screenshot_after || '')
-  }
-  return imgUrl(step.screenshot || '')
+  return imgUrl(screenshotForStep(step))
 })
 
 const screenFrameStyle = computed(() => {
@@ -1022,9 +1222,177 @@ const isAssertFalsePositive = computed(() => {
 
 const effectiveStepOk = (step) => {
   if (!step) return true
+  if (step.role === 'expected_action' && step.skipped) return true
   if (step.role === 'verify' && step.ok === true && stepOperationFailed(step)) return false
   return step.ok !== false
 }
+
+const CHANNEL_COLORS = {
+  clip: '#3b82f6',
+  ocr: '#22c55e',
+  hierarchy: '#a855f7',
+  gallery: '#f97316',
+  icon_row: '#06b6d4',
+  anchor: '#eab308',
+  toggle: '#f59e0b',
+}
+
+const showBeforeAfterCompare = computed(() => {
+  const step = current.value
+  if (!step || !rolesWithBeforeAfter.has(step.role)) return false
+  const before = step.screenshot_before || ''
+  const after = step.screenshot_after || ''
+  return !!(before && after)
+})
+
+const channelOverlaySource = computed(() => {
+  const dbg = current.value?.locate_debug
+  if (!dbg) return []
+  const rows = dbg.overlay?.length ? dbg.overlay : dbg.candidates || []
+  const seen = new Set()
+  const out = []
+  for (const c of rows) {
+    const sig = `${c.channel}:${c.cx}:${c.cy}:${c.w}:${c.h}`
+    if (seen.has(sig)) continue
+    seen.add(sig)
+    out.push(c)
+  }
+  return out
+})
+
+const channelOverlayItems = computed(() => {
+  const dbg = current.value?.locate_debug
+  const size = current.value?.screen_size || tapMarkMeta.value?.size
+  if (!channelOverlaySource.value.length || !size?.w || !size?.h || !showChannelOverlay.value) return []
+  return channelOverlaySource.value.map((c, i) => {
+    const w = Number(c.w) || 0
+    const h = Number(c.h) || 0
+    const cx = Number(c.cx) || 0
+    const cy = Number(c.cy) || 0
+    const left = Math.max(0, cx - w / 2)
+    const top = Math.max(0, cy - h / 2)
+    const color = CHANNEL_COLORS[c.channel] || '#64748b'
+    const iconId = (c.label || c.detail || c.channel || '').trim()
+    return {
+      key: `${c.channel}-${i}-${cx}-${cy}`,
+      channel: c.channel,
+      iconId,
+      hoverTitle: `${c.channel} · ${iconId} · raw ${(Number(c.raw_score) * 100).toFixed(0)}% · final ${(Number(c.final_score) * 100).toFixed(0)}%`,
+      rawScore: c.raw_score,
+      finalScore: c.final_score,
+      selected: !!c.selected,
+      color,
+      style: {
+        left: `${(left / size.w) * 100}%`,
+        top: `${(top / size.h) * 100}%`,
+        width: `${(w / size.w) * 100}%`,
+        height: `${(h / size.h) * 100}%`,
+        borderColor: color,
+      },
+      tagStyle: {
+        background: color,
+      },
+    }
+  })
+})
+
+const annotateOverlayStyle = computed(() => {
+  const r = annotateRect.value
+  const size = current.value?.screen_size || tapMarkMeta.value?.size
+  if (!r || !size?.w || !size?.h) return null
+  return {
+    left: `${(r.left / size.w) * 100}%`,
+    top: `${(r.top / size.h) * 100}%`,
+    width: `${(r.width / size.w) * 100}%`,
+    height: `${(r.height / size.h) * 100}%`,
+  }
+})
+
+const screenFrameRef = ref(null)
+
+const framePointToScreen = (evt) => {
+  const el = screenFrameRef.value
+  const size = current.value?.screen_size || tapMarkMeta.value?.size
+  if (!el || !size?.w || !size?.h) return null
+  const rect = el.getBoundingClientRect()
+  const x = ((evt.clientX - rect.left) / rect.width) * size.w
+  const y = ((evt.clientY - rect.top) / rect.height) * size.h
+  return { x: Math.round(x), y: Math.round(y) }
+}
+
+const onAnnotateDown = (evt) => {
+  if (!annotateMode.value) return
+  const p = framePointToScreen(evt)
+  if (!p) return
+  annotateDragging.value = true
+  annotateStart.value = p
+  annotateRect.value = { left: p.x, top: p.y, width: 0, height: 0 }
+}
+
+const onAnnotateMove = (evt) => {
+  if (!annotateDragging.value || !annotateStart.value) return
+  const p = framePointToScreen(evt)
+  if (!p) return
+  const s = annotateStart.value
+  annotateRect.value = {
+    left: Math.min(s.x, p.x),
+    top: Math.min(s.y, p.y),
+    width: Math.abs(p.x - s.x),
+    height: Math.abs(p.y - s.y),
+  }
+}
+
+const onAnnotateUp = () => {
+  annotateDragging.value = false
+}
+
+const manualAnnotateLabel = computed(() => {
+  const s = current.value
+  if (!s) return ''
+  return (s.target_label || s.summary || s.actionText || s.subtitle || '').trim()
+})
+
+const saveManualAnnotation = async () => {
+  const s = current.value
+  const r = annotateRect.value
+  const label = manualAnnotateLabel.value
+  if (!props.appId || !s || !r || r.width < 12 || r.height < 12) {
+    ElMessage.warning('请先在截图上拖出有效区域')
+    return
+  }
+  const aliases = [label, s.actionText, s.subtitle, s.summary].filter(Boolean)
+  const uniqueAliases = [...new Set(aliases.map((a) => String(a).trim()).filter(Boolean))]
+  const name = label || uniqueAliases[0] || 'manual_icon'
+  savingIcon.value = true
+  try {
+    await importIconFromLocate(props.appId, {
+      name,
+      target_label: name,
+      x: r.left,
+      y: r.top,
+      w: r.width,
+      h: r.height,
+      screenshot: s.screenshot || s.screenshot_before || '',
+      aliases: uniqueAliases.length ? uniqueAliases : [name],
+      note: '手动标注（回放定位导入）',
+    })
+    ElMessage.success(`已保存标注「${name}」，下次执行将走图标库锚点兜底`)
+    annotateMode.value = false
+    annotateRect.value = null
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '标注保存失败')
+  } finally {
+    savingIcon.value = false
+  }
+}
+
+watch(
+  () => activeIndex.value,
+  () => {
+    annotateRect.value = null
+    annotateMode.value = false
+  },
+)
 
 const isFailedStep = computed(() => {
   const s = current.value
@@ -1250,6 +1618,7 @@ onUnmounted(() => {
           </div>
           <div v-if="s.icon_auto_learned" class="step-tag auto">已自动入库</div>
         </div>
+        <span v-if="s.run_elapsed" class="step-ts">{{ s.run_elapsed }}</span>
         <span v-if="s.duration_ms != null" class="step-time">{{ (s.duration_ms / 1000).toFixed(2) }}s</span>
       </div>
     </aside>
@@ -1265,6 +1634,7 @@ onUnmounted(() => {
           @click="selectStep(flatSteps.findIndex((s) => s.screenshot && imgUrl(s.screenshot) === t.src))"
         >
           <img :src="t.src" alt="" loading="lazy" decoding="async" />
+          <span v-if="t.run_elapsed" class="film-ts">{{ t.run_elapsed }}</span>
         </button>
       </div>
 
@@ -1275,6 +1645,33 @@ onUnmounted(() => {
           <el-radio-button label="midscene">Midscene</el-radio-button>
           <el-radio-button label="screenshot">截图标记</el-radio-button>
         </el-radio-group>
+        <el-button
+          v-if="channelOverlaySource.length"
+          size="small"
+          :type="showChannelOverlay ? 'primary' : 'default'"
+          plain
+          @click="showChannelOverlay = !showChannelOverlay"
+        >
+          多通道命中
+        </el-button>
+        <el-button
+          v-if="appId && isFailedStep && current?.role === 'action' && (current?.screenshot || current?.screenshot_before)"
+          size="small"
+          :type="annotateMode ? 'danger' : 'default'"
+          plain
+          @click="annotateMode = !annotateMode"
+        >
+          {{ annotateMode ? '取消标注' : '手动标注' }}
+        </el-button>
+        <el-button
+          v-if="annotateMode && annotateRect && annotateRect.width > 12"
+          size="small"
+          type="warning"
+          :loading="savingIcon"
+          @click="saveManualAnnotation"
+        >
+          保存标注
+        </el-button>
         <el-button
           v-if="appId && iconCandidate?.suggest && !current?.icon_auto_learned"
           size="small"
@@ -1294,14 +1691,12 @@ onUnmounted(() => {
 
       <div class="screen-stage">
         <div v-if="current?.screenshot || current?.screenshot_before || current?.screenshot_after" class="screen-wrap">
-          <div v-if="current?.role === 'action'" class="before-after-bar">
-            <span>Before / After</span>
-            <span class="hint-text">（左侧为步骤前，右侧为步骤后截图）</span>
-          </div>
-          <div
-            v-if="current?.role === 'action' && current.screenshot_before && current.screenshot_after && current.screenshot_before !== current.screenshot_after"
-            class="before-after-grid"
-          >
+          <template v-if="showBeforeAfterCompare">
+            <div class="before-after-bar">
+              <span>Before / After</span>
+              <span class="hint-text">（左侧为步骤前，右侧为步骤后截图）</span>
+            </div>
+            <div class="before-after-grid">
             <div class="ba-cell">
               <div class="screen-frame" :style="screenFrameStyle">
                 <img
@@ -1311,6 +1706,21 @@ onUnmounted(() => {
                   loading="lazy"
                   decoding="async"
                 />
+                <div v-if="channelOverlayItems.length" class="mark-layer channel-layer">
+                  <div
+                    v-for="item in channelOverlayItems"
+                    :key="`ba-${item.key}`"
+                    class="channel-box"
+                    :class="[`ch-${item.channel}`, { selected: item.selected }]"
+                    :style="item.style"
+                    :title="item.hoverTitle"
+                  >
+                    <span class="channel-tag" :class="{ selected: item.selected }" :style="item.tagStyle">
+                      {{ item.channel }} {{ (item.rawScore * 100).toFixed(0) }}%
+                      <template v-if="item.selected">→{{ (item.finalScore * 100).toFixed(0) }}%</template>
+                    </span>
+                  </div>
+                </div>
                 <div v-if="overlayStyle" class="mark-layer">
                   <template v-if="dimPanels">
                     <div class="dim-panel" :style="dimPanels.top" />
@@ -1355,19 +1765,39 @@ onUnmounted(() => {
               </div>
               <div class="ba-label">After</div>
             </div>
-          </div>
-          <template v-else-if="current?.role === 'action' && current.screenshot_before && current.screenshot_after && current.screenshot_before === current.screenshot_after">
-            <div class="before-after-bar">
-              <span class="hint-text">输入前后画面相同（可能输入过快或截图为动作结束后统一采集）</span>
-            </div>
-            <div class="screen-frame" :style="screenFrameStyle">
-              <img :src="imgUrl(current.screenshot_after)" class="screen-img-fit" alt="screenshot" loading="lazy" decoding="async" />
             </div>
           </template>
           <template v-else>
-            <div class="screen-frame" :style="screenFrameStyle">
+            <div
+              ref="screenFrameRef"
+              class="screen-frame"
+              :class="{ 'annotate-mode': annotateMode }"
+              :style="screenFrameStyle"
+              @mousedown.prevent="onAnnotateDown"
+              @mousemove="onAnnotateMove"
+              @mouseup="onAnnotateUp"
+              @mouseleave="onAnnotateUp"
+            >
               <img :src="currentScreenshot" class="screen-img-fit" alt="screenshot" loading="lazy" decoding="async" />
-              <div v-if="overlayStyle && current.role === 'action'" class="mark-layer">
+              <div v-if="channelOverlayItems.length" class="mark-layer channel-layer">
+                <div
+                  v-for="item in channelOverlayItems"
+                  :key="item.key"
+                  class="channel-box"
+                  :class="[`ch-${item.channel}`, { selected: item.selected }]"
+                  :style="item.style"
+                  :title="item.hoverTitle"
+                >
+                  <span class="channel-tag" :class="{ selected: item.selected }" :style="item.tagStyle">
+                    {{ item.channel }} {{ (item.rawScore * 100).toFixed(0) }}%
+                    <template v-if="item.selected">→{{ (item.finalScore * 100).toFixed(0) }}%</template>
+                  </span>
+                </div>
+              </div>
+              <div v-if="annotateOverlayStyle" class="mark-layer">
+                <div class="annotate-box" :style="annotateOverlayStyle" />
+              </div>
+              <div v-if="overlayStyle && rolesWithBeforeAfter.has(current.role)" class="mark-layer">
                 <template v-if="dimPanels">
                   <div class="dim-panel" :style="dimPanels.top" />
                   <div class="dim-panel" :style="dimPanels.bottom" />
@@ -1420,8 +1850,7 @@ onUnmounted(() => {
       <template v-if="current">
         <div class="info-block">
           <div class="info-label">Param</div>
-          <p v-if="current.actionText">{{ current.actionText }}</p>
-          <p v-else-if="current.expectedText">{{ current.expectedText }}</p>
+          <p v-if="currentParamText">{{ currentParamText }}</p>
           <p v-else-if="command">{{ command }}</p>
         </div>
         <div v-if="current.thought || current.subtitle || knowledgeHintLines(current).length" class="info-block">
@@ -1466,6 +1895,10 @@ onUnmounted(() => {
             width: {{ current.target_rect.width }}, height: {{ current.target_rect.height }}
           </p>
           <p v-if="current.method">method: {{ current.method }}</p>
+          <p v-if="current.used_anchor || current.method === 'manual_anchor'" class="anchor-badge">
+            已使用图标库锚点兜底
+            <span v-if="current.anchor_manual">（手动标注）</span>
+          </p>
           <p v-if="current.sim_state">sim state: {{ current.sim_state }}</p>
           <p v-if="current.sim_operator">运营商: {{ current.sim_operator }}</p>
           <p v-if="current.method === 'check_sim' || current.sim_phone || current.msg?.includes('号码')">
@@ -1534,9 +1967,60 @@ onUnmounted(() => {
             手动入库
           </el-button>
         </div>
-        <div v-if="current.duration_ms != null" class="info-block">
+        <div
+          v-if="['action', 'expected_action'].includes(current.role) && current.locate_debug && !current.skipped"
+          class="info-block locate-debug-block"
+        >
+          <div class="info-label">
+            多通道定位
+            <span class="page-meta">
+              profile={{ current.locate_debug.profile }} · kind={{ current.locate_debug.target_kind }}
+            </span>
+          </div>
+          <p v-if="current.locate_debug.query" class="hint-text">query: {{ current.locate_debug.query }}</p>
+          <div class="channel-legend">
+            <span v-for="(color, ch) in CHANNEL_COLORS" :key="ch" class="legend-item">
+              <span class="channel-dot" :style="{ background: color }" />{{ ch }}
+            </span>
+          </div>
+          <table class="channel-table">
+            <thead>
+              <tr>
+                <th>通道</th>
+                <th>raw</th>
+                <th>加权</th>
+                <th>选中</th>
+                <th>目标 ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(row, ci) in (current.locate_debug.overlay?.length ? current.locate_debug.overlay : current.locate_debug.candidates)"
+                :key="ci"
+                :class="{ winner: row.selected }"
+              >
+                <td>
+                  <span class="channel-dot" :style="{ background: CHANNEL_COLORS[row.channel] || '#64748b' }" />
+                  {{ row.channel }}
+                </td>
+                <td>{{ (row.raw_score * 100).toFixed(1) }}%</td>
+                <td>{{ (row.final_score * 100).toFixed(1) }}%</td>
+                <td>{{ row.selected ? '✓' : '' }}</td>
+                <td>{{ row.label || row.detail || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="hint-text">
+            raw = 通道原始相似度；加权 = raw × profile 权重 × kind 加成。截图标注显示 raw%，选中通道额外显示加权分。
+          </p>
+          <p v-if="isFailedStep" class="hint-text">
+            框线颜色与通道列一致；悬停查看详情。未达阈值时可「手动标注」写入图标库。
+          </p>
+        </div>
+        <div v-if="current.run_elapsed || current.duration_ms != null" class="info-block">
           <div class="info-label">Meta</div>
-          <p>duration: {{ current.duration_ms }} ms</p>
+          <p v-if="current.run_elapsed">时间戳: {{ current.run_elapsed }}</p>
+          <p v-if="current.duration_ms != null">duration: {{ current.duration_ms }} ms</p>
         </div>
 
         <div v-if="isFailedStep && appId" class="info-block failure-block">
@@ -1763,6 +2247,13 @@ onUnmounted(() => {
   background: #fef3c7;
   color: #b45309;
 }
+.step-ts {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #6366f1;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
 .step-time {
   flex-shrink: 0;
   font-size: 11px;
@@ -1789,7 +2280,20 @@ onUnmounted(() => {
   background: #111;
 }
 .film-thumb.active { border-color: #3b82f6; }
+.film-thumb { position: relative; }
 .film-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.film-ts {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 8px;
+  line-height: 1.2;
+  text-align: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  font-variant-numeric: tabular-nums;
+}
 .player-toolbar {
   display: flex;
   align-items: center;
@@ -1952,6 +2456,96 @@ onUnmounted(() => {
   margin: -72px 0 0 24px;
   pointer-events: none;
   z-index: 3;
+}
+.screen-frame.annotate-mode {
+  cursor: crosshair;
+}
+.channel-layer {
+  pointer-events: none;
+}
+.channel-layer .channel-box {
+  pointer-events: auto;
+  cursor: help;
+}
+.channel-box {
+  position: absolute;
+  border: 2px dashed;
+  opacity: 0.88;
+  z-index: 1;
+  box-sizing: border-box;
+}
+.channel-box.ch-clip { border-color: #3b82f6; }
+.channel-box.ch-ocr { border-color: #22c55e; }
+.channel-box.ch-hierarchy { border-color: #a855f7; }
+.channel-box.ch-gallery { border-color: #f97316; }
+.channel-box.ch-icon_row { border-color: #06b6d4; }
+.channel-box.ch-anchor { border-color: #eab308; }
+.channel-box.ch-toggle { border-color: #f59e0b; }
+.channel-box.selected {
+  border-style: solid;
+  border-width: 3px;
+  z-index: 2;
+}
+.channel-tag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translate(0, calc(-100% - 2px));
+  font-size: 10px;
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  line-height: 1.2;
+  pointer-events: none;
+  z-index: 3;
+}
+.channel-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 11px;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.annotate-box {
+  position: absolute;
+  border: 2px solid #eab308;
+  background: rgba(234, 179, 8, 0.18);
+  z-index: 5;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.channel-table {
+  width: 100%;
+  font-size: 11px;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+.channel-table th,
+.channel-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #f3f4f6;
+  text-align: left;
+}
+.channel-table tr.winner {
+  background: #fef9c3;
+}
+.channel-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.anchor-badge {
+  color: #b45309;
+  font-weight: 600;
 }
 .verify-badge {
   position: absolute;

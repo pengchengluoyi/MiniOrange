@@ -17,6 +17,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
+import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
 import { titlebarOwner, claimTitlebar, releaseTitlebar } from '@/composables/useTitlebar'
 
@@ -58,8 +59,10 @@ const lastRun = ref(null)
 const runHistory = ref([])
 const selectedCaseForLog = ref(null)
 const expandedRunId = ref('')
+const activeRunId = ref('')
 /** list: 执行历史 | cases: 已执行用例 | playback: 回放 */
 const resultView = ref('list')
+let runPollTimer = null
 
 function normalizeDevices(res) {
   const list = Array.isArray(res) ? res : res?.data || res?.data?.devices || []
@@ -159,6 +162,55 @@ const loadCases = async (refresh = true) => {
   }
 }
 
+const stopRunPoll = () => {
+  if (runPollTimer) clearTimeout(runPollTimer)
+  runPollTimer = null
+}
+
+const runProgressText = computed(() => {
+  const doc = lastRun.value
+  if (!doc) return ''
+  const done = Number(doc.passed || 0) + Number(doc.failed || 0) + Number(doc.skipped || 0)
+  return `${done}/${doc.total || 0}`
+})
+
+const finishRunUi = (doc) => {
+  if (!doc) return
+  resultView.value = doc.cases?.length ? 'cases' : 'list'
+  if (doc.status === 'awaiting_clarification') {
+    ElMessage.warning('需要人工确认登录图标位置')
+    return
+  }
+  if (doc.failed > 0) {
+    ElMessage.warning(`完成：通过 ${doc.passed}，失败 ${doc.failed}`)
+  } else if (doc.status !== 'running') {
+    ElMessage.success(`全部通过（${doc.passed || 0} 条）`)
+  }
+}
+
+const pollActiveRun = (runId) => {
+  stopRunPoll()
+  activeRunId.value = runId
+  const tick = async () => {
+    try {
+      const res = await getFeishuRun(runId)
+      lastRun.value = res?.data || lastRun.value
+      expandedRunId.value = runId
+      await loadRunHistory()
+      if (['running', 'awaiting_clarification'].includes(lastRun.value?.status)) {
+        runPollTimer = setTimeout(tick, 2500)
+        return
+      }
+      running.value = false
+      activeRunId.value = ''
+      finishRunUi(lastRun.value)
+    } catch {
+      runPollTimer = setTimeout(tick, 4000)
+    }
+  }
+  tick()
+}
+
 const runRegression = async (onlySelected = false) => {
   if (!selectedSn.value) return ElMessage.warning('请选择执行设备')
   if (!cases.value.length) return ElMessage.warning('请先同步飞书用例')
@@ -173,11 +225,12 @@ const runRegression = async (onlySelected = false) => {
   } catch {
     return
   }
+  stopRunPoll()
   running.value = true
   lastRun.value = null
   selectedCaseForLog.value = null
-  resultView.value = 'list'
   activeTab.value = 'result'
+  resultView.value = 'cases'
   try {
     const res = await runFeishuRegression({
       app_id: props.appId,
@@ -185,20 +238,21 @@ const runRegression = async (onlySelected = false) => {
       platform: 'android',
       case_ids: ids || undefined,
     })
-    lastRun.value = res?.data || null
-    expandedRunId.value = lastRun.value?.run_id || ''
-    selectedCaseForLog.value = null
-    resultView.value = lastRun.value?.cases?.length ? 'cases' : 'list'
+    const doc = res?.data || null
+    lastRun.value = doc
+    expandedRunId.value = doc?.run_id || ''
     await loadRunHistory()
-    if (lastRun.value?.failed > 0) {
-      ElMessage.warning(`完成：通过 ${lastRun.value.passed}，失败 ${lastRun.value.failed}`)
-    } else {
-      ElMessage.success(`全部通过（${lastRun.value?.passed || 0} 条）`)
+    if (doc?.status === 'running' && doc?.run_id) {
+      ElMessage.info('回归任务已在后台执行，可在此查看进度')
+      pollActiveRun(doc.run_id)
+      return
     }
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '执行失败')
-  } finally {
     running.value = false
+    finishRunUi(doc)
+  } catch (e) {
+    running.value = false
+    activeRunId.value = ''
+    ElMessage.error(e?.response?.data?.detail || e?.message || '执行失败')
   }
 }
 
@@ -251,6 +305,13 @@ const statusTag = (status) => {
   return map[status] || 'info'
 }
 
+const iosOnlyCaseCount = computed(() =>
+  cases.value.filter((c) => {
+    const p = String(c.platform || '').toLowerCase()
+    return p && !p.includes('双端') && (p.includes('ios') || p.includes('苹果'))
+  }).length,
+)
+
 const loadBots = async () => {
   try {
     const res = await listFeishuBots()
@@ -282,11 +343,14 @@ watch(resultView, (view) => {
 }, { immediate: true })
 
 watch(activeTab, (tab) => {
-  if (tab !== 'result') resultView.value = 'list'
+  if (tab !== 'result' && !running.value) resultView.value = 'list'
 })
 
 onMounted(init)
 const clearRunState = () => {
+  stopRunPoll()
+  running.value = false
+  activeRunId.value = ''
   lastRun.value = null
   selectedCaseForLog.value = null
   expandedRunId.value = ''
@@ -312,6 +376,10 @@ onUnmounted(() => {
       <el-button size="small" type="warning" :loading="running" :disabled="!selectedCaseIds.length" @click="runRegression(true)">
         执行选中
       </el-button>
+      <span v-if="running" class="run-progress-hint">
+        执行中 {{ runProgressText }}
+        <el-button link type="primary" size="small" @click="activeTab = 'result'">查看报告</el-button>
+      </span>
     </div>
 
     <el-alert v-if="!credConfigured" type="warning" show-icon :closable="false" class="cred-alert">
@@ -349,6 +417,9 @@ onUnmounted(() => {
 
       <el-tab-pane :label="`用例 (${cases.length})`" name="cases">
         <p v-if="casesSyncedAt" class="sync-meta">缓存于 {{ casesSyncedAt }}</p>
+        <p v-if="iosOnlyCaseCount" class="sync-meta ios-hint">
+          含 {{ iosOnlyCaseCount }} 条 iOS 专用用例；当前设备为 Android 时执行将按前置条件标记为 skip。
+        </p>
         <el-table
           :data="cases"
           border
@@ -358,6 +429,7 @@ onUnmounted(() => {
         >
           <el-table-column type="selection" width="48" />
           <el-table-column prop="case_id" label="编号" width="88" />
+          <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
           <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
           <el-table-column label="前置条件" min-width="160" class-name="col-multiline">
             <template #default="{ row }">
@@ -366,12 +438,12 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column label="测试步骤" min-width="200" class-name="col-multiline">
             <template #default="{ row }">
-              <CaseMultilineCell :row="row" list-key="steps" raw-key="steps_raw" />
+              <CaseAlignedFieldCell :row="row" field="step" />
             </template>
           </el-table-column>
           <el-table-column label="预期效果" min-width="180" class-name="col-multiline">
             <template #default="{ row }">
-              <CaseMultilineCell :row="row" list-key="expected" raw-key="expected_raw" />
+              <CaseAlignedFieldCell :row="row" field="expected" />
             </template>
           </el-table-column>
         </el-table>
@@ -407,8 +479,11 @@ onUnmounted(() => {
             <el-table-column prop="platform" label="平台" width="88" />
             <el-table-column label="状态" width="88">
               <template #default="{ row }">
-                <el-tag :type="row.failed ? 'danger' : 'success'" size="small">
-                  {{ row.failed ? '有失败' : '全通过' }}
+                <el-tag
+                  :type="row.status === 'running' ? 'warning' : row.failed ? 'danger' : 'success'"
+                  size="small"
+                >
+                  {{ row.status === 'running' ? '执行中' : row.failed ? '有失败' : '全通过' }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -424,6 +499,15 @@ onUnmounted(() => {
         <Teleport to="body">
           <div v-if="resultView !== 'list'" class="report-fullpage">
             <div v-if="resultView === 'cases'" class="report-body report-body--cases">
+              <el-alert
+                v-if="running"
+                type="info"
+                :closable="false"
+                show-icon
+                class="run-live-alert"
+                :title="`正在执行回归测试 ${runProgressText}`"
+                description="用例完成后会实时出现在下表；可点击左侧用例查看已完成的回放。"
+              />
               <el-table
                 v-if="lastRun?.cases?.length"
                 :data="lastRun.cases"
@@ -436,12 +520,12 @@ onUnmounted(() => {
                 <el-table-column prop="name" label="用例" min-width="160" show-overflow-tooltip />
                 <el-table-column label="测试步骤" min-width="220" class-name="col-multiline">
                   <template #default="{ row }">
-                    <CaseMultilineCell :row="row" list-key="steps" raw-key="steps_raw" />
+                    <CaseAlignedFieldCell :row="row" field="step" />
                   </template>
                 </el-table-column>
                 <el-table-column label="预期效果" min-width="180" class-name="col-multiline">
                   <template #default="{ row }">
-                    <CaseMultilineCell :row="row" list-key="expected" raw-key="expected_raw" />
+                    <CaseAlignedFieldCell :row="row" field="expected" />
                   </template>
                 </el-table-column>
                 <el-table-column label="结果" width="96">
@@ -504,6 +588,7 @@ onUnmounted(() => {
               总计 {{ formatDuration(lastRun.duration_ms) || '—' }} ·
               已执行 {{ lastRun.executed ?? lastRun.cases?.length ?? 0 }}/{{ lastRun.total }} ·
               通过 {{ lastRun.passed }}/{{ lastRun.total }}
+              <template v-if="lastRun.skipped"> · 跳过 {{ lastRun.skipped }}</template>
             </span>
           </template>
         </div>
@@ -522,9 +607,18 @@ onUnmounted(() => {
 
 <style scoped>
 .feishu-panel { margin-top: 8px; width: 100%; }
+.run-progress-hint {
+  font-size: 12px;
+  color: #b45309;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-live-alert { margin-bottom: 10px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .cred-alert { margin-bottom: 12px; }
 .sync-meta { font-size: 12px; color: #9ca3af; margin-bottom: 8px; }
+.ios-hint { color: #b45309; }
 .result-list-view { width: 100%; }
 .list-hint { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
 .full-table { width: 100%; }

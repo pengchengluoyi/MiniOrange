@@ -1,24 +1,29 @@
 <script setup>
 import { computed } from 'vue'
-import { caseFieldLines } from '@/utils/caseText'
+import { caseFieldLines, normalizeCaseRow } from '@/utils/caseText'
 
 const props = defineProps({
   row: { type: Object, default: () => ({}) },
   listKey: { type: String, default: '' },
   rawKey: { type: String, required: true },
+  numsKey: { type: String, default: '' },
   numbered: { type: Boolean, default: true },
 })
 
 const lines = computed(() =>
-  caseFieldLines(props.row, { listKey: props.listKey, rawKey: props.rawKey }),
+  caseFieldLines(normalizeCaseRow(props.row), {
+    listKey: props.listKey,
+    rawKey: props.rawKey,
+    numsKey: props.numsKey,
+  }),
 )
 </script>
 
 <template>
   <div v-if="lines.length" class="case-multiline-cell">
     <div v-for="(line, i) in lines" :key="i" class="case-multiline-line">
-      <span v-if="numbered && lines.length > 1" class="case-line-no">{{ i + 1 }}.</span>
-      <span class="case-line-text">{{ line }}</span>
+      <span v-if="numbered" class="case-line-no">{{ line.num }}.</span>
+      <span class="case-line-text">{{ line.text }}</span>
     </div>
   </div>
   <span v-else class="case-multiline-empty">—</span>

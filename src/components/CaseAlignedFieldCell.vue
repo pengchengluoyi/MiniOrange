@@ -1,0 +1,58 @@
+<script setup>
+import { computed } from 'vue'
+import { alignCaseStepExpected } from '@/utils/caseText'
+
+const props = defineProps({
+  row: { type: Object, default: () => ({}) },
+  field: { type: String, required: true }, // 'step' | 'expected'
+})
+
+const pairs = computed(() => alignCaseStepExpected(props.row))
+</script>
+
+<template>
+  <div v-if="pairs.length" class="case-aligned-cell">
+    <div v-for="p in pairs" :key="p.num" class="case-aligned-line">
+      <template v-if="field === 'step' ? p.step : p.expected">
+        <span class="case-line-no">{{ p.num }}.</span>
+        <span class="case-line-text">{{ field === 'step' ? p.step : p.expected }}</span>
+      </template>
+      <span v-else class="case-line-empty">{{ p.num }}. —</span>
+    </div>
+  </div>
+  <span v-else class="case-line-empty">—</span>
+</template>
+
+<style scoped>
+.case-aligned-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+  white-space: normal;
+  line-height: 1.5;
+  font-size: 12px;
+  color: #374151;
+}
+.case-aligned-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 1.5em;
+  word-break: break-word;
+}
+.case-line-no {
+  flex-shrink: 0;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.2em;
+}
+.case-line-text {
+  flex: 1;
+  min-width: 0;
+}
+.case-line-empty {
+  color: #c0c4cc;
+  font-size: 12px;
+}
+</style>

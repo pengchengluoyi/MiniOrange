@@ -18,6 +18,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import { getBaseUrl } from '@/utils/config'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
+import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
 
 const staticBase = getBaseUrl()
@@ -208,6 +209,7 @@ const runRegression = async (onlySelected = false) => {
     return
   }
 
+  stopRunPoll()
   running.value = true
   lastRun.value = null
   selectedCaseForLog.value = null
@@ -219,12 +221,20 @@ const runRegression = async (onlySelected = false) => {
       platform: 'android',
       case_ids: ids || undefined,
     })
-    handleRunResult(res?.data || null)
+    const doc = res?.data || null
+    lastRun.value = doc
+    expandedRunId.value = doc?.run_id || ''
     await loadRunHistory()
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '执行失败')
-  } finally {
+    if (doc?.status === 'running' && doc?.run_id) {
+      ElMessage.info('回归任务已在后台执行，可在此查看进度')
+      pollActiveRun(doc.run_id)
+      return
+    }
     running.value = false
+    handleRunResult(doc)
+  } catch (e) {
+    running.value = false
+    ElMessage.error(e?.response?.data?.detail || e?.message || '执行失败')
   }
 }
 
@@ -246,7 +256,37 @@ const selectCaseLog = (row) => {
   selectedCaseForLog.value = row
 }
 
+let runPollTimer = null
+
+const stopRunPoll = () => {
+  if (runPollTimer) clearTimeout(runPollTimer)
+  runPollTimer = null
+}
+
+const pollActiveRun = (runId) => {
+  stopRunPoll()
+  const tick = async () => {
+    try {
+      const res = await getFeishuRun(runId)
+      lastRun.value = res?.data || lastRun.value
+      expandedRunId.value = runId
+      await loadRunHistory()
+      if (['running', 'awaiting_clarification'].includes(lastRun.value?.status)) {
+        runPollTimer = setTimeout(tick, 2500)
+        return
+      }
+      running.value = false
+      handleRunResult(lastRun.value)
+    } catch {
+      runPollTimer = setTimeout(tick, 4000)
+    }
+  }
+  tick()
+}
+
 const clearRunState = () => {
+  stopRunPoll()
+  running.value = false
   lastRun.value = null
   selectedCaseForLog.value = null
   expandedRunId.value = ''
@@ -276,6 +316,7 @@ const openClarifyDialog = () => {
 }
 
 const handleRunResult = (doc) => {
+  if (!doc || doc.status === 'running') return
   lastRun.value = doc
   expandedRunId.value = doc?.run_id || ''
   if (doc?.cases?.length) {
@@ -420,6 +461,7 @@ onBeforeUnmount(clearRunState)
         >
           <el-table-column type="selection" width="48" />
           <el-table-column prop="case_id" label="编号" width="100" />
+          <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
           <el-table-column prop="module" label="模块" width="90" />
           <el-table-column prop="name" label="用例名称" min-width="140" show-overflow-tooltip />
           <el-table-column label="前置条件" min-width="160" class-name="col-multiline">
@@ -429,12 +471,12 @@ onBeforeUnmount(clearRunState)
           </el-table-column>
           <el-table-column label="步骤" min-width="200" class-name="col-multiline">
             <template #default="{ row }">
-              <CaseMultilineCell :row="row" list-key="steps" raw-key="steps_raw" />
+              <CaseAlignedFieldCell :row="row" field="step" />
             </template>
           </el-table-column>
           <el-table-column label="预期" min-width="180" class-name="col-multiline">
             <template #default="{ row }">
-              <CaseMultilineCell :row="row" list-key="expected" raw-key="expected_raw" />
+              <CaseAlignedFieldCell :row="row" field="expected" />
             </template>
           </el-table-column>
         </el-table>
