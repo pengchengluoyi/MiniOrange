@@ -40,6 +40,7 @@ const savingIcon = ref(false)
 const analyzingFailure = ref(false)
 const savingKnowledge = ref(false)
 const failureAnalysis = ref(null)
+const thoughtExpanded = ref(false)
 const knowledgeDialogVisible = ref(false)
 const knowledgeDraft = ref({
   title: '',
@@ -50,6 +51,85 @@ const knowledgeDraft = ref({
 })
 let playTimer = null
 let analyzeSeq = 0
+const collapsedSections = ref(new Set())
+
+const isGuardPlanIndex = (idx) => Number(idx) >= 1000
+const isGuardPlanEntry = (e) =>
+  e?.summary?.startsWith?.('守卫 ·') ||
+  e?.kind === 'overlay_guard' ||
+  isGuardPlanIndex(e?.index ?? e?.plan_index)
+const isPlanAttemptAction = (act) => act?.phase === 'plan_attempt'
+
+const operationStats = (op) => {
+  const actions = (op.plans || []).flatMap((p) => p.actions || [])
+  const misses = actions.filter((a) => a.phase === 'plan_attempt').length
+  const finalOk = op.ok !== false
+  let text = `最终：${finalOk ? '成功' : '失败'}`
+  if (misses) text += ` · ${misses} 次尝试未命中`
+  return { text, finalOk, misses }
+}
+
+const formatOperationSummary = (op) => operationStats(op).text
+
+const formatPreconditionActionTitle = (act, fallbackText = '') => {
+  const raw = act.title || act.summary || fallbackText || ''
+  return raw.replace(/^verify\s*[-·]\s*/i, 'Check - ')
+}
+
+const LOCATE_PROFILE_LABELS = {
+  consent: '隐私同意弹窗',
+  system_dialog: '系统权限弹窗',
+  modal: '业务弹窗',
+  verify_code: '验证码输入页',
+  phone_register: '手机号注册页',
+  password_login: '账号密码登录页',
+  phone_login: '手机号登录页',
+  one_click_login: '一键登录页',
+  bind_phone: '绑定手机号页',
+  login: '登录入口页',
+  terms: '协议详情页',
+  onboarding: '新手引导',
+  search: '搜索页',
+  home: '首页 / Feed',
+  detail: '详情页',
+  publish: '发布/编辑页',
+  form: '通用表单页',
+  payment: '支付收银台',
+  chat: '聊天/消息',
+  notification: '通知中心',
+  profile: '个人中心',
+  settings: '设置页',
+  webview: 'H5 网页',
+  generic: '通用页面',
+}
+
+const LOCATE_KIND_LABELS = {
+  checkbox: '勾选框',
+  text: '文字目标',
+  icon: '图标',
+  button: '按钮',
+  unknown: '未分类',
+}
+
+const locateProfileLabel = (key) => LOCATE_PROFILE_LABELS[String(key || '').toLowerCase()] || key || '—'
+const locateKindLabel = (kind) => LOCATE_KIND_LABELS[String(kind || '').toLowerCase()] || kind || '—'
+
+const currentLocateMeta = computed(() => {
+  const dbg = current.value?.locate_debug
+  const pc = current.value?.page_context || {}
+  if (!dbg && !pc.foreground_app_name && !pc.foreground_package) return null
+  const profileKey = String(dbg?.profile || '').toLowerCase()
+  const kindKey = String(dbg?.target_kind || '').toLowerCase()
+  return {
+    profileKey,
+    kindKey,
+    profileLabel: locateProfileLabel(profileKey),
+    kindLabel: locateKindLabel(kindKey),
+    foregroundApp: dbg?.foreground_app || pc.foreground_app || '',
+    foregroundAppName: dbg?.foreground_app_name || pc.foreground_app_name || '',
+    foregroundPackage: dbg?.foreground_package || pc.foreground_package || '',
+  }
+})
 
 const imgUrl = (path) => {
   if (!path) return ''
@@ -93,8 +173,11 @@ const buildFlatSteps = () => {
         knowledge_hints: op.knowledge_hints || [],
         plan_log: op.plan_log || [],
         ok: op.ok,
+        operationSummary: formatOperationSummary(op),
+        operationFinalOk: operationStats(op).finalOk,
+        operationMissCount: operationStats(op).misses,
         screenshot: op.screenshot || '',
-        playable: !!op.screenshot,
+        playable: false,
       })
     }
 
@@ -104,42 +187,63 @@ const buildFlatSteps = () => {
       plansByIndex.set(p.plan_index, p)
     }
 
-    const emitPlan = (plan) => {
-      const planShot = plan.screenshot || op.screenshot || ''
+    const emitPlan = (plan, peekShot = '') => {
+      const isGuard =
+        plan.summary?.startsWith?.('守卫 ·') ||
+        isGuardPlanIndex(plan.plan_index) ||
+        plan.kind === 'overlay_guard'
+      const planShot = peekShot || plan.screenshot || ''
       pushNode(out, {
         ...stepCtx,
         depth: 1,
         role: 'plan',
         type: 'plan',
         planIndex: plan.plan_index,
-        title: plan.title || (plan.summary?.startsWith('守卫 ·') ? plan.summary : `Plan - ${plan.summary}`),
+        isRuntimeGuard: isGuard,
+        title: isGuard
+          ? plan.title || plan.summary
+          : plan.title || `Plan - ${plan.summary}`,
         subtitle: plan.summary,
         kind: plan.kind,
         ok: plan.ok,
         thought: plan.detail || {},
         run_elapsed: plan.run_elapsed,
+        run_elapsed_ms: plan.run_elapsed_ms,
         screenshot: planShot,
         screenshot_before: planShot,
         screenshot_after: planShot,
-        playable: !!planShot,
+        playable: false,
       })
     }
 
-    const emitAction = (planIndex, act) =>
+    const emitAction = (planIndex, act) => {
+      const isAttempt = isPlanAttemptAction(act)
+      let actionTitle = isAttempt
+        ? `尝试 · miss - ${act.title || act.summary || act.target_label || '点击'}`
+        : act.title || act.summary
+      if (stepCtx.isPrecondition) {
+        actionTitle = formatPreconditionActionTitle(act, act.summary)
+      }
+      const preEntry = stepCtx.preconditionEntries?.get?.(String(act.summary || '').trim())
       pushNode(out, {
         ...stepCtx,
         depth: 1,
         role: 'action',
         type: 'action',
         planIndex,
-        title: act.title || act.summary,
+        phase: act.phase || '',
+        isPlanAttempt: isAttempt,
+        title: actionTitle,
         summary: act.summary,
         kind: act.kind,
         text: act.text,
         field_hint: act.field_hint || act.label,
         msg: act.msg,
-        method: act.method,
-        actionName: act.action_name,
+        method: preEntry?.kind || act.method,
+        actionName: stepCtx.isPrecondition ? 'Check' : act.action_name,
+        sim_state: preEntry?.sim_state || act.sim_state || '',
+        sim_operator: preEntry?.operator || act.sim_operator || '',
+        sim_phone: preEntry?.phone_number || act.sim_phone || '',
         ok: act.ok,
         duration_ms: act.duration_ms,
         run_elapsed: act.run_elapsed,
@@ -160,8 +264,55 @@ const buildFlatSteps = () => {
         locate_debug: act.locate_debug || null,
         used_anchor: act.locate_debug?.used_anchor || act.method === 'manual_anchor',
         anchor_manual: act.locate_debug?.anchor_manual || act.method === 'manual_anchor',
-        playable: !!(act.screenshot_before || act.screenshot_after || op.screenshot),
+        playable: !!(act.screenshot_before || act.screenshot_after),
       })
+    }
+
+    const pickFlatAction = (item, planIndex, actionsByPlan, actionOrd) => {
+      const acts = actionsByPlan.get(planIndex) || []
+      const startOrd = actionOrd.get(planIndex) || 0
+      const remaining = acts.slice(startOrd)
+      if (!remaining.length) return null
+
+      const pickIdx = (predicate) => {
+        const rel = remaining.findIndex(predicate)
+        return rel >= 0 ? startOrd + rel : -1
+      }
+
+      let idx = -1
+      if (item.gesture_id) {
+        idx = pickIdx((a) => a.gesture_id === item.gesture_id)
+      }
+      if (idx < 0 && item.gesture_index != null) {
+        idx = pickIdx((a) => a.gesture_index === item.gesture_index)
+      }
+      if (
+        idx < 0
+        && (item.phase || item.click_attempt != null || item.guard_round != null)
+      ) {
+        idx = pickIdx((a) => {
+          const phaseOk = !item.phase || (a.phase || '') === item.phase
+          const attemptOk = item.click_attempt == null || a.click_attempt === item.click_attempt
+          const guardOk = item.guard_round == null || a.guard_round === item.guard_round
+          return phaseOk && attemptOk && guardOk
+        })
+      }
+      if (idx < 0 && item.run_elapsed_ms != null) {
+        const targetMs = Number(item.run_elapsed_ms) || 0
+        idx = pickIdx((a) => (Number(a.run_elapsed_ms) || 0) >= targetMs - 1500)
+      }
+      if (idx < 0) idx = startOrd
+
+      const act = acts[idx]
+      if (act) actionOrd.set(planIndex, idx + 1)
+      return act || null
+    }
+
+    const peekNextFlatAction = (planIndex, actionsByPlan, actionOrd) => {
+      const acts = actionsByPlan.get(planIndex) || []
+      const ord = actionOrd.get(planIndex) || 0
+      return acts[ord] || null
+    }
 
     if (flat) {
       // 按后端给的展平顺序渲染，同一级：Plan / Tap1 / Tap2...
@@ -170,36 +321,37 @@ const buildFlatSteps = () => {
         actionsByPlan.set(p.plan_index, p.actions || [])
       }
       const actionOrd = new Map()
-      for (const item of flat) {
+      for (let fi = 0; fi < flat.length; fi += 1) {
+        const item = flat[fi]
         const plan = plansByIndex.get(item.plan_index)
         if (!plan) continue
         if (item.type === 'plan') {
-          const planView = item.run_elapsed
+          const peekAct = peekNextFlatAction(item.plan_index, actionsByPlan, actionOrd)
+          const peekShot = peekAct
+            ? peekAct.screenshot_before || peekAct.screenshot_after || ''
+            : ''
+          let planView = item.run_elapsed
             ? { ...plan, run_elapsed: item.run_elapsed, run_elapsed_ms: item.run_elapsed_ms }
-            : plan
-          emitPlan(planView)
+            : { ...plan }
+          const planTs = planView.run_elapsed || ''
+          const actTs = peekAct?.run_elapsed || ''
+          if ((!planTs || planTs === '00:00:00') && actTs && actTs !== '00:00:00') {
+            planView = {
+              ...planView,
+              run_elapsed: actTs,
+              run_elapsed_ms: peekAct.run_elapsed_ms,
+            }
+          } else if (
+            (!planView.run_elapsed || planView.run_elapsed === '00:00:00')
+            && plan.run_elapsed
+            && plan.run_elapsed !== '00:00:00'
+          ) {
+            planView.run_elapsed = plan.run_elapsed
+            planView.run_elapsed_ms = plan.run_elapsed_ms
+          }
+          emitPlan(planView, peekShot)
         } else if (item.type === 'action') {
-          const acts = actionsByPlan.get(item.plan_index) || []
-          let act = null
-          if (item.gesture_id) {
-            act = acts.find((a) => a.gesture_id === item.gesture_id)
-          }
-          if (!act && item.gesture_index != null) {
-            act = acts.find((a) => a.gesture_index === item.gesture_index)
-          }
-          if (!act && (item.phase || item.click_attempt != null || item.guard_round != null)) {
-            act = acts.find((a) => {
-              const phaseOk = !item.phase || (a.phase || '') === item.phase
-              const attemptOk = item.click_attempt == null || a.click_attempt === item.click_attempt
-              const guardOk = item.guard_round == null || a.guard_round === item.guard_round
-              return phaseOk && attemptOk && guardOk
-            })
-          }
-          if (!act) {
-            const ord = actionOrd.get(item.plan_index) || 0
-            act = acts[ord]
-            actionOrd.set(item.plan_index, ord + 1)
-          }
+          const act = pickFlatAction(item, plan.plan_index, actionsByPlan, actionOrd)
           if (act) emitAction(plan.plan_index, act)
         }
       }
@@ -412,15 +564,17 @@ const buildFlatSteps = () => {
     const pageCtx = exp.page_context || {}
     const pageRecovery = exp.page_recovery || null
     const verifyShot = exp.screenshot || pageCtx?.screenshot || ''
+    const assertOnlyFail = exp.ok === false && ctx.lastOpOk !== false
     pushNode(out, {
       ...ctx,
       depth: 0,
       role: 'expected_action',
       type: 'section',
-      title: `预期动作 ${ctx.stepNo}`,
+      title: `预期动作 ${ctx.stepNo}${assertOnlyFail ? '（断言未通过）' : ''}`,
       subtitle: exp.text,
       thought: exp.thought,
       ok: exp.ok,
+      assertOnlyFail,
       screenshot: verifyShot,
       screenshot_before: verifyShot,
       screenshot_after: verifyShot,
@@ -516,24 +670,31 @@ const buildFlatSteps = () => {
       playable: false,
     })
     if (block.operation) {
-      appendOperation(block.operation, { ...preCtx, skipOperationSection: true })
-    }
-    for (const e of block.entries || []) {
-      pushNode(out, {
+      const entryMap = new Map((block.entries || []).map((e) => [String(e.text || '').trim(), e]))
+      appendOperation(block.operation, {
         ...preCtx,
-        depth: 1,
-        role: 'action',
-        type: 'action',
-        title: `${e.skipped ? 'Skip' : e.ok === false ? 'Check ✗' : 'Check'} - ${e.text}`,
-        subtitle: e.msg,
-        msg: e.msg,
-        method: e.kind,
-        sim_state: e.sim_state || '',
-        sim_operator: e.operator || '',
-        sim_phone: e.phone_number || '',
-        ok: e.ok !== false,
-        playable: false,
+        skipOperationSection: true,
+        isPrecondition: true,
+        preconditionEntries: entryMap,
       })
+    } else {
+      for (const e of block.entries || []) {
+        pushNode(out, {
+          ...preCtx,
+          depth: 1,
+          role: 'action',
+          type: 'action',
+          title: `${e.skipped ? 'Skip' : e.ok === false ? 'Check ✗' : 'Check'} - ${e.text}`,
+          subtitle: e.msg,
+          msg: e.msg,
+          method: e.kind,
+          sim_state: e.sim_state || '',
+          sim_operator: e.operator || '',
+          sim_phone: e.phone_number || '',
+          ok: e.ok !== false,
+          playable: false,
+        })
+      }
     }
   }
 
@@ -807,6 +968,7 @@ const buildFlatSteps = () => {
     const lastAct = lastActionFromOperation(op)
     appendExpected(block.expected_action || block.expected, {
       ...ctx,
+      lastOpOk: op?.ok !== false,
       lastActionScreenshot:
         (block.expected_action || block.expected)?.screenshot
         || op?.screenshot
@@ -869,13 +1031,17 @@ watch(
 
 const timelineShots = computed(() =>
   flatSteps.value
-    .filter((s) => s.playable && s.screenshot)
-    .map((s, i) => ({
-      id: i,
-      src: imgUrl(s.screenshot),
-      title: s.title,
-      run_elapsed: s.run_elapsed || '',
-    })),
+    .map((s, stepIndex) => {
+      const shot = s.screenshot || s.screenshot_before || s.screenshot_after || ''
+      if (!s.playable || !shot) return null
+      return {
+        stepIndex,
+        src: imgUrl(shot),
+        title: s.title,
+        run_elapsed: s.run_elapsed || (s.run_elapsed_ms != null ? `${(s.run_elapsed_ms / 1000).toFixed(1)}s` : ''),
+      }
+    })
+    .filter(Boolean),
 )
 
 const current = computed(() => flatSteps.value[activeIndex.value] || null)
@@ -892,12 +1058,7 @@ const currentParamText = computed(() => {
 })
 
 const currentFilmstripIndex = computed(() => {
-  const shots = timelineShots.value
-  if (!shots.length) return 0
-  const cur = current.value?.screenshot
-  if (!cur) return 0
-  const src = imgUrl(cur)
-  const idx = shots.findIndex((t) => t.src === src)
+  const idx = timelineShots.value.findIndex((t) => t.stepIndex === activeIndex.value)
   return idx >= 0 ? idx : 0
 })
 
@@ -1149,11 +1310,110 @@ const planLogEntries = (node) => {
   return Array.isArray(log) ? log : []
 }
 
+const planLogGrouped = (node) => {
+  const entries = planLogEntries(node)
+  const business = entries.filter((e) => e.type === 'planned_step' && !isGuardPlanEntry(e))
+  const runtimeFromExec = []
+  if (node?.stepNo) {
+    for (const s of flatSteps.value) {
+      if (s.stepNo === node.stepNo && s.role === 'plan' && s.isRuntimeGuard) {
+        runtimeFromExec.push({
+          summary: s.subtitle || s.title,
+          run_elapsed: s.run_elapsed || '',
+        })
+      }
+    }
+  }
+  const runtime =
+    runtimeFromExec.length > 0
+      ? runtimeFromExec
+      : entries
+          .filter((e) => e.type === 'planned_step' && isGuardPlanEntry(e))
+          .map((e) => ({ summary: e.summary, run_elapsed: e.run_elapsed || '' }))
+  return { business, runtime }
+}
+
+const parseKnowledgeSections = (hint) => {
+  const text = String(hint || '').trim()
+  if (!text) return []
+  const sections = []
+  const re = /\[([^\]]+)\]\s*([^[]*)/g
+  let m = re.exec(text)
+  while (m) {
+    const body = m[2].trim()
+    if (body) sections.push({ label: m[1], body })
+    m = re.exec(text)
+  }
+  return sections.length ? sections : [{ label: '', body: text }]
+}
+
+const summarizeKnowledgeHint = (hint, maxLen = 96) => {
+  const secs = parseKnowledgeSections(hint)
+  const primary = secs.find((s) => /失败|操作|步骤|意图/.test(s.label)) || secs[0]
+  if (!primary) return ''
+  const line = primary.label ? `${primary.label}：${primary.body}` : primary.body
+  return line.length > maxLen ? `${line.slice(0, maxLen)}…` : line
+}
+
 const knowledgeHintLines = (node) => {
+  if (['action', 'verify', 'page_identify', 'page_recovery', 'page_recovery_step'].includes(node?.role)) {
+    return []
+  }
   const hints = node?.knowledge_hints || node?.thought_meta?.knowledge_hints || []
   if (!Array.isArray(hints) || !hints.length) return []
   return hints
 }
+
+const knowledgeHintPreview = (node) => {
+  const hints = knowledgeHintLines(node)
+  if (!hints.length) return []
+  return [summarizeKnowledgeHint(hints[0])].filter(Boolean)
+}
+
+const thoughtBlockVisible = (node) => {
+  if (!node) return false
+  if (node.role === 'action') return false
+  if (node.role === 'operation' || node.role === 'plan') {
+    return !!(node.thought || node.subtitle || knowledgeHintLines(node).length)
+  }
+  if (node.role === 'precondition' || node.role === 'device_prep') {
+    return !!node.subtitle
+  }
+  return !!(node.thought || node.subtitle)
+}
+
+const thoughtBlockLabel = (node) => {
+  if (node?.role === 'operation') return '规划说明 · Thought'
+  if (node?.role === 'plan') return 'Plan · 步骤参数'
+  if (node?.role === 'precondition' || node?.role === 'device_prep') return '说明'
+  return 'Output · Thought'
+}
+
+const thoughtBlockBody = (node) => {
+  if (node?.role === 'operation' || node?.role === 'plan') {
+    return formatOperationThought(node.subtitle || node.thought)
+  }
+  if (node?.role === 'precondition' || node?.role === 'device_prep') {
+    return String(node.subtitle || '').trim()
+  }
+  const raw = String(node?.thought || node?.subtitle || '').trim()
+  if (raw.length <= 160) return raw
+  return thoughtExpanded.value ? raw : `${raw.slice(0, 160)}…`
+}
+
+const locateDebugRows = computed(() => {
+  const dbg = current.value?.locate_debug
+  if (!dbg) return []
+  const rows = dbg.overlay?.length ? dbg.overlay : dbg.candidates || []
+  return Array.isArray(rows) ? rows : []
+})
+
+const showLocateDebugBlock = computed(() => {
+  const s = current.value
+  if (!s || s.skipped) return false
+  if (!['action', 'expected_action'].includes(s.role)) return false
+  return !!s.locate_debug
+})
 
 const formatPageScore = (ctx) => {
   const score = Number(ctx?.score)
@@ -1172,18 +1432,24 @@ const formatDuration = (ms) => {
 const currentPageContext = computed(() => {
   const s = current.value
   const pageCtx = s?.page_context
-  if (!pageCtx) return null
-  const label = pageCtx.current_page_label || pageCtx.label || pageCtx.figma_best || '未知'
-  const matched = pageCtx.matched === true
-  const rankings = pageCtx.figma_rankings || pageCtx.rankings || []
+  if (!pageCtx && !s?.screen_preview) return null
+  const label = pageCtx?.current_page_label || pageCtx?.label || pageCtx?.figma_best || '未知'
+  const matched = pageCtx?.matched === true
+  const rankings = pageCtx?.figma_rankings || pageCtx?.rankings || []
+  const ocrPreview = String(
+    s?.screen_preview || pageCtx?.ocr_snip || pageCtx?.screen_text_preview || '',
+  ).trim()
+  const isVerify = ['verify', 'expected_action'].includes(s?.role)
   return {
     label,
     matched,
     source: formatPageSource(pageCtx),
     score: formatPageScore(pageCtx),
-    target: pageCtx.target_page?.label || '',
-    nodeId: pageCtx.node_id || '',
-    method: pageCtx.method || '',
+    target: pageCtx?.target_page?.label || '',
+    nodeId: pageCtx?.node_id || '',
+    method: pageCtx?.method || '',
+    ocrPreview,
+    preferOcrFirst: isVerify && !!ocrPreview,
     figmaRankings: rankings.map((r) => ({
       label: r.label || r.name || '',
       score: formatPageScore({ score: r.score }),
@@ -1220,11 +1486,56 @@ const isAssertFalsePositive = computed(() => {
   return stepOperationFailed(s)
 })
 
+const isPlanAttemptStep = (step) =>
+  step?.role === 'action' && (step?.isPlanAttempt || step?.phase === 'plan_attempt')
+
+const isAssertOnlyFail = (step) => {
+  if (step?.assertOnlyFail) return true
+  if (step?.role === 'expected_action' && step?.ok === false && !stepOperationFailed(step)) return true
+  if (step?.role === 'verify' && step?.ok === false && !stepOperationFailed(step)) return true
+  return false
+}
+
 const effectiveStepOk = (step) => {
   if (!step) return true
+  if (isPlanAttemptStep(step)) return true
   if (step.role === 'expected_action' && step.skipped) return true
+  if (isAssertOnlyFail(step)) return true
   if (step.role === 'verify' && step.ok === true && stepOperationFailed(step)) return false
   return step.ok !== false
+}
+
+const visibleSidebarSteps = computed(() => {
+  const out = []
+  let hideChildren = false
+  let sectionStepNo = null
+  for (let i = 0; i < flatSteps.value.length; i += 1) {
+    const s = flatSteps.value[i]
+    if (s.depth === 0 && (s.role === 'operation' || s.role === 'expected_action')) {
+      sectionStepNo = s.stepNo
+      hideChildren = collapsedSections.value.has(s.stepNo)
+      let childCount = 0
+      for (let j = i + 1; j < flatSteps.value.length; j += 1) {
+        const c = flatSteps.value[j]
+        if (c.depth === 0) break
+        if (c.stepNo === s.stepNo) childCount += 1
+      }
+      out.push({ ...s, _index: i, _childCount: childCount, _collapsible: childCount > 5 })
+    } else if (hideChildren && s.depth > 0 && s.stepNo === sectionStepNo) {
+      continue
+    } else {
+      out.push({ ...s, _index: i, _childCount: 0, _collapsible: false })
+    }
+  }
+  return out
+})
+
+const toggleSectionCollapse = (stepNo, evt) => {
+  evt?.stopPropagation?.()
+  const next = new Set(collapsedSections.value)
+  if (next.has(stepNo)) next.delete(stepNo)
+  else next.add(stepNo)
+  collapsedSections.value = next
 }
 
 const CHANNEL_COLORS = {
@@ -1237,13 +1548,18 @@ const CHANNEL_COLORS = {
   toggle: '#f59e0b',
 }
 
-const showBeforeAfterCompare = computed(() => {
+const beforeAfterMode = computed(() => {
   const step = current.value
-  if (!step || !rolesWithBeforeAfter.has(step.role)) return false
+  if (!step || !rolesWithBeforeAfter.has(step.role)) return 'none'
   const before = step.screenshot_before || ''
-  const after = step.screenshot_after || ''
-  return !!(before && after)
+  const after = effectiveAfterScreenshot.value || step.screenshot_after || ''
+  if (before && after && before !== after) return 'compare'
+  if (before || after) return 'single'
+  return 'none'
 })
+
+const showBeforeAfterCompare = computed(() => beforeAfterMode.value === 'compare')
+const showSingleFrame = computed(() => beforeAfterMode.value === 'single')
 
 const channelOverlaySource = computed(() => {
   const dbg = current.value?.locate_debug
@@ -1391,12 +1707,14 @@ watch(
   () => {
     annotateRect.value = null
     annotateMode.value = false
+    thoughtExpanded.value = false
   },
 )
 
 const isFailedStep = computed(() => {
   const s = current.value
   if (!s) return false
+  if (isPlanAttemptStep(s)) return true
   if (!['action', 'verify', 'operation'].includes(s.role)) return false
   if (s.ok === false) return true
   return isAssertFalsePositive.value
@@ -1496,23 +1814,16 @@ const openAppKnowledge = () => {
 }
 
 watch(
-  () => [
-    current.value?.title,
-    current.value?.ok,
-    current.value?.role,
-    current.value?.stepNo,
-    props.appId,
-    flatSteps.value.length,
-  ],
+  () => [activeIndex.value, current.value?.title, current.value?.role],
   () => {
-    const step = current.value
-    if (isFailedStep.value) loadFailureAnalysis(step)
-    else failureAnalysis.value = null
+    failureAnalysis.value = null
+    analyzeSeq += 1
   },
-  { immediate: true },
 )
 
 const roleIcon = (s) => {
+  if (isPlanAttemptStep(s)) return '↻'
+  if (isAssertOnlyFail(s)) return '◎'
   if (!effectiveStepOk(s)) return '✗'
   if (s.role === 'operation') return '▸'
   if (s.role === 'expected_action') return '◎'
@@ -1561,7 +1872,9 @@ const togglePlay = () => {
   }
   playing.value = true
   playTimer = setInterval(() => {
-    const idx = flatSteps.value.findIndex((s, i) => i > activeIndex.value && s.playable)
+    const idx = flatSteps.value.findIndex(
+      (s, i) => i > activeIndex.value && s.playable && (s.screenshot || s.screenshot_before || s.screenshot_after),
+    )
     if (idx < 0) {
       stopPlay()
       return
@@ -1579,7 +1892,7 @@ onUnmounted(() => {
   <div v-if="flatSteps.length" class="replayer" :class="{ 'replayer--fullscreen': fullscreen }">
     <aside class="replayer-left">
       <div class="replayer-head">
-        Report
+        回放报告
         <span v-if="caseDurationMs != null || runDurationMs != null" class="replayer-timing">
           <template v-if="caseDurationMs != null">本用例 {{ formatDuration(caseDurationMs) }}</template>
           <template v-if="caseDurationMs != null && runDurationMs != null"> · </template>
@@ -1588,12 +1901,14 @@ onUnmounted(() => {
       </div>
 
       <div
-        v-for="(s, i) in flatSteps"
-        :key="i"
+        v-for="s in visibleSidebarSteps"
+        :key="s._index"
         class="step-item"
         :class="{
-          active: i === activeIndex,
-          fail: !effectiveStepOk(s),
+          active: s._index === activeIndex,
+          fail: !effectiveStepOk(s) && !isPlanAttemptStep(s) && !isAssertOnlyFail(s),
+          'assert-fail': isAssertOnlyFail(s),
+          attempt: isPlanAttemptStep(s),
           section: s.type === 'section',
           plan: s.role === 'plan',
           action: s.role === 'action',
@@ -1602,8 +1917,17 @@ onUnmounted(() => {
           page_recovery: s.role === 'page_recovery' || s.role === 'page_recovery_step',
         }"
         :style="{ paddingLeft: `${10 + s.depth * 14}px` }"
-        @click="selectStep(i)"
+        @click="selectStep(s._index)"
       >
+        <button
+          v-if="s._collapsible"
+          type="button"
+          class="step-collapse-btn"
+          :title="collapsedSections.has(s.stepNo) ? '展开' : '折叠'"
+          @click="toggleSectionCollapse(s.stepNo, $event)"
+        >
+          {{ collapsedSections.has(s.stepNo) ? '▸' : '▾' }}
+        </button>
         <span class="step-icon">{{ roleIcon(s) }}</span>
         <div class="step-body">
           <div class="step-title">{{ s.title }}</div>
@@ -1612,6 +1936,16 @@ onUnmounted(() => {
           </div>
           <div v-else-if="s.subtitle && s.depth === 0" class="step-sub">
             {{ String(s.subtitle || '').length > 120 ? String(s.subtitle || '').slice(0, 120) + '…' : String(s.subtitle || '') }}
+          </div>
+          <div
+            v-if="s.operationSummary && s.role === 'operation'"
+            class="step-tag summary"
+            :class="{
+              fail: s.operationFinalOk === false,
+              warn: s.operationFinalOk !== false && s.operationMissCount > 0,
+            }"
+          >
+            {{ s.operationSummary }}
           </div>
           <div v-if="s.msg && s.depth === 2" class="step-sub">
             {{ String(s.msg || '').length > 120 ? String(s.msg || '').slice(0, 120) + '…' : String(s.msg || '') }}
@@ -1627,11 +1961,11 @@ onUnmounted(() => {
       <div v-if="timelineShots.length > 1" class="filmstrip">
         <button
           v-for="t in visibleFilmstripShots"
-          :key="t.globalIndex"
+          :key="t.stepIndex"
           type="button"
           class="film-thumb"
-          :class="{ active: current?.screenshot && imgUrl(current.screenshot) === t.src }"
-          @click="selectStep(flatSteps.findIndex((s) => s.screenshot && imgUrl(s.screenshot) === t.src))"
+          :class="{ active: t.stepIndex === activeIndex }"
+          @click="selectStep(t.stepIndex)"
         >
           <img :src="t.src" alt="" loading="lazy" decoding="async" />
           <span v-if="t.run_elapsed" class="film-ts">{{ t.run_elapsed }}</span>
@@ -1639,7 +1973,7 @@ onUnmounted(() => {
       </div>
 
       <div class="player-toolbar">
-        <el-button size="small" @click="togglePlay">{{ playing ? '暂停' : 'Replay' }}</el-button>
+        <el-button size="small" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</el-button>
         <span class="player-pos">{{ activeIndex + 1 }} / {{ flatSteps.length }}</span>
         <el-radio-group v-model="markStyle" size="small" class="mark-toggle">
           <el-radio-button label="midscene">Midscene</el-radio-button>
@@ -1655,7 +1989,7 @@ onUnmounted(() => {
           多通道命中
         </el-button>
         <el-button
-          v-if="appId && isFailedStep && current?.role === 'action' && (current?.screenshot || current?.screenshot_before)"
+          v-if="appId && isFailedStep && ['action', 'verify'].includes(current?.role) && (current?.screenshot || current?.screenshot_before)"
           size="small"
           :type="annotateMode ? 'danger' : 'default'"
           plain
@@ -1768,6 +2102,10 @@ onUnmounted(() => {
             </div>
           </template>
           <template v-else>
+            <div v-if="showSingleFrame" class="before-after-bar">
+              <span>当前屏</span>
+              <span v-if="isPlanAttemptStep(current)" class="hint-text">（尝试未命中，仅保留单帧截图）</span>
+            </div>
             <div
               ref="screenFrameRef"
               class="screen-frame"
@@ -1829,8 +2167,12 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <div v-if="current.role === 'verify'" class="verify-badge" :class="{ fail: !effectiveStepOk(current) }">
-            {{ effectiveStepOk(current) ? 'Assert Pass' : 'Assert Failed' }}
+          <div
+            v-if="current.role === 'verify'"
+            class="verify-badge"
+            :class="{ fail: current.ok === false && stepOperationFailed(current), 'assert-only': isAssertOnlyFail(current) }"
+          >
+            {{ current.ok !== false ? 'Assert Pass' : 'Assert Failed' }}
           </div>
           <div v-if="isAssertFalsePositive" class="verify-warn">
             前置操作失败，该断言应判定为无效（历史数据可能误标为通过）
@@ -1853,26 +2195,42 @@ onUnmounted(() => {
           <p v-if="currentParamText">{{ currentParamText }}</p>
           <p v-else-if="command">{{ command }}</p>
         </div>
-        <div v-if="current.thought || current.subtitle || knowledgeHintLines(current).length" class="info-block">
-          <div class="info-label">
-            {{ current.role === 'operation' ? '规划说明 · Thought' : current.role === 'plan' ? 'Plan · 步骤参数' : 'Output · Thought' }}
-          </div>
-          <p v-if="current.role === 'operation' || current.role === 'plan'">
-            {{ formatOperationThought(current.subtitle || current.thought) }}
-          </p>
-          <p v-else>{{ current.thought || current.subtitle }}</p>
+        <div v-if="thoughtBlockVisible(current)" class="info-block">
+          <div class="info-label">{{ thoughtBlockLabel(current) }}</div>
+          <p class="thought-body">{{ thoughtBlockBody(current) }}</p>
+          <button
+            v-if="current.role !== 'operation' && current.role !== 'plan' && String(current.thought || current.subtitle || '').length > 160"
+            type="button"
+            class="thought-expand-btn"
+            @click="thoughtExpanded = !thoughtExpanded"
+          >
+            {{ thoughtExpanded ? '收起' : '展开全文' }}
+          </button>
           <ul v-if="formatPlanDetail(current.thought).length" class="plan-detail-list">
             <li v-for="(line, di) in formatPlanDetail(current.thought)" :key="di">{{ line }}</li>
           </ul>
-          <ul v-if="knowledgeHintLines(current).length" class="knowledge-hint-list">
-            <li v-for="(hint, hi) in knowledgeHintLines(current)" :key="hi">📚 {{ hint }}</li>
+          <ul v-if="knowledgeHintPreview(current).length" class="knowledge-hint-list">
+            <li v-for="(hint, hi) in knowledgeHintPreview(current)" :key="hi">📚 {{ hint }}</li>
           </ul>
-          <div v-if="planLogEntries(current).length" class="plan-log-block">
-            <div class="info-label sub">规划日志</div>
+          <p v-if="knowledgeHintLines(current).length > 1" class="hint-text">
+            另有 {{ knowledgeHintLines(current).length - 1 }} 条知识库提示已折叠。
+          </p>
+          <div v-if="planLogGrouped(current).business.length" class="plan-log-block">
+            <div class="info-label sub">规划日志 · 业务步骤</div>
             <ul class="plan-log-list">
-              <li v-for="(entry, li) in planLogEntries(current)" :key="li">
-                <span class="log-type">{{ entry.type || 'entry' }}</span>
+              <li v-for="(entry, li) in planLogGrouped(current).business" :key="`b-${li}`">
+                <span class="log-type">{{ entry.type || 'planned_step' }}</span>
                 {{ entry.summary || entry.text || entry.title || JSON.stringify(entry.detail || {}) }}
+              </li>
+            </ul>
+          </div>
+          <div v-if="planLogGrouped(current).runtime.length" class="plan-log-block runtime-guard-log">
+            <div class="info-label sub">运行时插入（按执行顺序）</div>
+            <ul class="plan-log-list">
+              <li v-for="(entry, li) in planLogGrouped(current).runtime" :key="`r-${li}`">
+                <span class="log-type runtime">守卫</span>
+                {{ entry.summary }}
+                <span v-if="entry.run_elapsed" class="page-meta"> · {{ entry.run_elapsed }}</span>
               </li>
             </ul>
           </div>
@@ -1911,7 +2269,12 @@ onUnmounted(() => {
           v-if="(currentPageContext || current.page_context) && ['verify', 'expected_action', 'page_identify', 'page_recovery', 'page_recovery_step', 'action'].includes(current.role)"
           class="info-block page-context-block"
         >
-          <div class="info-label">当前页面识别</div>
+          <div v-if="currentPageContext?.preferOcrFirst && currentPageContext.ocrPreview" class="ocr-preview-block">
+            <div class="info-label">界面文案（OCR / page_nav）</div>
+            <p class="ocr-snippet">{{ currentPageContext.ocrPreview }}</p>
+            <p class="hint-text">断言校验以当前屏可见文案为准；下方图谱标签仅供参考。</p>
+          </div>
+          <div class="info-label">{{ currentPageContext?.preferOcrFirst ? '图谱参考' : '当前页面识别' }}</div>
           <p>
             <span class="page-tag" :class="{ matched: currentPageContext.matched }">
               {{ currentPageContext.label }}
@@ -1967,23 +2330,45 @@ onUnmounted(() => {
             手动入库
           </el-button>
         </div>
-        <div
-          v-if="['action', 'expected_action'].includes(current.role) && current.locate_debug && !current.skipped"
-          class="info-block locate-debug-block"
-        >
-          <div class="info-label">
-            多通道定位
-            <span class="page-meta">
-              profile={{ current.locate_debug.profile }} · kind={{ current.locate_debug.target_kind }}
+        <div v-if="showLocateDebugBlock" class="info-block locate-debug-block">
+          <div class="info-label info-label-row">
+            <span>
+              多通道定位
+              <template v-if="currentLocateMeta">
+                <span class="page-meta locate-meta">
+                  {{ currentLocateMeta.profileLabel }} · {{ currentLocateMeta.kindLabel }}
+                </span>
+                <span class="page-meta locate-meta-sub">
+                  profile={{ currentLocateMeta.profileKey }} · kind={{ currentLocateMeta.kindKey }}
+                </span>
+              </template>
             </span>
+            <el-tooltip placement="left" :show-after="150" effect="light" popper-class="channel-help-popper">
+              <template #content>
+                <div class="channel-help-tip">
+                  <p>raw = 通道原始相似度；加权 = raw × profile 权重 × kind 加成。</p>
+                  <p>截图标注显示 raw%，选中通道额外显示加权分。</p>
+                  <p>框线颜色与通道列一致；悬停查看详情。未达阈值时可「手动标注」写入图标库。</p>
+                </div>
+              </template>
+              <span class="channel-help-wrap" tabindex="0" aria-label="多通道说明">
+                <button type="button" class="channel-help-btn">?</button>
+              </span>
+            </el-tooltip>
           </div>
+          <p v-if="currentLocateMeta?.foregroundAppName" class="foreground-app-line">
+            前台应用：{{ currentLocateMeta.foregroundAppName }}
+            <span v-if="currentLocateMeta.foregroundPackage" class="page-meta">
+              · {{ currentLocateMeta.foregroundPackage }}
+            </span>
+          </p>
           <p v-if="current.locate_debug.query" class="hint-text">query: {{ current.locate_debug.query }}</p>
-          <div class="channel-legend">
+          <div v-if="locateDebugRows.length" class="channel-legend">
             <span v-for="(color, ch) in CHANNEL_COLORS" :key="ch" class="legend-item">
               <span class="channel-dot" :style="{ background: color }" />{{ ch }}
             </span>
           </div>
-          <table class="channel-table">
+          <table v-if="locateDebugRows.length" class="channel-table">
             <thead>
               <tr>
                 <th>通道</th>
@@ -1995,7 +2380,7 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr
-                v-for="(row, ci) in (current.locate_debug.overlay?.length ? current.locate_debug.overlay : current.locate_debug.candidates)"
+                v-for="(row, ci) in locateDebugRows"
                 :key="ci"
                 :class="{ winner: row.selected }"
               >
@@ -2010,12 +2395,12 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
-          <p class="hint-text">
-            raw = 通道原始相似度；加权 = raw × profile 权重 × kind 加成。截图标注显示 raw%，选中通道额外显示加权分。
-          </p>
-          <p v-if="isFailedStep" class="hint-text">
-            框线颜色与通道列一致；悬停查看详情。未达阈值时可「手动标注」写入图标库。
-          </p>
+          <div v-else class="channel-empty">
+            <p>本次未产生通道候选</p>
+            <p class="hint-text">
+              可能原因：目标未出现在当前屏、各通道均未达阈值，或该步骤未走多通道定位（如 SIM 检测）。
+            </p>
+          </div>
         </div>
         <div v-if="current.run_elapsed || current.duration_ms != null" class="info-block">
           <div class="info-label">Meta</div>
@@ -2025,6 +2410,11 @@ onUnmounted(() => {
 
         <div v-if="isFailedStep && appId" class="info-block failure-block">
           <div class="info-label">失败分析 · 纠错</div>
+          <div v-if="!failureAnalysis && !analyzingFailure" class="failure-actions">
+            <el-button size="small" type="primary" plain @click="loadFailureAnalysis(current)">
+              分析失败原因
+            </el-button>
+          </div>
           <p v-if="analyzingFailure" class="failure-hint">正在分析失败原因…</p>
           <template v-else-if="failureAnalysis">
             <p class="failure-analysis">{{ failureAnalysis.analysis }}</p>
@@ -2221,6 +2611,117 @@ onUnmounted(() => {
 .step-item.verify { color: #047857; }
 .step-item.active { background: #eff6ff; }
 .step-item.fail { background: #fef2f2; }
+.step-item.assert-fail { background: #fffbeb; color: #92400e; }
+.step-item.attempt { background: #f3f4f6; color: #6b7280; }
+.step-item.attempt .step-icon { color: #9ca3af; }
+.step-collapse-btn {
+  flex-shrink: 0;
+  width: 14px;
+  padding: 0;
+  margin-top: 2px;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+.step-tag.summary {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #ecfdf5;
+  color: #047857;
+}
+.step-tag.summary.fail {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.step-tag.summary.warn {
+  background: #fffbeb;
+  color: #b45309;
+}
+.thought-body {
+  margin: 0;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.thought-expand-btn {
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #3b82f6;
+  font-size: 11px;
+  cursor: pointer;
+}
+.info-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.locate-meta {
+  display: block;
+  margin-top: 2px;
+}
+.locate-meta-sub {
+  display: block;
+  font-size: 10px;
+  opacity: 0.85;
+}
+.channel-help-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  outline: none;
+}
+.channel-help-btn {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  background: #fff;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  pointer-events: none;
+}
+.channel-help-tip {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #374151;
+}
+.channel-help-tip p {
+  margin: 0 0 6px;
+}
+.channel-help-tip p:last-child {
+  margin-bottom: 0;
+}
+.channel-empty {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f9fafb;
+  border: 1px dashed #e5e7eb;
+  font-size: 12px;
+  color: #6b7280;
+}
+.channel-empty p { margin: 0; }
+.channel-empty .hint-text { margin-top: 6px; }
+.foreground-app-line {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #1e40af;
+}
 .step-icon {
   width: 16px;
   flex-shrink: 0;
@@ -2341,6 +2842,23 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.5;
   color: #4b5563;
+}
+.runtime-guard-log .log-type.runtime {
+  background: #fef3c7;
+  color: #b45309;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.ocr-snippet {
+  margin: 4px 0 0;
+  padding: 8px;
+  background: #f8fafc;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #1f2937;
 }
 .plan-log-block .info-label.sub {
   margin-top: 10px;
@@ -2560,6 +3078,7 @@ onUnmounted(() => {
   z-index: 5;
 }
 .verify-badge.fail { background: #ef4444; }
+.verify-badge.assert-only { background: #f59e0b; }
 .verify-warn {
   margin-top: 8px;
   padding: 8px 10px;
@@ -2640,4 +3159,20 @@ onUnmounted(() => {
 }
 .recovery-status.ok { color: #15803d; }
 .dialog-desc { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
+</style>
+
+<style>
+.channel-help-popper {
+  max-width: 300px !important;
+  padding: 10px 12px !important;
+}
+.channel-help-popper .channel-help-tip p {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #374151;
+}
+.channel-help-popper .channel-help-tip p:last-child {
+  margin-bottom: 0;
+}
 </style>
