@@ -3,8 +3,7 @@
     <aside class="side-nav">
       <div class="nav-panel">
         <nav class="menu">
-          <div class="item" :class="{ active: currentRoute === 'AppList' }" @click="$router.push({ name: 'AppList' })" title="应用管理"><el-icon><Grid /></el-icon></div>
-          <div class="item" :class="{ active: currentRoute === 'DeviceManage' }" @click="$router.push({ name: 'DeviceManage' })" title="设备管理"><el-icon><Monitor /></el-icon></div>
+          <div class="item" :class="{ active: currentRoute === 'SettingsHub' }" @click="$router.push({ name: 'SettingsHub' })" title="应用与环境"><el-icon><Grid /></el-icon></div>
           <div class="item" :class="{ active: currentRoute === 'Schedule' }" @click="$router.push({ name: 'Schedule' })" title="定时任务"><el-icon><Timer /></el-icon></div>
           <div class="item" :class="{ active: currentRoute === 'Timeline' }" @click="$router.push({ name: 'Timeline' })" title="时间线"><el-icon><DataLine /></el-icon></div>
         </nav>
@@ -25,7 +24,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElIcon } from 'element-plus'
-import { Grid, Monitor, Timer, DataLine } from '@element-plus/icons-vue'
+import { Grid, Timer, DataLine } from '@element-plus/icons-vue'
 
 import 'element-plus/dist/index.css'
 

@@ -42,14 +42,14 @@ const selectedSlashIndex = ref(0)
 
 const navItems = [
   { name: 'Dialogue', label: '对话流', icon: ChatDotRound, path: '/dialogue' },
-  { name: 'AppList', label: '应用', icon: Grid, path: '/report/apps' },
-  { name: 'DeviceManage', label: '设备', icon: Monitor, path: '/device' },
+  { name: 'SettingsHub', label: '应用', icon: Grid, path: '/settings/hub' },
+  { name: 'SettingsRuntime', label: '设备', icon: Monitor, path: '/settings/runtime' },
   { name: 'Schedule', label: '定时', icon: Calendar, path: '/schedule' },
   { name: 'Timeline', label: '时间线', icon: Clock, path: '/timeline' },
 ]
 
 const bottomNavItems = [
-  { name: 'SettingsHub', label: '设置', icon: Setting, path: '/settings/hub' },
+  { name: 'SettingsRuntime', label: '设置', icon: Setting, path: '/settings/runtime' },
 ]
 
 const filteredSlash = computed(() => {

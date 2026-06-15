@@ -10,6 +10,7 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+import './global-loading.css'
 
 // 初始化服务配置
 initServiceConfig().then((host) => {

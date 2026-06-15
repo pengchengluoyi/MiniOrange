@@ -34,6 +34,7 @@ export const initWebSocket = (token) => {
   ws.onopen = () => {
     isConnected = true
     console.log('WebSocket Connected')
+    window.electronAPI?.send?.('renderer-ws-connected', { url })
     if (reconnectTimer) {
       clearInterval(reconnectTimer)
       reconnectTimer = null

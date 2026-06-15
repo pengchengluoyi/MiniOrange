@@ -1594,7 +1594,7 @@ const startCrawl = async () => {
   }
   const selected = crawlDeviceOptions.value.find((d) => d.sn === crawlForm.value.sn)
   if (selected && selected.status !== 'online') {
-    ElMessage.warning('所选设备未在线，请先在设备管理连接节点')
+    ElMessage.warning('所选设备未在线，请先在运行状态中连接节点')
     return
   }
   crawlLoading.value = true

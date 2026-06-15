@@ -1,14 +1,17 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, Connection, OfficeBuilding } from '@element-plus/icons-vue'
+import { Setting, OfficeBuilding, Cpu, Key, Monitor } from '@element-plus/icons-vue'
+import './settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
 
 const sections = [
+  { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
   { id: 'hub', label: '应用与环境', icon: OfficeBuilding, to: '/settings/hub' },
-  { id: 'feishu', label: '飞书机器人', icon: Connection, to: '/settings/feishu' },
+  { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
+  { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
 ]
 
 const isActive = (s) => {
@@ -45,7 +48,7 @@ const go = (s) => router.push(s.to)
           {{ s.label }}
         </button>
       </nav>
-      <el-button text class="back-apps" @click="router.push({ name: 'AppList' })">← 配置中心</el-button>
+      <el-button text class="back-apps" @click="router.push({ name: 'Dialogue' })">← 返回对话记录</el-button>
     </aside>
 
     <main class="settings-main">

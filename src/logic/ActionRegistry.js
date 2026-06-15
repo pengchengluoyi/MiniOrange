@@ -19,15 +19,15 @@ export const actions = [
   },
   {
     id: 'nav.apps',
-    title: 'Go to App List / Dashboard',
+    title: 'Go to Applications and Environment',
     keywords: ['home', 'dashboard', 'apps', 'start', 'work report'],
-    handler: (router) => router.push({ name: 'AppList' }),
+    handler: (router) => router.push({ name: 'SettingsHub' }),
   },
   {
-    id: 'nav.devices',
-    title: 'Go to Device Management',
-    keywords: ['devices', 'manage', 'mobile', 'phone'],
-    handler: (router) => router.push({ name: 'DeviceManage' }),
+    id: 'nav.runtime',
+    title: 'Go to Runtime Status',
+    keywords: ['devices', 'manage', 'mobile', 'phone', 'runtime', 'status'],
+    handler: (router) => router.push({ name: 'SettingsRuntime' }),
   },
   {
     id: 'nav.schedule',

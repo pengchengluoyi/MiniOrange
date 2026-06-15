@@ -12,6 +12,18 @@ export const updateFeishuBot = (botId, data) =>
 export const deleteFeishuBot = (botId) =>
   request({ url: `/settings/feishu/bots/${botId}`, method: 'delete' })
 
+export const listRobotIntegrations = () =>
+  request({ url: '/settings/robots/bots', method: 'get' })
+
+export const createRobotIntegration = (data) =>
+  request({ url: '/settings/robots/bots', method: 'post', data })
+
+export const updateRobotIntegration = (botId, data) =>
+  request({ url: `/settings/robots/bots/${botId}`, method: 'put', data })
+
+export const deleteRobotIntegration = (botId) =>
+  request({ url: `/settings/robots/bots/${botId}`, method: 'delete' })
+
 /** @deprecated 兼容旧接口 */
 export const getFeishuBotSettings = () =>
   request({ url: '/settings/feishu', method: 'get' })
@@ -39,3 +51,24 @@ export const saveFigmaSettings = (data) =>
 
 export const testFigmaToken = (accessToken = '') =>
   request({ url: '/settings/figma/test', method: 'post', data: { access_token: accessToken } })
+
+export const getSkillsCatalog = () =>
+  request({ url: '/settings/skills', method: 'get' })
+
+export const getAnthropicToolUseCatalog = () =>
+  request({ url: '/settings/skills/tools/anthropic', method: 'get' })
+
+export const listAIProviders = () =>
+  request({ url: '/settings/ai/providers', method: 'get' })
+
+export const saveAIProvider = (providerId, data) =>
+  request({ url: `/settings/ai/providers/${providerId}`, method: 'put', data })
+
+export const deleteAIProvider = (providerId) =>
+  request({ url: `/settings/ai/providers/${providerId}`, method: 'delete' })
+
+export const saveAIUsage = (data) =>
+  request({ url: '/settings/ai/usage', method: 'put', data })
+
+export const getAIPlanPrompt = () =>
+  request({ url: '/settings/ai/plan-prompt', method: 'get' })

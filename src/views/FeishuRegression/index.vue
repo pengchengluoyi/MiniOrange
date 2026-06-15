@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listFeishuBots } from '@/api/settings'
+import { listRobotIntegrations } from '@/api/settings'
 import {
   getFeishuConfig,
   updateFeishuConfig,
@@ -359,7 +359,7 @@ const submitClarification = async () => {
   }
 }
 
-const goBack = () => router.push({ name: 'AppList' })
+const goBack = () => router.push({ name: 'SettingsHub' })
 const goAutomation = () =>
   router.push({
     name: 'SettingsAppConfig',
@@ -369,7 +369,7 @@ const goAutomation = () =>
 
 const loadBots = async () => {
   try {
-    const res = await listFeishuBots()
+    const res = await listRobotIntegrations()
     feishuBots.value = (res?.data?.bots || []).filter((b) => b.configured)
     credConfigured.value = feishuBots.value.length > 0
     if (!configForm.value.bot_id && feishuBots.value.length) {
@@ -392,7 +392,7 @@ onBeforeUnmount(clearRunState)
   <div class="feishu-regression">
     <header class="page-header">
       <div>
-        <el-button text @click="goBack">← 配置中心</el-button>
+        <el-button text @click="goBack">← 应用与环境</el-button>
         <h1>飞书用例回归</h1>
         <p>{{ appName }} · 用例存服务端 · 按应用环境执行 · 完整执行日志</p>
       </div>
@@ -412,8 +412,8 @@ onBeforeUnmount(clearRunState)
     <el-alert v-if="!credConfigured" type="warning" show-icon :closable="false" title="未配置飞书机器人" class="cred-alert">
       <template #default>
         请先在
-        <el-link type="primary" @click="router.push({ name: 'SettingsFeishu' })">
-          设置 → 飞书机器人
+        <el-link type="primary" @click="router.push({ name: 'SettingsKeys', query: { tab: 'robots' } })">
+          设置 → 密钥配置 → 机器人
         </el-link>
         中添加机器人。
       </template>

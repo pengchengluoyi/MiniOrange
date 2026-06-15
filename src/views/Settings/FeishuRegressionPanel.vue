@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listFeishuBots } from '@/api/settings'
+import { listRobotIntegrations } from '@/api/settings'
 import {
   getFeishuConfig,
   updateFeishuConfig,
@@ -16,6 +16,7 @@ import { getDeviceList } from '@/api/device'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
+import RunSummaryPanel from '@/components/RunSummaryPanel.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
@@ -314,7 +315,7 @@ const iosOnlyCaseCount = computed(() =>
 
 const loadBots = async () => {
   try {
-    const res = await listFeishuBots()
+    const res = await listRobotIntegrations()
     feishuBots.value = (res?.data?.bots || []).filter((b) => b.configured)
     credConfigured.value = feishuBots.value.length > 0
     if (!configForm.value.bot_id && feishuBots.value.length) {
@@ -385,7 +386,7 @@ onUnmounted(() => {
     <el-alert v-if="!credConfigured" type="warning" show-icon :closable="false" class="cred-alert">
       <template #default>
         请先在
-        <el-link type="primary" @click="router.push({ name: 'SettingsFeishu' })">设置 → 飞书机器人</el-link>
+        <el-link type="primary" @click="router.push({ name: 'SettingsKeys', query: { tab: 'robots' } })">设置 → 密钥配置 → 机器人</el-link>
         中添加机器人。
       </template>
     </el-alert>
@@ -499,6 +500,7 @@ onUnmounted(() => {
         <Teleport to="body">
           <div v-if="resultView !== 'list'" class="report-fullpage">
             <div v-if="resultView === 'cases'" class="report-body report-body--cases">
+              <RunSummaryPanel v-if="lastRun && !running" :run="lastRun" />
               <el-alert
                 v-if="running"
                 type="info"

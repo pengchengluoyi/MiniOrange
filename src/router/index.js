@@ -6,21 +6,21 @@ import { ElMessageBox } from 'element-plus'
 import { clearTitlebar } from '@/composables/useTitlebar'
 import ResourceList from '../views/ResourceList.vue'
 import WorkflowEditor from '../views/WorkflowEditor/index.vue'
-import DeviceManage from '../views/DeviceManage/index.vue'
 import Schedule from '../views/Schedule/index.vue'
 import Timeline from '../views/Timeline/index.vue'
 import Login from '../views/Login/index.vue'
 
 // 懒加载组件
-const AppList = () => import('../views/WorkReport/components/AppList.vue')
 const TaskList = () => import('../views/WorkReport/components/TaskList.vue')
 const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap.vue')
 const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
 const Dialogue = () => import('../views/Dialogue/index.vue')
 const SettingsLayout = () => import('../views/Settings/index.vue')
-const SettingsFeishu = () => import('../views/Settings/FeishuBotsPanel.vue')
 const SettingsHub = () => import('../views/Settings/AppsHubPage.vue')
+const SettingsSkills = () => import('../views/Settings/SkillsPage.vue')
+const SettingsKeys = () => import('../views/Settings/KeysPage.vue')
+const SettingsRuntime = () => import('../views/Settings/RuntimeStatusPage.vue')
 const SettingsProjectEnv = () => import('../views/Settings/ProjectEnvPage.vue')
 const SettingsAppConfig = () => import('../views/Settings/AppConfigPage.vue')
 const routes = [
@@ -38,10 +38,14 @@ const routes = [
         path: '/settings',
         component: SettingsLayout,
         meta: { title: '设置', requiresAuth: true },
-        redirect: '/settings/hub',
+        redirect: '/settings/runtime',
         children: [
             { path: 'hub', name: 'SettingsHub', component: SettingsHub, meta: { title: '应用与环境' } },
-            { path: 'feishu', name: 'SettingsFeishu', component: SettingsFeishu, meta: { title: '飞书机器人' } },
+            { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },
+            { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
+            { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },
+            { path: 'ai', redirect: { name: 'SettingsKeys', query: { tab: 'model-keys' } } },
+            { path: 'feishu', redirect: { name: 'SettingsKeys', query: { tab: 'robots' } } },
             { path: 'knowledge', name: 'SettingsKnowledge', redirect: { name: 'SettingsHub', query: { tab: 'knowledge' } } },
             { path: 'projects', redirect: '/settings/hub' },
             { path: 'apps', redirect: '/settings/hub' },
@@ -80,8 +84,7 @@ const routes = [
     },
     {
         path: '/report/apps',
-        name: 'AppList',
-        component: AppList,
+        redirect: { name: 'SettingsHub' },
         meta: {title: '应用列表', requiresAuth: true}
     },
     {
@@ -112,12 +115,6 @@ const routes = [
         path: '/resources',
         name: 'ResourceList',
         component: ResourceList,
-        meta: { requiresAuth: true }
-    },
-    {
-        path: '/device',
-        name: 'DeviceManage',
-        component: DeviceManage,
         meta: { requiresAuth: true }
     },
     {

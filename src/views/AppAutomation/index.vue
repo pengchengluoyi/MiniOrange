@@ -207,7 +207,7 @@ const onGraphRowClick = (row) => {
 const editCases = () =>
   router.push(`/report/editor/${appId.value}`)
 
-const goBack = () => router.push({ name: 'AppList' })
+const goBack = () => router.push({ name: 'SettingsHub' })
 const goFeishu = () =>
   router.push({
     name: 'FeishuRegression',

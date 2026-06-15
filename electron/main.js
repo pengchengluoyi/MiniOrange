@@ -21,6 +21,7 @@ let controlSocket = null                // 🔥 新增：用于发送控制指�
 let mainWindow = null                   // 🔥 全局主窗口引用
 let tray = null                         // 🔥 新增：系统托盘实例
 let wsClient = null                     // 🔥 新增：当前活跃的 WebSocket 客户端
+let rendererWsConnected = false         // 渲染进程是否已连接外部/本机 Server
 let connectionTimeout = null            // 🔥 新增：连接延迟定时器
 let badgeTimeout = null                 // 🔥 新增：状态清除定时器
 const STREAM_PORT = 8888                // ADB 转发使用的本地端口
@@ -111,6 +112,19 @@ const checkUrl = (url) => {
 
 const startPythonService = async () => {
     console.log('[Main] 准备启动 Python 服务...');
+    // 如果已经能连上外部/本机 Server，就不再尝试启动内置后端，也不弹“核心服务缺失”。
+    // 这覆盖开发环境手动启动 MiniOrangeServer、从端连接主端等场景。
+    const existingServiceChecks = [
+        'http://127.0.0.1:10104',
+        'http://miniorange.local:10104',
+    ];
+    for (const url of existingServiceChecks) {
+        if (await checkUrl(url)) {
+            console.log(`[Main] 检测到已有 Server 可用，跳过内置后端启动: ${url}`);
+            return;
+        }
+    }
+
     // 防止重复启动，先清理旧进程
     await killPythonProcess();
 
@@ -233,7 +247,16 @@ const startPythonService = async () => {
         const helpMsg = app.isPackaged
             ? '找不到 Python 服务文件，请尝试重新安装。'
             : '开发环境缺失后端服务，请执行: node scripts/download-backend.js';
-        sendUiAlert('error', '核心服务缺失', `${helpMsg}\n路径: ${executablePath}`)
+        setTimeout(async () => {
+            const hasLocalService = await checkUrl('http://127.0.0.1:10104');
+            const hasMdnsService = await checkUrl('http://miniorange.local:10104');
+            const hasService = rendererWsConnected || hasLocalService || hasMdnsService;
+            if (hasService) {
+                console.log('[Main] 渲染进程已连接 Server，忽略内置后端缺失提示');
+                return;
+            }
+            sendUiAlert('error', '核心服务缺失', `${helpMsg}\n路径: ${executablePath}`)
+        }, 2500);
         return;
     }
 
@@ -691,6 +714,11 @@ app.whenReady().then(async () => {
         autoUpdater.downloadUpdate()
     })
 
+    ipcMain.on('renderer-ws-connected', (_event, payload = {}) => {
+        rendererWsConnected = true;
+        console.log('[Main] 渲染进程 WebSocket 已连接:', payload.url || '');
+    })
+
     ipcMain.on('quit-and-install', () => {
         autoUpdater.quitAndInstall()
     })
@@ -741,6 +769,39 @@ ipcMain.handle('select-file', async () => {
     })
     if (canceled) return null
     return filePaths[0]
+})
+
+ipcMain.handle('get-runtime-status', async () => {
+    const endpoints = [
+        {name: 'localhost', url: 'http://127.0.0.1:10104'},
+        {name: 'mdns', url: 'http://miniorange.local:10104'},
+    ];
+    const checks = [];
+    for (const item of endpoints) {
+        checks.push({
+            ...item,
+            online: await checkUrl(item.url),
+        });
+    }
+    return {
+        electron: {
+            online: true,
+            pid: process.pid,
+            version: app.getVersion(),
+            packaged: app.isPackaged,
+            platform: process.platform,
+        },
+        embeddedServer: {
+            running: !!pyProc,
+            pid: pyProc?.pid || null,
+        },
+        endpoints: checks,
+        streaming: {
+            wsPort: WS_PORT,
+            active: !!wsServer,
+            streamingProcess: !!currentStreamingProcess,
+        },
+    };
 })
 
 // 7. 扫描 Android 设备 (使用 ADB) - 保持不变

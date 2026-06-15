@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="left">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <el-button :icon="ArrowLeft" circle @click="$router.push('/report/apps')" />
+          <el-button :icon="ArrowLeft" circle @click="$router.push({ name: 'SettingsHub' })" />
           <div>
             <h2>{{ appName ? `${appName} - ` : '' }}测试任务执行</h2>
             <p>管理并监控所有自动化测试任务的执行进度。</p>

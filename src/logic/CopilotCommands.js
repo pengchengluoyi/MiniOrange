@@ -10,15 +10,15 @@ export const copilotCommands = [
   },
   {
     id: 'nav.apps',
-    title: '应用列表',
+    title: '应用与环境',
     keywords: ['apps', '应用', 'dashboard'],
-    handler: (router) => router.push({ name: 'AppList' }),
+    handler: (router) => router.push({ name: 'SettingsHub' }),
   },
   {
-    id: 'nav.devices',
-    title: '设备管理',
-    keywords: ['devices', '设备', '手机'],
-    handler: (router) => router.push({ name: 'DeviceManage' }),
+    id: 'nav.runtime',
+    title: '运行状态',
+    keywords: ['devices', '设备', '手机', 'runtime', '运行状态'],
+    handler: (router) => router.push({ name: 'SettingsRuntime' }),
   },
   {
     id: 'nav.schedule',
@@ -36,7 +36,7 @@ export const copilotCommands = [
     id: 'nav.settings',
     title: '设置',
     keywords: ['settings', '设置', '配置'],
-    handler: (router) => router.push({ name: 'SettingsHub' }),
+    handler: (router) => router.push({ name: 'SettingsRuntime' }),
   },
   {
     id: 'nav.settings.env',

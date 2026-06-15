@@ -12,7 +12,12 @@ const loading = ref(false)
 const hubTab = ref('projects')
 
 const syncTabFromRoute = () => {
-  hubTab.value = route.query.tab === 'knowledge' ? 'knowledge' : 'projects'
+  const tab = route.query.tab
+  if (tab === 'skills') {
+    router.replace({ name: 'SettingsSkills' })
+    return
+  }
+  hubTab.value = tab === 'knowledge' ? 'knowledge' : 'projects'
 }
 
 watch(() => route.query.tab, syncTabFromRoute)
@@ -50,15 +55,37 @@ const openApp = (app, project) => {
 </script>
 
 <template>
-  <div class="settings-panel hub-panel">
-    <template v-if="hubTab === 'projects'">
-      <h2>应用与环境</h2>
-      <p class="desc">项目运行环境、应用自动化与知识库统一管理。</p>
-    </template>
+  <div class="settings-panel hub-panel" v-loading="loading">
+    <header class="settings-page-header">
+      <div>
+        <h2 class="settings-page-title">应用与环境</h2>
+        <p class="settings-page-desc">项目运行环境、应用自动化与知识库统一管理。</p>
+      </div>
+    </header>
 
-    <el-tabs v-model="hubTab" class="hub-tabs">
-      <el-tab-pane label="项目与应用" name="projects">
-        <div v-for="p in projects" :key="p.id" class="project-block" v-loading="loading">
+    <div class="settings-tabbar">
+      <button
+        type="button"
+        class="settings-tab"
+        :class="{ active: hubTab === 'projects' }"
+        @click="hubTab = 'projects'"
+      >
+        <strong>项目与应用</strong>
+        <span>项目、应用和运行环境</span>
+      </button>
+      <button
+        type="button"
+        class="settings-tab"
+        :class="{ active: hubTab === 'knowledge' }"
+        @click="hubTab = 'knowledge'"
+      >
+        <strong>知识库</strong>
+        <span>测试经验和失败知识</span>
+      </button>
+    </div>
+
+    <template v-if="hubTab === 'projects'">
+        <div v-for="p in projects" :key="p.id" class="settings-table-card project-block">
           <div class="project-head">
             <div>
               <h3>{{ p.name }}</h3>
@@ -85,21 +112,19 @@ const openApp = (app, project) => {
             </el-table-column>
           </el-table>
         </div>
-      </el-tab-pane>
+      <section v-if="!projects.length && !loading" class="settings-card empty-card">
+        暂无项目与应用
+      </section>
+    </template>
 
-      <el-tab-pane label="知识库" name="knowledge">
-        <KnowledgePanel embedded />
-      </el-tab-pane>
-    </el-tabs>
+    <KnowledgePanel v-else embedded />
   </div>
 </template>
 
 <style scoped>
 .hub-panel { max-width: none; width: 100%; }
-h2 { margin: 0 0 8px; font-size: 20px; font-weight: 700; }
-.desc { color: #6b7280; font-size: 13px; margin: 0 0 16px; }
-.hub-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
-.project-block { margin-bottom: 28px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; }
+.project-block { margin-bottom: 24px; }
+.empty-card { color: #9ca3af; font-size: 13px; text-align: center; }
 .project-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .project-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .sub { font-size: 12px; color: #9ca3af; }
