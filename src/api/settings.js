@@ -55,9 +55,6 @@ export const testFigmaToken = (accessToken = '') =>
 export const getSkillsCatalog = () =>
   request({ url: '/settings/skills', method: 'get' })
 
-export const getAnthropicToolUseCatalog = () =>
-  request({ url: '/settings/skills/tools/anthropic', method: 'get' })
-
 export const listAIProviders = () =>
   request({ url: '/settings/ai/providers', method: 'get' })
 
