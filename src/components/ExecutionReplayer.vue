@@ -41,6 +41,7 @@ const analyzingFailure = ref(false)
 const savingKnowledge = ref(false)
 const failureAnalysis = ref(null)
 const thoughtExpanded = ref(false)
+const aiResponseNode = ref(null)
 const knowledgeDialogVisible = ref(false)
 const knowledgeDraft = ref({
   title: '',
@@ -154,6 +155,8 @@ const buildFlatSteps = () => {
       plan_log: op.plan_log || [],
       thought_meta: op.thought_meta || {},
       knowledge_hints: op.knowledge_hints || [],
+      planner: op.planner || op.thought_meta?.planner || {},
+      ai_debug: op.ai_debug || op.thought_meta?.ai_debug || null,
     }
     const opKey = `op:${ctx.stepIndex ?? ctx.stepNo ?? 'x'}`
     const skipSection = ctx.skipOperationSection || seenOperationKeys.has(opKey)
@@ -172,6 +175,8 @@ const buildFlatSteps = () => {
         thought_meta: op.thought_meta || {},
         knowledge_hints: op.knowledge_hints || [],
         plan_log: op.plan_log || [],
+        planner: stepCtx.planner,
+        ai_debug: stepCtx.ai_debug,
         ok: op.ok,
         operationSummary: formatOperationSummary(op),
         operationFinalOk: operationStats(op).finalOk,
@@ -207,6 +212,8 @@ const buildFlatSteps = () => {
         kind: plan.kind,
         ok: plan.ok,
         thought: plan.detail || {},
+        planner: stepCtx.planner,
+        ai_debug: stepCtx.ai_debug,
         run_elapsed: plan.run_elapsed,
         run_elapsed_ms: plan.run_elapsed_ms,
         screenshot: planShot,
@@ -575,6 +582,10 @@ const buildFlatSteps = () => {
       thought: exp.thought,
       ok: exp.ok,
       assertOnlyFail,
+      plan_log: exp.plan_log || [],
+      thought_meta: exp.thought_meta || {},
+      planner: exp.planner || exp.thought_meta?.planner || {},
+      ai_debug: exp.ai_debug || exp.thought_meta?.ai_debug || null,
       screenshot: verifyShot,
       screenshot_before: verifyShot,
       screenshot_after: verifyShot,
@@ -583,12 +594,19 @@ const buildFlatSteps = () => {
       playable: !!verifyShot,
     })
 
-    const expectedCtx = { ...ctx, actionText: exp.text || ctx.expectedText || ctx.actionText }
+    const expectedCtx = {
+      ...ctx,
+      actionText: exp.text || ctx.expectedText || ctx.actionText,
+      plan_log: exp.plan_log || [],
+      thought_meta: exp.thought_meta || {},
+      planner: exp.planner || exp.thought_meta?.planner || {},
+      ai_debug: exp.ai_debug || exp.thought_meta?.ai_debug || null,
+    }
     appendPageTrace(pageCtx, pageRecovery, expectedCtx, verifyShot)
 
     const emitVerifyPlan = (plan) => {
       pushNode(out, {
-        ...ctx,
+        ...expectedCtx,
         depth: 1,
         role: 'plan',
         type: 'verify_plan',
@@ -597,6 +615,8 @@ const buildFlatSteps = () => {
         subtitle: plan.verify_text || plan.summary,
         thought: exp.thought,
         ok: plan.ok,
+        planner: expectedCtx.planner,
+        ai_debug: expectedCtx.ai_debug,
         screenshot: verifyShot,
         screenshot_before: verifyShot,
         screenshot_after: verifyShot,
@@ -607,14 +627,17 @@ const buildFlatSteps = () => {
 
     const emitVerifyAssert = (chk, planOk) => {
       pushNode(out, {
-        ...ctx,
+        ...expectedCtx,
         depth: 1,
         role: 'verify',
         type: 'verify',
         title: chk.ok ? `Assert - ${chk.text}` : `Assert ✗ - ${chk.text}`,
         subtitle: chk.text,
         msg: chk.reason,
+        method: chk.method,
         ok: chk.ok,
+        planner: expectedCtx.planner,
+        ai_debug: expectedCtx.ai_debug,
         screenshot: verifyShot,
         screenshot_before: verifyShot,
         screenshot_after: verifyShot,
@@ -1310,6 +1333,60 @@ const planLogEntries = (node) => {
   return Array.isArray(log) ? log : []
 }
 
+const extractAiDebug = (node) => {
+  if (node?.ai_debug) return node.ai_debug
+  if (node?.thought_meta?.ai_debug) return node.thought_meta.ai_debug
+  const entry = planLogEntries(node).find((e) => e.type === 'ai_debug')
+  return entry?.detail || null
+}
+
+const extractPlanner = (node) => {
+  if (node?.planner && Object.keys(node.planner).length) return node.planner
+  if (node?.thought_meta?.planner && Object.keys(node.thought_meta.planner).length) {
+    return node.thought_meta.planner
+  }
+  const entry = planLogEntries(node).find((e) => e.type === 'planner')
+  return entry?.detail || null
+}
+
+const hasAiResponse = (node) => !!extractAiDebug(node)
+
+const openAiResponse = (node) => {
+  aiResponseNode.value = node || null
+}
+
+const closeAiResponse = () => {
+  aiResponseNode.value = null
+}
+
+const aiResponseTitle = computed(() => {
+  const planner = extractPlanner(aiResponseNode.value)
+  const task = planner?.task === 'assert' ? 'Assert' : 'Plan'
+  if (!planner?.provider_id) return `大模型 ${task} Response`
+  return `${planner.provider_id} ${task} Response`
+})
+
+const aiResponsePayload = computed(() => {
+  const node = aiResponseNode.value
+  const aiDebug = extractAiDebug(node)
+  const planner = extractPlanner(node)
+  if (!node || !aiDebug) return {}
+  return {
+    role: node.role,
+    title: node.title || node.subtitle || '',
+    planner,
+    response: aiDebug.raw_plan || aiDebug.raw_response || null,
+    normalized_steps: aiDebug.normalized_steps || null,
+    coordinate_scale: aiDebug.coordinate_scale || null,
+    overlay_guard_before_plan: aiDebug.overlay_guard_before_plan || null,
+    blockers: aiDebug.blockers || null,
+    error: aiDebug.error || aiDebug.error_info || null,
+    screen: aiDebug.screen || null,
+  }
+})
+
+const aiResponseText = computed(() => JSON.stringify(aiResponsePayload.value, null, 2))
+
 const planLogGrouped = (node) => {
   const entries = planLogEntries(node)
   const business = entries.filter((e) => e.type === 'planned_step' && !isGuardPlanEntry(e))
@@ -1951,6 +2028,15 @@ onUnmounted(() => {
             {{ String(s.msg || '').length > 120 ? String(s.msg || '').slice(0, 120) + '…' : String(s.msg || '') }}
           </div>
           <div v-if="s.icon_auto_learned" class="step-tag auto">已自动入库</div>
+          <button
+            v-if="hasAiResponse(s)"
+            type="button"
+            class="step-ai-btn"
+            title="查看 AI Response"
+            @click.stop="openAiResponse(s)"
+          >
+            AI
+          </button>
         </div>
         <span v-if="s.run_elapsed" class="step-ts">{{ s.run_elapsed }}</span>
         <span v-if="s.duration_ms != null" class="step-time">{{ (s.duration_ms / 1000).toFixed(2) }}s</span>
@@ -2237,6 +2323,16 @@ onUnmounted(() => {
           <p v-if="current.role === 'operation' && current.thought_meta?.plan_reply" class="hint-text plan-reply">
             拆解：{{ current.thought_meta.plan_reply }}
           </p>
+          <div v-if="hasAiResponse(current)" class="ai-response-actions">
+            <button type="button" class="ai-response-btn" @click="openAiResponse(current)">
+              查看 AI Response
+            </button>
+            <span v-if="extractPlanner(current)?.mode" class="ai-response-meta">
+              {{ extractPlanner(current).mode }}
+              <template v-if="extractPlanner(current).provider_id"> · {{ extractPlanner(current).provider_id }}</template>
+              <template v-if="extractPlanner(current).task"> · {{ extractPlanner(current).task }}</template>
+            </span>
+          </div>
           <p v-if="current.role === 'operation'" class="hint-text">
             Thought 为当前步骤指令；知识库仅展示与本步相关的提示。
           </p>
@@ -2317,7 +2413,18 @@ onUnmounted(() => {
         <div v-if="current.role === 'verify'" class="info-block">
           <div class="info-label">Output · Assert</div>
           <p>{{ current.subtitle }}</p>
+          <p v-if="current.method">method: {{ current.method }}</p>
           <p v-if="current.msg">{{ current.msg }}</p>
+          <div v-if="hasAiResponse(current)" class="ai-response-actions">
+            <button type="button" class="ai-response-btn" @click="openAiResponse(current)">
+              查看 AI Response
+            </button>
+            <span v-if="extractPlanner(current)?.mode" class="ai-response-meta">
+              {{ extractPlanner(current).mode }}
+              <template v-if="extractPlanner(current).provider_id"> · {{ extractPlanner(current).provider_id }}</template>
+              <template v-if="extractPlanner(current).task"> · {{ extractPlanner(current).task }}</template>
+            </span>
+          </div>
         </div>
         <div v-if="current.role === 'action' && current.icon_auto_learned" class="info-block">
           <div class="info-label">图标库</div>
@@ -2461,6 +2568,32 @@ onUnmounted(() => {
         <el-button type="primary" :loading="savingKnowledge" @click="saveFailureKnowledge">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-drawer
+      :model-value="!!aiResponseNode"
+      size="420px"
+      direction="rtl"
+      class="ai-response-drawer"
+      :with-header="false"
+      @close="closeAiResponse"
+    >
+      <div class="response-panel">
+        <header class="response-head">
+          <div>
+            <span>MODEL RESPONSE</span>
+            <h3>{{ aiResponseTitle }}</h3>
+          </div>
+          <button type="button" class="response-close" @click="closeAiResponse">×</button>
+        </header>
+        <div class="response-meta">
+          <span>{{ extractPlanner(aiResponseNode)?.mode || '-' }}</span>
+          <span v-if="extractPlanner(aiResponseNode)?.provider_id">{{ extractPlanner(aiResponseNode).provider_id }}</span>
+          <span v-if="extractPlanner(aiResponseNode)?.model">{{ extractPlanner(aiResponseNode).model }}</span>
+          <span v-if="extractPlanner(aiResponseNode)?.task">{{ extractPlanner(aiResponseNode).task }}</span>
+        </div>
+        <pre class="response-json">{{ aiResponseText }}</pre>
+      </div>
+    </el-drawer>
   </div>
   <el-empty v-else description="暂无执行步骤（请重新执行用例以生成 Midscene 层级日志）" />
 </template>
@@ -3159,6 +3292,129 @@ onUnmounted(() => {
 }
 .recovery-status.ok { color: #15803d; }
 .dialog-desc { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
+.ai-response-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ai-response-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ai-response-btn:hover {
+  border-color: #bfdbfe;
+  background: #dbeafe;
+}
+.ai-response-meta {
+  font-size: 11px;
+  color: #64748b;
+}
+.step-ai-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  min-width: 28px;
+  margin-top: 4px;
+  padding: 0 6px;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.step-ai-btn:hover {
+  border-color: #bfdbfe;
+  background: #dbeafe;
+}
+:deep(.ai-response-drawer .el-drawer__body) {
+  padding: 0;
+  background: #f8fafc;
+}
+.response-panel {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+.response-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.response-head span {
+  color: #6366f1;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+}
+.response-head h3 {
+  margin: 4px 0 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 780;
+}
+.response-close {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.response-close:hover {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+.response-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px;
+}
+.response-meta span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 700;
+}
+.response-json {
+  flex: 1;
+  margin: 0;
+  padding: 16px 18px 24px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #0f172a;
+  background: transparent;
+}
 </style>
 
 <style>

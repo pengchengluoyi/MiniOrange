@@ -1,17 +1,15 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Monitor, Cpu, Connection, Refresh, VideoPlay, Files, Lock, Cellphone, Folder, Document, Back, SwitchButton } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { Monitor, Cpu, Connection, Refresh, VideoPlay, Files, Lock, Cellphone, Folder, Document, Back } from '@element-plus/icons-vue'
 import { VueFlow, MarkerType, Handle, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { addMessageListener, removeMessageListener, sendWsRequest } from '@/api/mWebSocket'
-import { getNodeStatus, leaveCluster } from '@/api/system'
+import { getNodeStatus } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl } from '@/utils/config'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
 
-const router = useRouter()
 const loading = ref(false)
 const runtime = ref(null)
 const nodeStatus = ref(null)
@@ -496,29 +494,6 @@ const handleWsMessage = (res) => {
   }
 }
 
-const handleLeaveCluster = async () => {
-  try {
-    await ElMessageBox.confirm('确定要解除绑定吗？设备将重启并断开连接。', '解绑确认', {
-      confirmButtonText: '确定解绑',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    try {
-      await leaveCluster()
-      ElMessage.success('已解绑，正在重启...')
-    } catch (e) {
-      console.warn('解绑请求可能因服务重启而中断:', e)
-    } finally {
-      localStorage.removeItem('ws_token')
-      localStorage.removeItem('token')
-      router.replace('/login')
-      setTimeout(() => window.location.reload(), 1000)
-    }
-  } catch (e) {
-    // 用户取消确认。
-  }
-}
-
 const handleScrcpy = (row) => {
   currentScrcpySn.value = row.sn
   scrcpyDialogVisible.value = true
@@ -566,10 +541,6 @@ onUnmounted(() => {
           <el-icon><Files /></el-icon>
           <span>文件传输</span>
           <span class="settings-action-arrow">↗</span>
-        </button>
-        <button type="button" class="settings-action-pill refresh-pill danger-pill" style="--brand: #ef4444" @click="handleLeaveCluster">
-          <el-icon><SwitchButton /></el-icon>
-          <span>退出登录 / 解绑</span>
         </button>
         <button type="button" class="settings-action-pill refresh-pill" style="--brand: #0ea5e9" @click="load">
           <el-icon><Refresh /></el-icon>
@@ -975,12 +946,6 @@ onUnmounted(() => {
 
 .refresh-pill {
   min-height: 30px;
-}
-
-.danger-pill {
-  color: #b91c1c;
-  border-color: rgba(248, 113, 113, 0.28);
-  background: rgba(254, 242, 242, 0.86);
 }
 
 .status-grid {

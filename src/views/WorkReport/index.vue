@@ -1,15 +1,5 @@
 <template>
   <div class="admin-shell">
-    <aside class="side-nav">
-      <div class="nav-panel">
-        <nav class="menu">
-          <div class="item" :class="{ active: currentRoute === 'SettingsHub' }" @click="$router.push({ name: 'SettingsHub' })" title="应用与环境"><el-icon><Grid /></el-icon></div>
-          <div class="item" :class="{ active: currentRoute === 'Schedule' }" @click="$router.push({ name: 'Schedule' })" title="定时任务"><el-icon><Timer /></el-icon></div>
-          <div class="item" :class="{ active: currentRoute === 'Timeline' }" @click="$router.push({ name: 'Timeline' })" title="时间线"><el-icon><DataLine /></el-icon></div>
-        </nav>
-      </div>
-    </aside>
-
     <main class="content-view">
       <router-view v-slot="{ Component }">
         <transition name="fade-slide" mode="out-in">
@@ -21,15 +11,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElIcon } from 'element-plus'
-import { Grid, Timer, DataLine } from '@element-plus/icons-vue'
-
 import 'element-plus/dist/index.css'
-
-const route = useRoute()
-const currentRoute = computed(() => route.name)
 </script>
 
 <style scoped>
@@ -56,46 +38,4 @@ const currentRoute = computed(() => route.name)
   opacity: 0;
 }
 
-.side-nav {
-  width: 72px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 24px;
-  background: #fff;
-  border-right: 1px solid #e5e7eb;
-}
-
-.nav-panel {
-  padding: 8px;
-}
-
-.menu {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.item {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  color: #6b7280;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.item:hover {
-  background: #f3f4f6;
-  color: #111827;
-}
-
-.item.active {
-  background: #111827;
-  color: #fff;
-}
 </style>

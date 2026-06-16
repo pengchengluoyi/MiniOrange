@@ -1,36 +1,24 @@
 /**
- * 对话流 / 命令面板 可执行指令（含页面跳转与执行器动作提示）
+ * Agent / 命令面板 可执行指令（含页面跳转与执行器动作提示）
  */
 export const copilotCommands = [
   {
     id: 'nav.dialogue',
-    title: '对话流（首页）',
+    title: 'Agent（首页）',
     keywords: ['home', 'copilot', '对话', '助手'],
     handler: (router) => router.push({ name: 'Dialogue' }),
   },
   {
-    id: 'nav.apps',
-    title: '应用与环境',
-    keywords: ['apps', '应用', 'dashboard'],
-    handler: (router) => router.push({ name: 'SettingsHub' }),
-  },
-  {
-    id: 'nav.runtime',
-    title: '运行状态',
-    keywords: ['devices', '设备', '手机', 'runtime', '运行状态'],
-    handler: (router) => router.push({ name: 'SettingsRuntime' }),
+    id: 'nav.agentHistory',
+    title: 'Agent 对话记录',
+    keywords: ['agent', 'history', '对话记录', '历史'],
+    handler: (router) => router.push({ name: 'AgentHistory' }),
   },
   {
     id: 'nav.schedule',
     title: '定时任务',
     keywords: ['schedule', '定时'],
-    handler: (router) => router.push({ name: 'Schedule' }),
-  },
-  {
-    id: 'nav.timeline',
-    title: '时间线',
-    keywords: ['timeline', '时间线', '日志'],
-    handler: (router) => router.push({ name: 'Timeline' }),
+    handler: (router) => router.push({ name: 'SettingsSchedule' }),
   },
   {
     id: 'nav.settings',
@@ -42,13 +30,13 @@ export const copilotCommands = [
     id: 'nav.settings.env',
     title: '设置 · 项目环境',
     keywords: ['env', '环境', '包名'],
-    handler: (router) => router.push({ name: 'SettingsProjects' }),
+    handler: (router) => router.push({ name: 'SettingsHub' }),
   },
   {
     id: 'nav.settings.apps',
     title: '设置 · 应用配置',
     keywords: ['app config', '应用配置', 'skills'],
-    handler: (router) => router.push({ name: 'SettingsApps' }),
+    handler: (router) => router.push({ name: 'SettingsHub' }),
   },
   {
     id: 'exec.open_app',

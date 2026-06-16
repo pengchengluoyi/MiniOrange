@@ -5,7 +5,6 @@ import { Plus } from '@element-plus/icons-vue'
 import {
   ElMessage,
   ElMessageBox,
-  ElCard,
   ElButton,
   ElTable,
   ElTableColumn,
@@ -271,16 +270,38 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="schedule-container">
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span>定时任务管理</span>
-          <el-button type="primary" :icon="Plus" @click="handleCreate">新建任务</el-button>
-        </div>
-      </template>
+  <div class="schedule-container settings-panel">
+    <header class="settings-page-header">
+      <div>
+        <h2 class="settings-page-title">定时任务</h2>
+        <p class="settings-page-desc">配置按 Cron 自动执行的用例流程，可指定应用、流程与目标设备。</p>
+      </div>
+      <button type="button" class="settings-action-pill schedule-create-btn" @click="handleCreate">
+        <el-icon><Plus /></el-icon>
+        <span>新建任务</span>
+        <span class="settings-action-arrow">+</span>
+      </button>
+    </header>
 
-      <el-table :data="tableData" v-loading="loading" style="width: 100%">
+    <section class="schedule-summary">
+      <div class="summary-card">
+        <span>任务总数</span>
+        <strong>{{ tableData.length }}</strong>
+      </div>
+      <div class="summary-card active">
+        <span>启用中</span>
+        <strong>{{ tableData.filter((item) => item.is_active).length }}</strong>
+      </div>
+    </section>
+
+    <section class="settings-table-card schedule-table-card" v-loading="loading">
+      <div class="table-title-row">
+        <div>
+          <strong>任务列表</strong>
+          <span>管理启停、编辑与执行历史</span>
+        </div>
+      </div>
+      <el-table :data="tableData" style="width: 100%">
         <el-table-column prop="name" label="任务名称" min-width="120" />
         <el-table-column prop="app_id" label="App ID" min-width="100" show-overflow-tooltip />
         <el-table-column prop="cron_expression" label="Cron 表达式" min-width="140">
@@ -316,19 +337,26 @@ onMounted(() => {
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
+        <template #empty>
+          <div class="schedule-empty">
+            <strong>暂无定时任务</strong>
+            <span>点击右上角「新建任务」创建第一条自动执行计划。</span>
+          </div>
+        </template>
       </el-table>
-    </el-card>
+    </section>
 
     <!-- Dialog -->
     <el-dialog
       v-model="dialogVisible"
       :title="isEdit ? '编辑任务' : '新建任务'"
-      width="550px"
+      width="620px"
+      class="schedule-dialog"
       @close="resetForm"
     >
       <el-form ref="formRef" :model="formData" :rules="rules" label-width="100px">
         <el-form-item label="任务名称" prop="name">
-          <el-input v-model="formData.name" placeholder="请输入任务名称" />
+          <el-input v-model="formData.name" placeholder="例如：每日中午执行登录冒烟测试" />
         </el-form-item>
         <el-form-item label="App ID" prop="app_id">
           <el-select v-model="formData.app_id" placeholder="关联的应用 (可选)" clearable filterable style="width: 100%" @change="handleAppChange">
@@ -340,11 +368,11 @@ onMounted(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="Cron表达式" prop="cron_expression">
+        <el-form-item label="Cron 表达式" prop="cron_expression">
           <el-input v-model="formData.cron_expression" placeholder="分 时 日 月 周 (例如: 0 12 * * *)" />
           <div class="form-tip">格式: 分 时 日 月 周 (空格分隔)</div>
         </el-form-item>
-        <el-form-item label="流程ID" prop="flow_id">
+        <el-form-item label="流程 ID" prop="flow_id">
           <el-select v-model="formData.flow_id" placeholder="选择关联的测试用例" clearable filterable :loading="flowLoading" style="width: 100%">
             <el-option v-for="item in flowOptions" :key="item.value" :label="item.label" :value="item.value">
               <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
@@ -354,7 +382,7 @@ onMounted(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="设备SN" prop="target_sn">
+        <el-form-item label="设备 SN" prop="target_sn">
           <el-select v-model="formData.target_sn" placeholder="指定运行设备 (留空则不限制)" clearable style="width: 100%">
             <el-option v-for="item in deviceOptions" :key="item.value" :label="item.label" :value="item.value">
               <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
@@ -393,7 +421,7 @@ onMounted(() => {
     </el-dialog>
 
     <!-- History Dialog -->
-    <el-dialog v-model="historyDialogVisible" title="执行历史" width="700px">
+    <el-dialog v-model="historyDialogVisible" title="执行历史" width="760px" class="schedule-dialog">
       <el-table :data="historyList" v-loading="historyLoading" height="400">
         <el-table-column prop="created_at" label="执行时间" width="180" />
         <el-table-column prop="status" label="状态" width="100">
@@ -418,23 +446,122 @@ onMounted(() => {
 </template>
 
 <style scoped>
-  .schedule-container {
-    padding: 20px;
-    height: 100%;
-    box-sizing: border-box;
+.schedule-container {
+  min-height: 100%;
+}
+
+.schedule-create-btn {
+  --brand: #3b82f6;
+  border-color: #bfdbfe;
+}
+
+.schedule-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.summary-card {
+  padding: 16px;
+  border: 1px solid var(--settings-border);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #fff, #f8fafc);
+  box-shadow: var(--settings-shadow);
+}
+
+.summary-card span {
+  display: block;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.summary-card strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--settings-text);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.summary-card.active {
+  border-color: #bbf7d0;
+  background: linear-gradient(135deg, #fff, #ecfdf5);
+}
+
+.summary-card.muted {
+  border-color: #bfdbfe;
+  background: linear-gradient(135deg, #fff, #eff6ff);
+}
+
+.schedule-table-card {
+  overflow: hidden;
+}
+
+.table-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.table-title-row strong {
+  display: block;
+  color: var(--settings-text);
+  font-size: 15px;
+}
+
+.table-title-row span {
+  display: block;
+  margin-top: 3px;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.schedule-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 36px 0;
+  color: var(--settings-muted);
+}
+
+.schedule-empty strong {
+  color: var(--settings-text);
+  font-size: 14px;
+}
+
+.form-tip {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mono-font {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:deep(.schedule-dialog .el-dialog) {
+  border-radius: 18px;
+}
+
+:deep(.schedule-dialog .el-dialog__header) {
+  padding: 20px 22px 8px;
+}
+
+:deep(.schedule-dialog .el-dialog__body) {
+  padding: 16px 22px 8px;
+}
+
+:deep(.schedule-dialog .el-dialog__footer) {
+  padding: 12px 22px 20px;
+}
+
+@media (max-width: 900px) {
+  .schedule-summary {
+    grid-template-columns: 1fr;
   }
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .form-tip {
-    font-size: 12px;
-    color: #909399;
-    line-height: 1.4;
-    margin-top: 4px;
-  }
-  .mono-font {
-    font-family: monospace;
-  }
+}
 </style>

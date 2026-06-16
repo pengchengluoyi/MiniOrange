@@ -16,6 +16,7 @@ const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap
 const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
 const Dialogue = () => import('../views/Dialogue/index.vue')
+const AgentHistory = () => import('../views/AgentHistory/index.vue')
 const SettingsLayout = () => import('../views/Settings/index.vue')
 const SettingsHub = () => import('../views/Settings/AppsHubPage.vue')
 const SettingsSkills = () => import('../views/Settings/SkillsPage.vue')
@@ -42,6 +43,7 @@ const routes = [
         children: [
             { path: 'hub', name: 'SettingsHub', component: SettingsHub, meta: { title: '应用与环境' } },
             { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },
+            { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
             { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
             { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },
             { path: 'ai', redirect: { name: 'SettingsKeys', query: { tab: 'model-keys' } } },
@@ -80,7 +82,13 @@ const routes = [
         path: '/dialogue',
         name: 'Dialogue',
         component: Dialogue,
-        meta: { title: '对话流', requiresAuth: true }
+        meta: { title: 'Agent', requiresAuth: true }
+    },
+    {
+        path: '/agents',
+        name: 'AgentHistory',
+        component: AgentHistory,
+        meta: { title: 'Agent 对话记录', requiresAuth: true }
     },
     {
         path: '/report/apps',
@@ -119,8 +127,7 @@ const routes = [
     },
     {
         path: '/schedule',
-        name: 'Schedule',
-        component: Schedule,
+        redirect: { name: 'SettingsSchedule' },
         meta: { title: '定时任务', requiresAuth: true }
     },
     {

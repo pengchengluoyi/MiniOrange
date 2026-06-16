@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, OfficeBuilding, Cpu, Key, Monitor } from '@element-plus/icons-vue'
+import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
+import { readAgentSessions } from '@/utils/agentSessions'
 import './settings-ui.css'
 
 const route = useRoute()
@@ -9,6 +10,7 @@ const router = useRouter()
 
 const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
+  { id: 'schedule', label: '定时任务', icon: Calendar, to: '/settings/schedule' },
   { id: 'hub', label: '应用与环境', icon: OfficeBuilding, to: '/settings/hub' },
   { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
   { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
@@ -26,6 +28,12 @@ const isActive = (s) => {
 }
 
 const go = (s) => router.push(s.to)
+const openLatestDialogue = () => {
+  const latest = readAgentSessions()
+    .filter((session) => (session.messages || []).some((item) => item.role === 'user' && String(item.content || '').trim()))
+    .sort((a, b) => new Date(b.lastUserMessageAt || b.updatedAt) - new Date(a.lastUserMessageAt || a.updatedAt))[0]
+  router.push(latest ? { name: 'Dialogue', query: { sessionId: latest.id } } : { name: 'Dialogue', query: { fresh: '1' } })
+}
 </script>
 
 <template>
@@ -48,7 +56,7 @@ const go = (s) => router.push(s.to)
           {{ s.label }}
         </button>
       </nav>
-      <el-button text class="back-apps" @click="router.push({ name: 'Dialogue' })">← 返回对话记录</el-button>
+      <el-button text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
     </aside>
 
     <main class="settings-main">
@@ -76,6 +84,7 @@ const go = (s) => router.push(s.to)
   box-sizing: border-box;
   overflow-y: auto;
 }
+
 .aside-head {
   display: flex;
   align-items: center;

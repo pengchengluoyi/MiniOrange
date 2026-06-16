@@ -18,27 +18,15 @@ export const actions = [
     handler: (router) => router.push({ name: 'Dialogue' }),
   },
   {
-    id: 'nav.apps',
-    title: 'Go to Applications and Environment',
-    keywords: ['home', 'dashboard', 'apps', 'start', 'work report'],
-    handler: (router) => router.push({ name: 'SettingsHub' }),
-  },
-  {
-    id: 'nav.runtime',
-    title: 'Go to Runtime Status',
-    keywords: ['devices', 'manage', 'mobile', 'phone', 'runtime', 'status'],
-    handler: (router) => router.push({ name: 'SettingsRuntime' }),
+    id: 'nav.agentHistory',
+    title: 'Go to Agent History',
+    keywords: ['agent', 'history', 'records', '对话记录'],
+    handler: (router) => router.push({ name: 'AgentHistory' }),
   },
   {
     id: 'nav.schedule',
-    title: 'Go to Schedule',
+    title: 'Go to Schedule Settings',
     keywords: ['tasks', 'cron', 'jobs', 'schedule', 'timer'],
-    handler: (router) => router.push({ name: 'Schedule' }),
-  },
-  {
-    id: 'nav.timeline',
-    title: 'Go to Timeline',
-    keywords: ['events', 'logs', 'history', 'timeline', 'data line'],
-    handler: (router) => router.push({ name: 'Timeline' }),
+    handler: (router) => router.push({ name: 'SettingsSchedule' }),
   },
 ]

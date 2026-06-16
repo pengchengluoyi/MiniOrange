@@ -8,7 +8,7 @@
     </div>
 
     <!-- 对话流页使用全屏界面，隐藏底部浮层 -->
-    <CopilotWidget v-if="!isDialogueRoute && !reportOverlayOpen" />
+    <CopilotWidget v-if="showCopilotWidget" />
     
     <!-- Global Overlays -->
     <CommandPalette ref="commandPaletteRef" />
@@ -31,6 +31,13 @@ import { reportOverlayOpen } from '@/composables/useOverlayState'
 const route = useRoute()
 const commandPaletteRef = ref(null)
 const isDialogueRoute = computed(() => route.name === 'Dialogue')
+const showCopilotWidget = computed(() => (
+  route.name !== 'Dialogue' &&
+  route.name !== 'Login' &&
+  route.meta?.requiresAuth !== false &&
+  !route.meta?.requiresGuest &&
+  !reportOverlayOpen.value
+))
 
 const handleGlobalKeydown = (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {

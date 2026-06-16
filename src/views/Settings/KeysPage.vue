@@ -5,7 +5,7 @@ import { ElMessage } from 'element-plus'
 import RobotIntegrationsPanel from './RobotIntegrationsPanel.vue'
 import { listAIProviders, saveAIProvider, deleteAIProvider, saveAIUsage } from '@/api/settings'
 
-const activeTab = ref('ai-usage')
+const activeTab = ref('model-keys')
 const route = useRoute()
 const loading = ref(false)
 const savingId = ref('')
@@ -14,8 +14,8 @@ const defaultProvider = ref('openai')
 const providers = ref([])
 const forms = reactive({})
 const usage = reactive({
-  copilot_enabled: false,
   case_execution_enabled: false,
+  case_execution_provider_id: '',
 })
 
 const providerColors = {
@@ -24,12 +24,14 @@ const providerColors = {
   google: '#4285f4',
   deepseek: '#6366f1',
   qwen: '#8b5cf6',
+  umodelverse: '#0ea5e9',
+  volcengine: '#ef4444',
 }
 
 const configuredCount = computed(() => providers.value.filter((p) => p.configured).length)
+const configuredProviders = computed(() => providers.value.filter((p) => p.configured && p.enabled !== false))
 
 const tabs = [
-  { id: 'ai-usage', label: 'AI 开关', desc: '按渠道控制是否用大模型' },
   { id: 'model-keys', label: '大模型 Key', desc: '配置模型供应商' },
   { id: 'robots', label: '机器人', desc: '文档读取与消息通知' },
 ]
@@ -38,9 +40,11 @@ const syncForms = () => {
   for (const p of providers.value) {
     forms[p.id] = {
       name: p.name || '',
+      api_type: p.api_type || 'openai',
       api_key: '',
       base_url: p.base_url || '',
       model: p.model || '',
+      model_options: p.model_options?.length ? p.model_options : [p.model].filter(Boolean),
       enabled: p.enabled !== false,
       clear_key: false,
       set_default: defaultProvider.value === p.id,
@@ -56,6 +60,9 @@ const load = async () => {
     providers.value = data.providers || []
     defaultProvider.value = data.default_provider || 'openai'
     Object.assign(usage, data.usage || {})
+    if (!usage.case_execution_provider_id) {
+      usage.case_execution_provider_id = defaultProvider.value
+    }
     syncForms()
   } finally {
     loading.value = false
@@ -63,9 +70,12 @@ const load = async () => {
 }
 
 const saveUsage = async () => {
+  if (usage.case_execution_enabled && !usage.case_execution_provider_id && configuredProviders.value.length) {
+    usage.case_execution_provider_id = configuredProviders.value[0].id
+  }
   savingUsage.value = true
   try {
-    await saveAIUsage({ ...usage, mode: 'local_first' })
+    await saveAIUsage({ copilot_enabled: false, ...usage, mode: 'local_first' })
     ElMessage.success('已生效')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
@@ -107,11 +117,21 @@ const removeCustom = async (provider) => {
   }
 }
 
-const isPreset = (id) => ['openai', 'anthropic', 'google', 'deepseek', 'qwen'].includes(id)
+const isPreset = (id) => [
+  'openai',
+  'anthropic',
+  'umodelverse',
+  'google',
+  'deepseek',
+  'qwen',
+  'volcengine',
+].includes(id)
 
 onMounted(() => {
-  if (['ai-usage', 'model-keys', 'robots'].includes(route.query.tab)) {
+  if (['model-keys', 'robots'].includes(route.query.tab)) {
     activeTab.value = route.query.tab
+  } else if (route.query.tab === 'ai-usage') {
+    activeTab.value = 'model-keys'
   }
   load()
 })
@@ -122,7 +142,7 @@ onMounted(() => {
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">密钥配置</h2>
-        <p class="settings-page-desc">统一管理大模型 Key、AI 生效范围和平台机器人凭据。</p>
+        <p class="settings-page-desc">统一管理大模型 Key、用例执行 AI 策略和平台机器人凭据。</p>
       </div>
       <div class="settings-summary-pill">{{ configuredCount }} 个模型已配置</div>
     </header>
@@ -141,34 +161,35 @@ onMounted(() => {
       </button>
     </div>
 
-    <section v-if="activeTab === 'ai-usage'" class="usage-layout single">
-      <article class="settings-info-card usage-card">
-        <span class="settings-kicker">作用范围</span>
-        <h3>按调用渠道控制大模型</h3>
-        <p>Plan 是统一机制，不单独开关；这里只有入口渠道：Copilot 和用例执行。关闭时继续使用本地 Plan，开启后也会经过本地平台、参数和风险校验。</p>
-        <div class="scope-grid">
-          <label class="scope-item">
-            <el-switch v-model="usage.copilot_enabled" :loading="savingUsage" @change="saveUsage" />
-            <span>
-              <strong>Copilot</strong>
-              <small>对话里的自然语言规划</small>
-            </span>
-          </label>
-          <label class="scope-item">
-            <el-switch v-model="usage.case_execution_enabled" :loading="savingUsage" @change="saveUsage" />
-            <span>
-              <strong>用例执行</strong>
-              <small>飞书/回归步骤规划链路</small>
-            </span>
-          </label>
+    <section v-if="activeTab === 'model-keys'">
+      <section class="settings-info-card case-ai-card">
+        <div>
+          <span class="settings-kicker">用例执行</span>
+          <h3>用例执行使用大模型能力</h3>
+          <p>开启后，飞书/回归步骤规划链路会使用这里选择的已配置模型；关闭时继续使用本地 Plan。</p>
         </div>
-      </article>
-    </section>
+        <div class="case-ai-controls">
+          <el-switch v-model="usage.case_execution_enabled" :loading="savingUsage" @change="saveUsage" />
+          <el-select
+            v-model="usage.case_execution_provider_id"
+            placeholder="选择模型能力"
+            :disabled="!usage.case_execution_enabled"
+            style="width: 220px"
+            @change="saveUsage"
+          >
+            <el-option
+              v-for="p in configuredProviders"
+              :key="p.id"
+              :label="p.name || p.id"
+              :value="p.id"
+            />
+          </el-select>
+        </div>
+      </section>
 
-    <section v-else-if="activeTab === 'model-keys'">
       <section class="settings-info-card notice">
         <strong>配置说明</strong>
-        <span>Key 只保存在本地服务端配置里，页面只显示脱敏值。Anthropic 使用 Tool Use，OpenAI/DeepSeek/通义走兼容接口。</span>
+        <span>Key 只保存在本地服务端配置里，页面只显示脱敏值。Gemini 使用原生接口，OpenAI/DeepSeek/通义走兼容接口。</span>
       </section>
 
       <div class="provider-grid">
@@ -184,6 +205,7 @@ onMounted(() => {
               <h3>{{ p.name }}</h3>
               <p>{{ p.configured ? `已配置 ${p.api_key_masked}` : '未配置 API Key' }}</p>
             </div>
+            <el-tag size="small" effect="plain">{{ p.api_type === 'anthropic' ? 'Messages API' : 'Chat API' }}</el-tag>
             <el-tag v-if="defaultProvider === p.id" size="small" type="success" effect="dark">默认</el-tag>
           </div>
 
@@ -201,7 +223,19 @@ onMounted(() => {
               <el-input v-model="forms[p.id].base_url" />
             </el-form-item>
             <el-form-item label="默认模型">
-              <el-input v-model="forms[p.id].model" />
+              <el-select
+                v-model="forms[p.id].model"
+                placeholder="选择平台模型"
+                filterable
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="model in forms[p.id].model_options"
+                  :key="model"
+                  :label="model"
+                  :value="model"
+                />
+              </el-select>
             </el-form-item>
             <div class="switch-row">
               <el-checkbox v-model="forms[p.id].enabled">启用</el-checkbox>
@@ -226,59 +260,32 @@ onMounted(() => {
   width: 100%;
 }
 
-.usage-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-  gap: 16px;
+.case-ai-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
 }
 
-.usage-layout.single {
-  grid-template-columns: minmax(0, 760px);
-}
-
-.usage-card h3 {
-  margin: 8px 0 8px;
+.case-ai-card h3 {
+  margin: 7px 0 6px;
   color: #111827;
-  font-size: 18px;
+  font-size: 17px;
 }
 
-.usage-card p {
+.case-ai-card p {
   margin: 0;
-  color: #6b7280;
+  color: #64748b;
   font-size: 13px;
   line-height: 1.6;
 }
 
-.scope-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.scope-item {
+.case-ai-controls {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid #dbeafe;
-}
-
-.scope-item strong,
-.scope-item small {
-  display: block;
-}
-
-.scope-item strong {
-  color: #111827;
-  font-size: 14px;
-}
-
-.scope-item small {
-  color: #64748b;
-  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 .notice {
