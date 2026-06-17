@@ -10,6 +10,7 @@ const route = useRoute()
 const loading = ref(false)
 const savingId = ref('')
 const savingUsage = ref(false)
+const expandedProvider = ref('')
 const defaultProvider = ref('openai')
 const providers = ref([])
 const forms = reactive({})
@@ -18,37 +19,99 @@ const usage = reactive({
   case_execution_provider_id: '',
 })
 
-const providerColors = {
-  openai: '#10b981',
-  anthropic: '#f97316',
-  google: '#4285f4',
-  deepseek: '#6366f1',
-  qwen: '#8b5cf6',
-  umodelverse: '#0ea5e9',
-  volcengine: '#ef4444',
-}
-
 const configuredCount = computed(() => providers.value.filter((p) => p.configured).length)
-const configuredProviders = computed(() => providers.value.filter((p) => p.configured && p.enabled !== false))
+
+const sortedProviders = computed(() => {
+  const forCase = []
+  const enabledOnly = []
+  const rest = []
+  for (const p of providers.value) {
+    const form = forms[p.id]
+    if (form?.case_execution_use) {
+      forCase.push(p)
+    } else if (form?.enabled) {
+      enabledOnly.push(p)
+    } else {
+      rest.push(p)
+    }
+  }
+  return [...forCase, ...enabledOnly, ...rest]
+})
+
+const caseExecutionProviderId = computed(() => {
+  const hit = providers.value.find((p) => forms[p.id]?.case_execution_use === true)
+  return hit?.id || usage.case_execution_provider_id || ''
+})
+
+const isDefaultProvider = (id) => caseExecutionProviderId.value === id
+
+const apiTypeLabel = (provider) => {
+  const t = String(provider?.api_type || '').toLowerCase()
+  if (t === 'anthropic') return 'Messages API'
+  if (t === 'gemini') return 'Gemini API'
+  return 'Chat API'
+}
 
 const tabs = [
   { id: 'model-keys', label: '大模型 Key', desc: '配置模型供应商' },
   { id: 'robots', label: '机器人', desc: '文档读取与消息通知' },
 ]
 
+const roundRatio = (value) => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return 3
+  return Math.min(10, Math.max(1, Math.round(num * 10) / 10))
+}
+
 const syncForms = () => {
   for (const p of providers.value) {
+    const options = p.model_options?.length ? [...p.model_options] : []
+    const savedModel = (p.model || '').trim()
+    if (savedModel && !options.includes(savedModel)) options.unshift(savedModel)
     forms[p.id] = {
       name: p.name || '',
       api_type: p.api_type || 'openai',
       api_key: '',
       base_url: p.base_url || '',
-      model: p.model || '',
-      model_options: p.model_options?.length ? p.model_options : [p.model].filter(Boolean),
-      enabled: p.enabled !== false,
+      model: savedModel,
+      model_options: options.length ? options : [savedModel].filter(Boolean),
+      enabled: p.configured ? p.enabled !== false : false,
+      case_execution_use: p.configured && p.enabled !== false ? p.case_execution_use === true : false,
+      plan_compress_ratio: roundRatio(p.plan_compress_ratio ?? 3),
       clear_key: false,
       set_default: defaultProvider.value === p.id,
     }
+  }
+}
+
+const applyDefaultFromCaseOrder = () => {
+  const selected = caseExecutionProviderId.value
+  usage.case_execution_provider_id = selected || ''
+  for (const p of providers.value) {
+    if (forms[p.id]) forms[p.id].set_default = p.id === selected
+  }
+}
+
+const persistProviderToggle = async (provider, patch = {}) => {
+  const form = forms[provider.id]
+  if (!form) return
+  savingId.value = provider.id
+  try {
+    await saveAIProvider(provider.id, {
+      ...form,
+      ...patch,
+      api_key: '',
+      clear_key: false,
+    })
+    applyDefaultFromCaseOrder()
+    await saveAIUsage({ copilot_enabled: false, ...usage, mode: 'local_first' })
+    ElMessage.success('已保存')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+    await load()
+  } finally {
+    savingId.value = ''
   }
 }
 
@@ -64,15 +127,17 @@ const load = async () => {
       usage.case_execution_provider_id = defaultProvider.value
     }
     syncForms()
+    applyDefaultFromCaseOrder()
+    if (!expandedProvider.value && sortedProviders.value.length) {
+      expandedProvider.value = sortedProviders.value[0].id
+    }
   } finally {
     loading.value = false
   }
 }
 
 const saveUsage = async () => {
-  if (usage.case_execution_enabled && !usage.case_execution_provider_id && configuredProviders.value.length) {
-    usage.case_execution_provider_id = configuredProviders.value[0].id
-  }
+  applyDefaultFromCaseOrder()
   savingUsage.value = true
   try {
     await saveAIUsage({ copilot_enabled: false, ...usage, mode: 'local_first' })
@@ -88,6 +153,8 @@ const saveUsage = async () => {
 const save = async (provider) => {
   const form = forms[provider.id]
   if (!form) return
+  form.plan_compress_ratio = roundRatio(form.plan_compress_ratio)
+  form.set_default = provider.id === caseExecutionProviderId.value
   savingId.value = provider.id
   try {
     await saveAIProvider(provider.id, form)
@@ -98,11 +165,60 @@ const save = async (provider) => {
   }
 }
 
+const onToggleEnabled = async (provider, enabled) => {
+  const form = forms[provider.id]
+  if (!form) return
+  if (enabled && !provider.configured && !form.api_key?.trim()) {
+    form.enabled = false
+    ElMessage.warning('请先填写并保存 API Key 后再启用')
+    return
+  }
+  form.enabled = enabled
+  if (!enabled) form.case_execution_use = false
+  await persistProviderToggle(provider, {
+    enabled,
+    case_execution_use: form.case_execution_use,
+  })
+}
+
+const onToggleCaseExecution = async (provider, useForCase) => {
+  const form = forms[provider.id]
+  if (!form) return
+  if (!form.enabled) {
+    form.case_execution_use = false
+    return
+  }
+  if (useForCase && !provider.configured && !form.api_key?.trim()) {
+    form.case_execution_use = false
+    ElMessage.warning('请先填写并保存 API Key')
+    return
+  }
+  form.case_execution_use = useForCase
+  if (useForCase) {
+    for (const p of providers.value) {
+      if (p.id !== provider.id && forms[p.id]) {
+        forms[p.id].case_execution_use = false
+      }
+    }
+  }
+  await persistProviderToggle(provider, {
+    enabled: true,
+    case_execution_use: useForCase,
+  })
+}
+
+const onRatioChange = (provider) => {
+  const form = forms[provider.id]
+  if (form) form.plan_compress_ratio = roundRatio(form.plan_compress_ratio)
+}
+
 const clearKey = async (provider) => {
   const form = forms[provider.id]
   if (!form) return
   form.api_key = ''
   form.clear_key = true
+  form.enabled = false
+  form.case_execution_use = false
   await save(provider)
 }
 
@@ -127,6 +243,12 @@ const isPreset = (id) => [
   'volcengine',
 ].includes(id)
 
+const previewSizeHint = (ratio) => {
+  const r = roundRatio(ratio)
+  if (r <= 1) return '1200×2608（不压缩）'
+  return `${Math.round(1200 / r)}×${Math.round(2608 / r)}（比例 ${r}）`
+}
+
 onMounted(() => {
   if (['model-keys', 'robots'].includes(route.query.tab)) {
     activeTab.value = route.query.tab
@@ -138,7 +260,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="settings-panel keys-page wide-panel" v-loading="loading">
+  <div class="settings-panel keys-page" v-loading="loading">
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">密钥配置</h2>
@@ -161,53 +283,72 @@ onMounted(() => {
       </button>
     </div>
 
-    <section v-if="activeTab === 'model-keys'">
-      <section class="settings-info-card case-ai-card">
-        <div>
+    <section v-if="activeTab === 'model-keys'" class="keys-content">
+      <section class="settings-card exec-card">
+        <div class="exec-copy">
           <span class="settings-kicker">用例执行</span>
-          <h3>用例执行使用大模型能力</h3>
-          <p>开启后，飞书/回归步骤规划链路会使用这里选择的已配置模型；关闭时继续使用本地 Plan。</p>
+          <h3>使用大模型能力</h3>
+          <p>开启后，步骤规划与预期校验走 AI。每个模型先打开「可用」，再单选「用例」作为执行模型（互斥，选中后置顶）。</p>
         </div>
-        <div class="case-ai-controls">
-          <el-switch v-model="usage.case_execution_enabled" :loading="savingUsage" @change="saveUsage" />
-          <el-select
-            v-model="usage.case_execution_provider_id"
-            placeholder="选择模型能力"
-            :disabled="!usage.case_execution_enabled"
-            style="width: 220px"
-            @change="saveUsage"
-          >
-            <el-option
-              v-for="p in configuredProviders"
-              :key="p.id"
-              :label="p.name || p.id"
-              :value="p.id"
-            />
-          </el-select>
-        </div>
+        <el-switch
+          v-model="usage.case_execution_enabled"
+          :loading="savingUsage"
+          @change="saveUsage"
+        />
       </section>
 
-      <section class="settings-info-card notice">
-        <strong>配置说明</strong>
-        <span>Key 只保存在本地服务端配置里，页面只显示脱敏值。Gemini 使用原生接口，OpenAI/DeepSeek/通义走兼容接口。</span>
-      </section>
+      <p class="keys-tip">
+        Key 仅保存在本地服务端。压缩比例保留一位小数（如 3 或 2.4），坐标按该整数倍映射到设备分辨率。
+      </p>
 
-      <div class="provider-grid">
-        <article
-          v-for="p in providers"
+      <el-collapse v-model="expandedProvider" accordion class="provider-accordion">
+        <el-collapse-item
+          v-for="p in sortedProviders"
           :key="p.id"
-          class="provider-card"
-          :style="{ '--brand': providerColors[p.id] || '#64748b' }"
+          :name="p.id"
         >
-          <div class="card-head">
-            <div class="brand-mark">{{ (p.name || p.id).slice(0, 1) }}</div>
-            <div>
-              <h3>{{ p.name }}</h3>
-              <p>{{ p.configured ? `已配置 ${p.api_key_masked}` : '未配置 API Key' }}</p>
+          <template #title>
+            <div class="accordion-head">
+              <div class="accordion-main">
+                <span class="provider-name">{{ p.name }}</span>
+                <span class="provider-meta">
+                  {{ p.configured ? `已配置 ${p.api_key_masked}` : '未配置 API Key' }}
+                </span>
+              </div>
+              <div class="accordion-badges">
+                <span v-if="isDefaultProvider(p.id)" class="badge badge-default">默认</span>
+                <span
+                  class="badge"
+                  :title="`接口类型：${p.api_type || 'openai'}`"
+                >{{ apiTypeLabel(p) }}</span>
+              </div>
+              <div class="accordion-switches">
+                <div class="switch-item" title="模型可用">
+                  <span class="switch-label">可用</span>
+                  <el-switch
+                    :model-value="forms[p.id]?.enabled === true"
+                    :disabled="!p.configured && !forms[p.id]?.api_key"
+                    :loading="savingId === p.id"
+                    @click.stop
+                    @change="(val) => onToggleEnabled(p, val)"
+                  />
+                </div>
+                <div
+                  v-if="forms[p.id]?.enabled"
+                  class="switch-item switch-item-case"
+                  title="用例执行模型（单选）"
+                >
+                  <span class="switch-label">用例</span>
+                  <el-switch
+                    :model-value="forms[p.id]?.case_execution_use === true"
+                    :loading="savingId === p.id"
+                    @click.stop
+                    @change="(val) => onToggleCaseExecution(p, val)"
+                  />
+                </div>
+              </div>
             </div>
-            <el-tag size="small" effect="plain">{{ p.api_type === 'anthropic' ? 'Messages API' : 'Chat API' }}</el-tag>
-            <el-tag v-if="defaultProvider === p.id" size="small" type="success" effect="dark">默认</el-tag>
-          </div>
+          </template>
 
           <el-form v-if="forms[p.id]" label-position="top" class="provider-form">
             <el-form-item label="API Key">
@@ -222,12 +363,13 @@ onMounted(() => {
             <el-form-item label="Base URL">
               <el-input v-model="forms[p.id].base_url" />
             </el-form-item>
-            <el-form-item label="默认模型">
+            <el-form-item :label="p.id === 'volcengine' ? '默认模型 / 接入点 ID' : '默认模型'">
               <el-select
                 v-model="forms[p.id].model"
-                placeholder="选择平台模型"
+                :placeholder="p.id === 'volcengine' ? '选择或输入模型 ID / ep-...' : '选择平台模型'"
                 filterable
-                style="width: 100%"
+                allow-create
+                default-first-option
               >
                 <el-option
                   v-for="model in forms[p.id].model_options"
@@ -237,18 +379,52 @@ onMounted(() => {
                 />
               </el-select>
             </el-form-item>
-            <div class="switch-row">
-              <el-checkbox v-model="forms[p.id].enabled">启用</el-checkbox>
-              <el-checkbox v-model="forms[p.id].set_default">设为默认</el-checkbox>
-            </div>
-            <div class="card-actions">
-              <el-button type="primary" :loading="savingId === p.id" @click="save(p)">保存</el-button>
-              <el-button v-if="p.configured" text type="warning" @click="clearKey(p)">清除 Key</el-button>
-              <el-button v-if="!isPreset(p.id)" text type="danger" @click="removeCustom(p)">删除</el-button>
+            <el-form-item label="Plan 截图压缩比例">
+              <div class="ratio-field">
+                <el-input-number
+                  v-model="forms[p.id].plan_compress_ratio"
+                  :min="1"
+                  :max="10"
+                  :step="0.1"
+                  :precision="1"
+                  controls-position="right"
+                  @change="onRatioChange(p)"
+                />
+                <p class="ratio-hint">
+                  默认 3；1 表示不压缩。示例 1200×2608 → {{ previewSizeHint(forms[p.id].plan_compress_ratio) }}
+                </p>
+              </div>
+            </el-form-item>
+
+            <div class="form-footer">
+              <el-button
+                type="primary"
+                class="btn-save"
+                :loading="savingId === p.id"
+                @click="save(p)"
+              >
+                保存配置
+              </el-button>
+              <el-button
+                v-if="p.configured"
+                class="btn-clear"
+                :loading="savingId === p.id"
+                @click="clearKey(p)"
+              >
+                清除 Key
+              </el-button>
+              <el-button
+                v-if="!isPreset(p.id)"
+                class="btn-delete"
+                :loading="savingId === p.id"
+                @click="removeCustom(p)"
+              >
+                删除
+              </el-button>
             </div>
           </el-form>
-        </article>
-      </div>
+        </el-collapse-item>
+      </el-collapse>
     </section>
 
     <RobotIntegrationsPanel v-else />
@@ -258,116 +434,265 @@ onMounted(() => {
 <style scoped>
 .keys-page {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
-.case-ai-card {
+.keys-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.exec-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 14px;
-}
-
-.case-ai-card h3 {
-  margin: 7px 0 6px;
-  color: #111827;
-  font-size: 17px;
-}
-
-.case-ai-card p {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.case-ai-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.notice {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 18px;
-  color: #1e40af;
-  font-size: 13px;
-}
-
-.provider-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
-}
-
-.provider-card {
-  position: relative;
-  overflow: hidden;
-  padding: 18px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
-}
-
-.provider-card::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 4px;
-  background: var(--brand);
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--brand) 14%, white);
-  color: var(--brand);
-  font-weight: 800;
-}
-
-.card-head h3 {
-  margin: 0 0 3px;
-  font-size: 15px;
-  color: #111827;
-}
-
-.card-head p {
-  margin: 0;
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-.card-head .el-tag {
-  margin-left: auto;
-}
-
-.provider-form :deep(.el-form-item) {
   margin-bottom: 12px;
 }
 
-.switch-row,
-.card-actions {
+.exec-copy h3 {
+  margin: 6px 0 4px;
+  color: var(--settings-text);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.exec-copy p {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 640px;
+}
+
+.keys-tip {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--settings-soft);
+  border: 1px solid var(--settings-border);
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.provider-accordion {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--settings-border);
+  border-radius: var(--settings-radius);
+  overflow: hidden;
+  background: var(--settings-card);
+  box-shadow: var(--settings-shadow);
+}
+
+.provider-accordion :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 52px;
+  line-height: 1.4;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid var(--settings-border);
+  background: var(--settings-card);
+  font-size: 14px;
+}
+
+.provider-accordion :deep(.el-collapse-item__wrap) {
+  border-bottom: 1px solid var(--settings-border);
+}
+
+.provider-accordion :deep(.el-collapse-item__content) {
+  padding: 4px 16px 16px;
+}
+
+.provider-accordion :deep(.el-collapse-item__arrow) {
+  margin-left: 8px;
+  color: #94a3b8;
+}
+
+.accordion-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+.accordion-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.provider-name {
+  color: var(--settings-text);
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.provider-meta {
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accordion-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-default {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.accordion-switches {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.switch-item-case {
+  padding-left: 12px;
+  border-left: 1px solid var(--settings-border);
+}
+
+.switch-label {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.provider-form {
+  padding-top: 8px;
+}
+
+.provider-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.provider-form :deep(.el-form-item__label) {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  padding-bottom: 6px;
+}
+
+.provider-form :deep(.el-input),
+.provider-form :deep(.el-select) {
+  width: 100%;
+}
+
+.ratio-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.ratio-field :deep(.el-input-number) {
+  width: 140px;
+}
+
+.ratio-hint {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.form-footer {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  padding-top: 14px;
+  margin-top: 4px;
+  border-top: 1px solid var(--settings-border);
 }
 
-.switch-row {
-  margin: 4px 0 14px;
+.btn-save {
+  min-width: 104px;
+  border-radius: 8px;
+}
+
+.btn-clear {
+  min-width: 96px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+}
+
+.btn-clear:hover {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.btn-delete {
+  margin-left: auto;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fff;
+  color: #dc2626;
+}
+
+.btn-delete:hover {
+  border-color: #f87171;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+@media (max-width: 720px) {
+  .exec-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .accordion-badges {
+    display: none;
+  }
+
+  .accordion-switches {
+    gap: 8px;
+  }
+
+  .switch-label {
+    display: none;
+  }
 }
 </style>

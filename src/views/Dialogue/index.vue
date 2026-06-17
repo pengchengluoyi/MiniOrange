@@ -34,6 +34,7 @@ const router = useRouter()
 const messages = ref([])
 const inputValue = ref('')
 const isLoading = ref(false)
+const busyPhase = ref('')
 const chatRef = ref(null)
 const selectedSn = ref('')
 const devices = ref([])
@@ -80,7 +81,7 @@ const recentAgentSessions = computed(() =>
     .slice(0, 8),
 )
 const isDraftAgent = computed(() => !hasUserMessages.value)
-const isBusy = computed(() => isLoading.value || sendInFlight.value)
+const isBusy = computed(() => !!busyPhase.value || sendInFlight.value)
 const configuredPlanningOptions = computed(() =>
   aiProviders.value
     .filter((provider) => provider.configured && provider.enabled !== false)
@@ -107,8 +108,35 @@ const selectedPlanningLabel = computed(() =>
 const selectedDeviceLabel = computed(() => {
   const device = devices.value.find((item) => item.sn === selectedSn.value)
   if (!device) return '选择设备'
-  return `${device.sn} · ${device.type || 'device'}${device.model ? ` · ${device.model}` : ''}`
+  const model = device.model || device.type || 'device'
+  const shortSn = device.sn?.length > 8 ? `${device.sn.slice(0, 8)}…` : device.sn
+  return `${model} · ${shortSn}`
 })
+
+const formatDeviceChip = (device) => {
+  if (!device?.sn) return ''
+  const model = device.model || device.type || 'Android'
+  const shortSn = device.sn.length > 8 ? `${device.sn.slice(0, 8)}…` : device.sn
+  return `${model} · ${shortSn}`
+}
+
+const formatPlannerChip = (run) => {
+  const planner = run?.planner || {}
+  if (planner.mode === 'local' || (!planner.mode && !run?.aiDebug)) return 'Local Plan'
+  const provider = planner.provider_id || planner.providerId || run?.aiDebug?.provider || 'AI'
+  const model = run?.aiDebug?.model || planner.model || ''
+  return model ? `${provider} · ${model}` : String(provider)
+}
+
+const busyStatusText = computed(() => {
+  if (busyPhase.value === 'executing') return '执行中…'
+  if (busyPhase.value === 'planning' || isLoading.value) return '规划中…'
+  return '处理中…'
+})
+
+const openPlannerSettings = () => {
+  router.push({ name: 'SettingsKeys', query: { tab: 'model-keys' } })
+}
 
 const handlePlanningChange = (value) => {
   if (value === '__configure_ai') {
@@ -361,6 +389,12 @@ const imageSrc = (path) => {
   return `file://${path}`
 }
 
+const observeScreenPath = (run) => {
+  const screen = run?.aiDebug?.screen
+  if (!screen || typeof screen !== 'object') return ''
+  return String(screen.image_path || '').trim()
+}
+
 const clickMarkerStyle = (result) => {
   const size = result?.screen_size || result?.screenSize || {}
   const width = Number(size.width || size.w || 0)
@@ -522,6 +556,7 @@ const sendMessage = async () => {
   inputValue.value = ''
   showSlashMenu.value = false
   isLoading.value = true
+  busyPhase.value = 'planning'
 
   try {
     const planning = selectedPlanning.value
@@ -535,6 +570,7 @@ const sendMessage = async () => {
     const plan = res?.data || {}
     let execution = null
     if (plan.auto_run !== false) {
+      busyPhase.value = 'executing'
       execution = await runPlan(plan)
     }
     pushRunRecord({ request: text, plan, execution })
@@ -542,6 +578,7 @@ const sendMessage = async () => {
     pushAi(`规划失败: ${e?.message || e}`)
   } finally {
     isLoading.value = false
+    busyPhase.value = ''
     sendInFlight.value = false
   }
 }
@@ -704,9 +741,19 @@ onUnmounted(() => {
                   Planner:
                   {{ msg.run?.planner?.mode || '-' }}
                   <template v-if="msg.run?.planner?.provider_id"> · {{ msg.run.planner.provider_id }}</template>
+                  <template v-if="msg.run?.aiDebug?.model"> · {{ msg.run.aiDebug.model }}</template>
                 </span>
               </div>
               <div class="run-head-side">
+                <button
+                  v-if="msg.run?.planner?.mode === 'ai' || msg.run?.aiDebug"
+                  type="button"
+                  class="planner-chip"
+                  title="查看或切换大模型"
+                  @click="openPlannerSettings"
+                >
+                  {{ formatPlannerChip(msg.run) }}
+                </button>
                 <button
                   v-if="msg.run?.aiDebug || msg.run?.aiErrorInfo"
                   type="button"
@@ -715,9 +762,9 @@ onUnmounted(() => {
                 >
                   查看 Response
                 </button>
-                <span v-if="msg.run?.device?.sn" class="device-chip">
+                <span v-if="msg.run?.device?.sn" class="device-chip" :title="msg.run.device.sn">
                   <span class="device-dot"></span>
-                  {{ msg.run.device.sn }}
+                  {{ formatDeviceChip(msg.run.device) }}
                 </span>
                 <span class="run-status" :class="{ ok: msg.run?.execution?.ok }">
                   {{ msg.run?.execution?.ok ? 'Done' : 'Review' }}
@@ -731,6 +778,18 @@ onUnmounted(() => {
                 <strong>{{ msg.run.aiErrorInfo.title }}</strong>
                 <span>{{ msg.run.aiErrorInfo.message }}</span>
                 <small>{{ msg.run.aiErrorInfo.suggestion }}</small>
+              </div>
+              <div v-if="observeScreenPath(msg.run)" class="observe-strip">
+                <div class="compare-shot">
+                  <small>AI 观察 · 规划前屏幕</small>
+                  <button
+                    type="button"
+                    class="phone-shot"
+                    @click="openImagePreview(observeScreenPath(msg.run))"
+                  >
+                    <img :src="imageSrc(observeScreenPath(msg.run))" alt="observe screenshot" />
+                  </button>
+                </div>
               </div>
               <div
                 v-for="(step, index) in msg.run?.steps || []"
@@ -814,10 +873,6 @@ onUnmounted(() => {
           </div>
           <div v-else class="bubble">{{ msg.content }}</div>
         </div>
-        <div v-if="isLoading" class="msg-row ai">
-          <div class="avatar"><el-icon class="is-loading"><MagicStick /></el-icon></div>
-          <div class="bubble">规划中…</div>
-        </div>
         <button
           v-if="showScrollToBottom"
           type="button"
@@ -852,10 +907,6 @@ onUnmounted(() => {
             @input="handleInput"
             @keydown="handleKeydown"
           />
-        <div v-if="isBusy" class="running-pill">
-          <span class="running-dot"></span>
-          <span>正在执行</span>
-        </div>
         <div class="input-footer-row">
           <div class="input-pickers">
             <div class="model-picker">
@@ -902,8 +953,8 @@ onUnmounted(() => {
                   @click="selectDevice(device)"
                 >
                   <span class="model-option-main">
-                    <strong>{{ device.sn }}</strong>
-                    <small>{{ device.type || 'device' }}{{ device.model ? ` · ${device.model}` : '' }}</small>
+                    <strong>{{ device.model || device.type || 'device' }}</strong>
+                    <small>{{ device.sn }}{{ device.type ? ` · ${device.type}` : '' }}</small>
                   </span>
                   <span v-if="device.sn === selectedSn" class="model-check">✓</span>
                 </button>
@@ -912,12 +963,16 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
+            <div v-if="isBusy" class="busy-status-chip">
+              <span class="running-dot"></span>
+              <span>{{ busyStatusText }}</span>
+            </div>
           </div>
           <button
             v-if="isBusy"
             type="button"
             class="stop-run-btn"
-            title="任务执行中"
+            :title="busyStatusText"
           >
             <span></span>
           </button>
@@ -1506,10 +1561,35 @@ onUnmounted(() => {
   background: #dbeafe;
 }
 
+.planner-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 180px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #ddd6fe;
+  border-radius: 999px;
+  background: #f5f3ff;
+  color: #6d28d9;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planner-chip:hover {
+  border-color: #c4b5fd;
+  background: #ede9fe;
+}
+
 .device-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  max-width: 180px;
   padding: 3px 7px;
   border: 1px solid #dbeafe;
   border-radius: 999px;
@@ -1517,6 +1597,9 @@ onUnmounted(() => {
   color: #2563eb;
   font-size: 11px;
   font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .device-dot {
@@ -1615,6 +1698,26 @@ onUnmounted(() => {
 .run-plan-step + .run-plan-step,
 .run-result-row + .run-result-row {
   margin-top: 6px;
+}
+
+.observe-strip {
+  margin-bottom: 10px;
+}
+
+.observe-strip .compare-shot {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.observe-strip .compare-shot small {
+  display: block;
+  padding: 6px 8px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
 }
 
 .run-plan-step > span:first-child {
@@ -1895,19 +1998,20 @@ onUnmounted(() => {
 }
 
 .running-pill {
-  position: absolute;
-  right: 58px;
-  bottom: 45px;
+  display: none;
+}
+
+.busy-status-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px;
+  padding: 5px 10px;
   border: 1px solid #e0e7ff;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  color: #64748b;
+  background: #f8fafc;
+  color: #475569;
   font-size: 12px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  white-space: nowrap;
 }
 
 .running-dot {

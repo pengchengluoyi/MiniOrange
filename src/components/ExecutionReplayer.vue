@@ -142,6 +142,39 @@ const pushNode = (out, node) => {
   out.push(node)
 }
 
+const observeFromPlanLog = (planLog) => {
+  const log = Array.isArray(planLog) ? planLog : []
+  const entry = log.find((e) => e.type === 'screen_observe')
+  if (!entry) return null
+  const detail = entry.detail || {}
+  const shot = entry.screenshot || detail.image_path || ''
+  if (!shot) return null
+  return {
+    screenshot: shot,
+    screen: detail,
+    title: entry.title || 'AI 观察 · 当前屏幕',
+    subtitle: entry.summary || '规划前屏幕截图',
+  }
+}
+
+const emitObserve = (target, ctx, observe) => {
+  if (!observe?.screenshot) return
+  pushNode(target, {
+    ...ctx,
+    depth: 1,
+    role: 'observe',
+    type: 'screen_observe',
+    title: observe.title || 'AI 观察 · 当前屏幕',
+    subtitle: observe.subtitle || '规划前屏幕截图',
+    screenshot: observe.screenshot,
+    screenshot_before: observe.screenshot,
+    screenshot_after: observe.screenshot,
+    screen: observe.screen || null,
+    ok: true,
+    playable: true,
+  })
+}
+
 /** 操作步骤：Plan / Tap 同级；预期动作：Plan / Assert 同级 */
 const buildFlatSteps = () => {
   const out = []
@@ -322,14 +355,27 @@ const buildFlatSteps = () => {
     }
 
     if (flat) {
-      // 按后端给的展平顺序渲染，同一级：Plan / Tap1 / Tap2...
+      // 按后端给的展平顺序渲染，同一级：Observe / Plan / Tap1 / Tap2...
       const actionsByPlan = new Map()
       for (const p of op.plans || []) {
         actionsByPlan.set(p.plan_index, p.actions || [])
       }
       const actionOrd = new Map()
+      const hasFlatObserve = flat.some((item) => item.type === 'observe')
+      if (!hasFlatObserve) {
+        emitObserve(out, stepCtx, observeFromPlanLog(stepCtx.plan_log))
+      }
       for (let fi = 0; fi < flat.length; fi += 1) {
         const item = flat[fi]
+        if (item.type === 'observe') {
+          emitObserve(out, stepCtx, {
+            screenshot: item.screenshot,
+            screen: item.screen,
+            title: 'AI 观察 · 当前屏幕',
+            subtitle: '规划前屏幕截图',
+          })
+          continue
+        }
         const plan = plansByIndex.get(item.plan_index)
         if (!plan) continue
         if (item.type === 'plan') {
@@ -364,6 +410,7 @@ const buildFlatSteps = () => {
       }
     } else {
       // 兼容旧结构：仍然按照 Plan -> actions 嵌套，但 depth 统一为 1
+      emitObserve(out, stepCtx, observeFromPlanLog(stepCtx.plan_log))
       for (const plan of op.plans || []) {
         emitPlan(plan)
         for (const act of plan.actions || []) {
@@ -570,7 +617,8 @@ const buildFlatSteps = () => {
     }
     const pageCtx = exp.page_context || {}
     const pageRecovery = exp.page_recovery || null
-    const verifyShot = exp.screenshot || pageCtx?.screenshot || ''
+    const observeEntry = observeFromPlanLog(exp.plan_log || [])
+    const verifyShot = exp.screenshot || pageCtx?.screenshot || observeEntry?.screenshot || ''
     const assertOnlyFail = exp.ok === false && ctx.lastOpOk !== false
     pushNode(out, {
       ...ctx,
@@ -603,6 +651,10 @@ const buildFlatSteps = () => {
       ai_debug: exp.ai_debug || exp.thought_meta?.ai_debug || null,
     }
     appendPageTrace(pageCtx, pageRecovery, expectedCtx, verifyShot)
+
+    if (observeEntry) {
+      emitObserve(out, expectedCtx, observeEntry)
+    }
 
     const emitVerifyPlan = (plan) => {
       pushNode(out, {
@@ -1132,6 +1184,7 @@ const rolesWithBeforeAfter = new Set([
   'expected_action',
   'page_identify',
   'verify_plan',
+  'observe',
 ])
 
 const screenshotForStep = (step) => {
@@ -1375,7 +1428,7 @@ const aiResponsePayload = computed(() => {
     role: node.role,
     title: node.title || node.subtitle || '',
     planner,
-    response: aiDebug.raw_plan || aiDebug.raw_response || null,
+    response: aiDebug.raw_plan || aiDebug.raw_response || aiDebug.raw_content_preview || null,
     normalized_steps: aiDebug.normalized_steps || null,
     coordinate_scale: aiDebug.coordinate_scale || null,
     overlay_guard_before_plan: aiDebug.overlay_guard_before_plan || null,
@@ -1907,6 +1960,7 @@ const roleIcon = (s) => {
   if (s.role === 'page_identify') return '📍'
   if (s.role === 'page_recovery' || s.role === 'page_recovery_step') return '↩'
   if (s.role === 'plan') return 'P'
+  if (s.role === 'observe') return '👁'
   if (s.role === 'verify') return s.ok === false ? '✗' : '✓'
   if (s.role === 'action') return '▶'
   return '·'
