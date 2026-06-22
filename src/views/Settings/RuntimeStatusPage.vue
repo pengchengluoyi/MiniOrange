@@ -10,7 +10,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { getNodeStatus } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
-import { dedupeDevicesForUi, sortDevicesForDisplay } from '@/utils/devices'
+import { dedupeDevicesForUi, applyStableDeviceOrder } from '@/utils/devices'
 import { readKnownClawNodes, addKnownClawNode, removeKnownClawNode, pruneKnownClawNodes } from '@/utils/knownClawNodes'
 import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
 import { formatRelativeTime } from '@/utils/relativeTime'
@@ -101,12 +101,21 @@ const isMobileType = (device) => ['android', 'ios', 'mobile', 'android_direct'].
 const isExecutorNode = (device) => device?.type === 'pc' || (device?.role === 'node' && !isMobileType(device))
 
 const executorNodes = computed(() => devices.value.filter((d) => isExecutorNode(d)))
-const serviceOnline = computed(() => !!nodeStatus.value || runtime.value?.endpoints?.some((item) => item.online))
+const serviceOnline = computed(() => {
+  if (runtime.value?.isLocalGateway) return true
+  if (runtime.value?.embeddedServer?.running) return true
+  if (nodeStatus.value?.connected || nodeStatus.value?.role === 'gateway' || nodeStatus.value?.role === 'node') return true
+  return runtime.value?.endpoints?.some((item) => item.online) ?? false
+})
 const serverEndpoint = computed(() => {
   const onlineEndpoint = runtime.value?.endpoints?.find((item) => item.online)
   return onlineEndpoint?.url || getBaseUrl()
 })
-const serverRole = computed(() => nodeStatus.value?.role || 'unknown')
+const serverRole = computed(() => {
+  if (nodeStatus.value?.role && nodeStatus.value.role !== 'unknown') return nodeStatus.value.role
+  if (runtime.value?.isLocalGateway || runtime.value?.embeddedServer?.running) return 'gateway'
+  return 'unknown'
+})
 const serverSn = computed(() => nodeStatus.value?.sn || runtime.value?.electron?.pid || 'local')
 const isLocalGateway = computed(() => {
   if (runtime.value?.isLocalGateway) return true
@@ -114,7 +123,7 @@ const isLocalGateway = computed(() => {
   const localhost = runtime.value?.endpoints?.find((item) => item.name === 'localhost' || item.url?.includes('127.0.0.1'))
   return localhost?.online === true
 })
-const displayDevices = computed(() => sortDevicesForDisplay(dedupeDevicesForUi(devices.value)))
+const displayDevices = computed(() => devices.value)
 const devicePool = computed(() => displayDevices.value.filter((d) => !isExecutorNode(d)))
 const onlineDevices = computed(() => displayDevices.value.filter((d) => d.status === 'online'))
 const mobileDevices = computed(() => displayDevices.value.filter((d) => isMobileType(d)))
@@ -333,14 +342,17 @@ const topologyFlowEdges = computed(() => {
 const applyDeviceList = (data) => {
   const list = Array.isArray(data) ? data : (data?.data || [])
   const nextDevices = Array.isArray(list) ? dedupeDevicesForUi(list) : []
+  const previous = devices.value
 
-  devices.value = nextDevices.map((item) => {
-    const previous = devices.value.find((oldItem) => oldItem.sn === item.sn)
-    if ((item.password === undefined || item.password === null) && previous?.password) {
-      return { ...item, password: previous.password }
+  const merged = nextDevices.map((item) => {
+    const oldItem = previous.find((old) => old.sn === item.sn)
+    if ((item.password === undefined || item.password === null) && oldItem?.password) {
+      return { ...item, password: oldItem.password }
     }
     return item
   })
+
+  devices.value = applyStableDeviceOrder(merged, previous)
   knownNodeSns.value = pruneKnownClawNodes(devices.value)
   applyServerDeviceList(nextDevices)
 }
@@ -417,7 +429,9 @@ const openTransferDialog = (sourceSn = '') => {
 }
 
 const applyRouteQuery = () => {
-  if (route.query.tab === 'cluster') activeTab.value = 'topology'
+  const view = route.query.view
+  if (view === 'topology' || route.query.tab === 'cluster') activeTab.value = 'topology'
+  else activeTab.value = 'overview'
   if (route.query.transfer) openTransferDialog(String(route.query.transfer))
 }
 
@@ -618,9 +632,31 @@ const openLogsDialog = async () => {
   }
 }
 
-const downloadLog = (filename) => {
-  const url = downloadClawNodeLogUrl(filename)
-  window.open(url, '_blank')
+const resolveLogDeviceModel = (sn) => {
+  const key = String(sn || '').trim()
+  if (!key) return '—'
+  const dev = devices.value.find((d) => d.sn === key || displayDeviceSn(d) === key)
+  return dev?.model || key
+}
+
+const downloadLog = async (filename) => {
+  try {
+    const url = downloadClawNodeLogUrl(filename)
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`下载失败 (${res.status})`)
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = filename
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(objectUrl)
+  } catch (e) {
+    ElMessage.error(e?.message || '下载失败')
+  }
 }
 
 const formatLogTime = (mtime) => {
@@ -741,13 +777,9 @@ onUnmounted(() => {
 
 <template>
   <div class="settings-panel runtime-page wide-panel" v-loading="initialLoading">
-    <header class="settings-page-header">
-      <div>
-        <h2 class="settings-page-title">运行状态</h2>
-        <p class="settings-page-desc">检查 Electron、Server、执行器与多设备连接状态。</p>
-      </div>
+    <header class="settings-toolbar runtime-toolbar">
+      <span class="settings-summary-pill">{{ runtimeSummary }}</span>
       <div class="runtime-actions">
-        <span class="settings-summary-pill">{{ runtimeSummary }}</span>
         <button type="button" class="settings-action-pill refresh-pill" style="--brand: #a855f7" @click="openLogsDialog">
           <el-icon><Document /></el-icon>
           <span>日志导出</span>
@@ -764,27 +796,6 @@ onUnmounted(() => {
         </button>
       </div>
     </header>
-
-    <div class="settings-tabbar">
-      <button
-        type="button"
-        class="settings-tab"
-        :class="{ active: activeTab === 'overview' }"
-        @click="activeTab = 'overview'"
-      >
-        <strong>运行概览</strong>
-        <span>Electron 与 Server 服务状态</span>
-      </button>
-      <button
-        type="button"
-        class="settings-tab"
-        :class="{ active: activeTab === 'topology' }"
-        @click="activeTab = 'topology'"
-      >
-        <strong>多机方案</strong>
-        <span>主控、执行器和设备池</span>
-      </button>
-    </div>
 
     <template v-if="activeTab === 'overview'">
       <section class="status-grid">
@@ -806,7 +817,7 @@ onUnmounted(() => {
               <h3>Server 服务</h3>
               <el-tag :type="statusType(serviceOnline)" size="small">{{ statusText(serviceOnline) }}</el-tag>
             </div>
-            <p>{{ getBaseUrl() }} · role {{ nodeStatus?.role || 'unknown' }}</p>
+            <p>{{ serverEndpoint }} · role {{ serverRole }}</p>
           </div>
         </article>
 
@@ -821,42 +832,42 @@ onUnmounted(() => {
           </div>
         </article>
       </section>
+
+      <section class="settings-info-card service-card">
+        <span class="settings-kicker">服务探测</span>
+        <div class="section-head">
+          <h3>{{ isLocalGateway ? '本机 Gateway' : 'Gateway 发现与配对' }}</h3>
+          <span v-if="isLocalGateway">当前电脑已运行 MiniOrange Server，局域网设备可通过 mDNS 发现本机。</span>
+          <span v-else>发现与鉴权分离：先选择网关，再由 Token 建立 WebSocket 连接。</span>
+        </div>
+        <div class="discovery-actions">
+          <el-button
+            v-if="!isLocalGateway"
+            type="primary"
+            :loading="discoveringGateways"
+            @click="discoverGateways"
+          >
+            发现网关
+          </el-button>
+          <span v-if="pairedGatewayLabel && !isLocalGateway" class="paired-pill">已配对：{{ pairedGatewayLabel }}</span>
+          <span v-if="isLocalGateway && runtime?.endpoints?.[1]" class="paired-pill">
+            mDNS：{{ runtime.endpoints[1].url }}
+          </span>
+        </div>
+        <div class="endpoint-list">
+          <div v-for="item in runtime?.endpoints || []" :key="item.url" class="endpoint-row">
+            <div>
+              <strong>{{ item.name }}</strong>
+              <code>{{ item.url }}</code>
+            </div>
+            <el-tag :type="statusType(item.online)" size="small">{{ statusText(item.online) }}</el-tag>
+          </div>
+        </div>
+      </section>
     </template>
 
     <template v-else>
       <template v-if="clusterViewMode === 'list'">
-        <section class="settings-info-card service-card">
-          <span class="settings-kicker">服务探测</span>
-          <div class="section-head">
-            <h3>{{ isLocalGateway ? '本机 Gateway' : 'Gateway 发现与配对' }}</h3>
-            <span v-if="isLocalGateway">当前电脑已运行 MiniOrange Server，局域网设备可通过 mDNS 发现本机。</span>
-            <span v-else>发现与鉴权分离：先选择网关，再由 Token 建立 WebSocket 连接。</span>
-          </div>
-          <div class="discovery-actions">
-            <el-button
-              v-if="!isLocalGateway"
-              type="primary"
-              :loading="discoveringGateways"
-              @click="discoverGateways"
-            >
-              发现网关
-            </el-button>
-            <span v-if="pairedGatewayLabel && !isLocalGateway" class="paired-pill">已配对：{{ pairedGatewayLabel }}</span>
-            <span v-if="isLocalGateway && runtime?.endpoints?.[1]" class="paired-pill">
-              mDNS：{{ runtime.endpoints[1].url }}
-            </span>
-          </div>
-          <div class="endpoint-list">
-            <div v-for="item in runtime?.endpoints || []" :key="item.url" class="endpoint-row">
-              <div>
-                <strong>{{ item.name }}</strong>
-                <code>{{ item.url }}</code>
-              </div>
-              <el-tag :type="statusType(item.online)" size="small">{{ statusText(item.online) }}</el-tag>
-            </div>
-          </div>
-        </section>
-
         <section class="settings-table-card">
           <div class="section-head with-switch">
             <div>
@@ -1264,7 +1275,9 @@ onUnmounted(() => {
       </div>
       <el-table v-loading="loadingLogs" :data="logFiles" empty-text="暂无日志文件" height="360px">
         <el-table-column prop="filename" label="文件名" min-width="240" show-overflow-tooltip />
-        <el-table-column prop="sn" label="设备 SN" width="180" show-overflow-tooltip />
+        <el-table-column label="设备型号" width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ resolveLogDeviceModel(row.sn) }}</template>
+        </el-table-column>
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ formatLogSize(row.size) }}</template>
         </el-table-column>

@@ -15,6 +15,8 @@ import {
 import { getDeviceList } from '@/api/device'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
+import { dedupeDevicesForUi } from '@/utils/devices'
+import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
 import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
 import RunSummaryPanel from '@/components/RunSummaryPanel.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
@@ -54,7 +56,9 @@ const casesSyncedAt = ref('')
 const sheetMeta = ref({ total: 0 })
 const selectedCaseIds = ref([])
 const devices = ref([])
-const selectedSn = ref('')
+const devicePickerVisible = ref(false)
+const devicePickerSn = ref('')
+let devicePickerResolve = null
 
 const lastRun = ref(null)
 const runHistory = ref([])
@@ -66,9 +70,31 @@ const resultView = ref('list')
 let runPollTimer = null
 
 function normalizeDevices(res) {
-  const list = Array.isArray(res) ? res : res?.data || res?.data?.devices || []
-  return list.filter((d) => d.status === 'online')
+  const list = Array.isArray(res) ? res : res?.data || res?.devices || []
+  return dedupeDevicesForUi(list)
 }
+
+const deviceLabel = (device) => {
+  const model = device?.model || device?.name
+  const sn = displayDeviceSn(device)
+  const type = formatDeviceType(device)
+  const status = device?.status === 'online' ? '在线' : '离线'
+  return model ? `${model} · ${type} · ${status}` : `${sn} · ${type} · ${status}`
+}
+
+const inferPlatform = (device) => {
+  const type = String(device?.type || '').toLowerCase()
+  return type.includes('ios') ? 'ios' : 'android'
+}
+
+const pickableDevices = computed(() =>
+  devices.value.filter((d) => String(d.type || '').toLowerCase() !== 'pc'),
+)
+
+const defaultPickerSn = () =>
+  pickableDevices.value.find((d) => d.status === 'online')?.sn
+  || pickableDevices.value[0]?.sn
+  || ''
 
 const loadConfig = async () => {
   const res = await getFeishuConfig(props.appId)
@@ -117,14 +143,36 @@ const loadDevices = async () => {
       initWebSocket()
       list = normalizeDevices(await getDeviceList())
     }
-    devices.value =
-      list.filter((d) => ['android', 'ios', 'mobile'].includes(String(d.type || '').toLowerCase())) || list
-    if (!selectedSn.value && devices.value.length) {
-      selectedSn.value = (devices.value.find((d) => d.type === 'android') || devices.value[0]).sn
-    }
+    devices.value = list
   } catch {
     devices.value = []
   }
+}
+
+const openDevicePicker = async () => {
+  await loadDevices()
+  if (!pickableDevices.value.some((d) => d.status === 'online')) {
+    ElMessage.warning('暂无在线设备，请先在运行状态页确认设备已连接')
+    return null
+  }
+  devicePickerSn.value = defaultPickerSn()
+  devicePickerVisible.value = true
+  return new Promise((resolve) => {
+    devicePickerResolve = resolve
+  })
+}
+
+const cancelDevicePicker = () => {
+  devicePickerVisible.value = false
+  devicePickerResolve?.(null)
+  devicePickerResolve = null
+}
+
+const confirmDevicePicker = () => {
+  const sn = devicePickerSn.value
+  devicePickerVisible.value = false
+  devicePickerResolve?.(sn || null)
+  devicePickerResolve = null
 }
 
 const saveConfig = async () => {
@@ -213,13 +261,22 @@ const pollActiveRun = (runId) => {
 }
 
 const runRegression = async (onlySelected = false) => {
-  if (!selectedSn.value) return ElMessage.warning('请选择执行设备')
   if (!cases.value.length) return ElMessage.warning('请先同步飞书用例')
   const ids = onlySelected ? selectedCaseIds.value : null
   if (onlySelected && !ids?.length) return ElMessage.warning('请勾选要执行的用例')
+
+  const sn = await openDevicePicker()
+  if (!sn) return
+
+  const device = devices.value.find((d) => d.sn === sn)
+  if (!device || device.status !== 'online') {
+    ElMessage.warning('所选设备不可用，请重新选择')
+    return
+  }
+
   try {
     await ElMessageBox.confirm(
-      `将按顺序执行 ${ids ? ids.length : cases.value.length} 条用例。是否继续？`,
+      `将在 ${deviceLabel(device)} 上按顺序执行 ${ids ? ids.length : cases.value.length} 条用例。是否继续？`,
       '飞书回归',
       { type: 'warning' },
     )
@@ -235,8 +292,8 @@ const runRegression = async (onlySelected = false) => {
   try {
     const res = await runFeishuRegression({
       app_id: props.appId,
-      sn: selectedSn.value,
-      platform: 'android',
+      sn,
+      platform: inferPlatform(device),
       case_ids: ids || undefined,
     })
     const doc = res?.data || null
@@ -369,9 +426,6 @@ onUnmounted(() => {
 <template>
   <div class="feishu-panel">
     <div class="toolbar">
-      <el-select v-model="selectedSn" placeholder="执行设备" size="small" style="width: 200px">
-        <el-option v-for="d in devices" :key="d.sn" :label="`${d.name || d.sn} (${d.type})`" :value="d.sn" />
-      </el-select>
       <el-button size="small" :loading="fetching" @click="loadCases(true)">同步用例</el-button>
       <el-button size="small" type="primary" :loading="running" @click="runRegression(false)">执行全部</el-button>
       <el-button size="small" type="warning" :loading="running" :disabled="!selectedCaseIds.length" @click="runRegression(true)">
@@ -499,6 +553,36 @@ onUnmounted(() => {
 
         <Teleport to="body">
           <div v-if="resultView !== 'list'" class="report-fullpage">
+            <header class="report-fullpage-header">
+              <el-button text class="portal-back-btn" @click="goBackInReport">{{ backLabel }}</el-button>
+              <div class="portal-title-block">
+                <template v-if="resultView === 'playback' && selectedCaseForLog">
+                  <span class="portal-title">{{ selectedCaseForLog.name }}</span>
+                  <span class="portal-meta">
+                    {{ selectedCaseForLog.case_id }} · {{ lastRun?.sn }} ·
+                    {{ formatDuration(selectedCaseForLog.duration_ms) || lastRun?.finished_at?.slice(0, 16) }}
+                  </span>
+                </template>
+                <template v-else-if="lastRun">
+                  <span class="portal-title">已执行用例</span>
+                  <span class="portal-meta">
+                    {{ lastRun.started_at?.slice(0, 19).replace('T', ' ') }} · {{ lastRun.sn }} ·
+                    总计 {{ formatDuration(lastRun.duration_ms) || '—' }} ·
+                    已执行 {{ lastRun.executed ?? lastRun.cases?.length ?? 0 }}/{{ lastRun.total }} ·
+                    通过 {{ lastRun.passed }}/{{ lastRun.total }}
+                    <template v-if="lastRun.skipped"> · 跳过 {{ lastRun.skipped }}</template>
+                  </span>
+                </template>
+              </div>
+              <el-tag
+                v-if="resultView === 'playback' && selectedCaseForLog"
+                :type="statusTag(selectedCaseForLog.status)"
+                size="small"
+                class="portal-status"
+              >
+                {{ selectedCaseForLog.status }}
+              </el-tag>
+            </header>
             <div v-if="resultView === 'cases'" class="report-body report-body--cases">
               <RunSummaryPanel v-if="lastRun && !running" :run="lastRun" />
               <el-alert
@@ -572,7 +656,7 @@ onUnmounted(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <Teleport to="#titlebar-center-portal">
+    <Teleport to="#settings-overlay-portal">
       <div v-if="titlebarOwner === TITLEBAR_ID && resultView !== 'list'" class="report-titlebar-portal">
         <el-button text class="portal-back-btn" @click="goBackInReport">{{ backLabel }}</el-button>
         <div class="portal-title-block">
@@ -604,6 +688,19 @@ onUnmounted(() => {
         </el-tag>
       </div>
     </Teleport>
+
+    <el-dialog v-model="devicePickerVisible" title="选择执行设备" width="520px" destroy-on-close @close="cancelDevicePicker">
+      <p class="picker-hint">从运行状态设备列表中选择在线设备（含 ClawNode / USB Hub 等）。</p>
+      <el-radio-group v-model="devicePickerSn" class="device-picker-list">
+        <el-radio v-for="d in pickableDevices" :key="d.sn" :value="d.sn" :disabled="d.status !== 'online'" class="device-picker-item">
+          {{ deviceLabel(d) }}
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="cancelDevicePicker">取消</el-button>
+        <el-button type="primary" :disabled="!devicePickerSn" @click="confirmDevicePicker">确认</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -618,6 +715,9 @@ onUnmounted(() => {
 }
 .run-live-alert { margin-bottom: 10px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.picker-hint { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
+.device-picker-list { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; width: 100%; }
+.device-picker-item { width: 100%; margin-right: 0; white-space: normal; height: auto; }
 .cred-alert { margin-bottom: 12px; }
 .sync-meta { font-size: 12px; color: #9ca3af; margin-bottom: 8px; }
 .ios-hint { color: #b45309; }
@@ -675,14 +775,22 @@ onUnmounted(() => {
 }
 .report-fullpage {
   position: fixed;
-  top: 50px;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   z-index: 10000;
   display: flex;
   flex-direction: column;
   background: #f3f4f6;
+}
+.report-fullpage-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 16px 0 8px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  box-sizing: border-box;
 }
 .report-body {
   flex: 1;
