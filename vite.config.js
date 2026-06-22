@@ -1,8 +1,23 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath, URL } from 'node:url'
+import fs from 'node:fs'
+import path from 'node:path'
 
 import vue from '@vitejs/plugin-vue'
 import electron from 'vite-plugin-electron'
+
+function copyElectronDiscovery() {
+  return {
+    name: 'copy-electron-discovery',
+    writeBundle(options) {
+      const outDir = options.dir || 'dist-electron'
+      fs.copyFileSync(
+        path.resolve('electron/discovery.js'),
+        path.join(outDir, 'discovery.js'),
+      )
+    },
+  }
+}
 
 export default defineConfig({
   // 🔥🔥🔥 核心修复：必须添加这一行，将打包路径改为相对路径
@@ -21,6 +36,9 @@ export default defineConfig({
       {
         // 主进程入口
         entry: 'electron/main.js',
+        vite: {
+          plugins: [copyElectronDiscovery()],
+        },
       },
       {
         // 预加载脚本入口

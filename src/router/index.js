@@ -22,6 +22,7 @@ const SettingsHub = () => import('../views/Settings/AppsHubPage.vue')
 const SettingsSkills = () => import('../views/Settings/SkillsPage.vue')
 const SettingsKeys = () => import('../views/Settings/KeysPage.vue')
 const SettingsRuntime = () => import('../views/Settings/RuntimeStatusPage.vue')
+const SettingsDeviceDetail = () => import('../views/Settings/DeviceDetailPage.vue')
 const SettingsProjectEnv = () => import('../views/Settings/ProjectEnvPage.vue')
 const SettingsAppConfig = () => import('../views/Settings/AppConfigPage.vue')
 const routes = [
@@ -43,6 +44,7 @@ const routes = [
         children: [
             { path: 'hub', name: 'SettingsHub', component: SettingsHub, meta: { title: '应用与环境' } },
             { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },
+            { path: 'runtime/device/:sn', name: 'SettingsDeviceDetail', component: SettingsDeviceDetail, meta: { title: '设备详情' } },
             { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
             { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
             { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },

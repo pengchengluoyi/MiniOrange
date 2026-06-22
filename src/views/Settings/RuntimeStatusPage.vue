@@ -21,8 +21,7 @@ import {
   visibleDiscoveredLanNodes,
   isNodeOnServer,
   canAdoptLanNode,
-  lanNodeStatusLabel,
-  lanNodeTagType,
+  pendingAdoptSns,
   requestAdoptNode,
   declineAdoptNode,
   notifyDeviceUnbound,
@@ -938,7 +937,7 @@ onUnmounted(() => {
                   <span class="lan-device-sub">{{ node.model || 'Android Node' }} · {{ node.host }}</span>
                 </div>
                 <div class="lan-device-actions">
-                  <el-tag size="small" :type="lanNodeTagType(node)">{{ lanNodeStatusLabel(node) }}</el-tag>
+                  <el-tag v-if="pendingAdoptSns.has(node.sn)" size="small" type="info">连接中</el-tag>
                   <el-button
                     v-if="canAdoptLanNode(node)"
                     size="small"

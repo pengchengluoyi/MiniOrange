@@ -1,12 +1,19 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
+import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar, Fold, Expand } from '@element-plus/icons-vue'
 import { readAgentSessions } from '@/utils/agentSessions'
 import './settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
+
+const collapsed = ref(localStorage.getItem('settings-aside-collapsed') === '1')
+
+const toggleAside = () => {
+  collapsed.value = !collapsed.value
+  localStorage.setItem('settings-aside-collapsed', collapsed.value ? '1' : '0')
+}
 
 const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
@@ -24,6 +31,9 @@ const isActive = (s) => {
       route.path.startsWith('/settings/projects')
     )
   }
+  if (s.id === 'runtime') {
+    return route.path.startsWith('/settings/runtime')
+  }
   return route.path === s.to || route.path.startsWith(s.to + '/')
 }
 
@@ -34,14 +44,19 @@ const openLatestDialogue = () => {
     .sort((a, b) => new Date(b.lastUserMessageAt || b.updatedAt) - new Date(a.lastUserMessageAt || a.updatedAt))[0]
   router.push(latest ? { name: 'Dialogue', query: { sessionId: latest.id } } : { name: 'Dialogue', query: { fresh: '1' } })
 }
+
+const asideTitle = computed(() => (collapsed.value ? '' : '设置'))
 </script>
 
 <template>
   <div class="settings-layout">
-    <aside class="settings-aside">
+    <aside class="settings-aside" :class="{ collapsed }">
       <div class="aside-head">
         <el-icon><Setting /></el-icon>
-        <span>设置</span>
+        <span v-if="!collapsed">{{ asideTitle }}</span>
+        <button type="button" class="aside-toggle" :title="collapsed ? '展开侧栏' : '收起侧栏'" @click="toggleAside">
+          <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
+        </button>
       </div>
       <nav class="section-nav">
         <button
@@ -50,13 +65,15 @@ const openLatestDialogue = () => {
           type="button"
           class="section-btn"
           :class="{ active: isActive(s) }"
+          :title="s.label"
           @click="go(s)"
         >
           <el-icon><component :is="s.icon" /></el-icon>
-          {{ s.label }}
+          <span v-if="!collapsed">{{ s.label }}</span>
         </button>
       </nav>
-      <el-button text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
+      <el-button v-if="!collapsed" text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
+      <el-button v-else text class="back-apps collapsed-back" title="返回对话记录" @click="openLatestDialogue">←</el-button>
     </aside>
 
     <main class="settings-main">
@@ -83,6 +100,12 @@ const openLatestDialogue = () => {
   height: 100%;
   box-sizing: border-box;
   overflow-y: auto;
+  transition: width 0.2s ease;
+}
+.settings-aside.collapsed {
+  width: 64px;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .aside-head {
@@ -91,7 +114,30 @@ const openLatestDialogue = () => {
   gap: 8px;
   font-size: 17px;
   font-weight: 700;
-  padding: 0 8px 16px;
+  padding: 0 4px 16px;
+  position: relative;
+}
+.settings-aside.collapsed .aside-head {
+  justify-content: center;
+  padding-bottom: 12px;
+}
+.aside-toggle {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+}
+.settings-aside.collapsed .aside-toggle {
+  margin-left: 0;
+}
+.aside-toggle:hover {
+  background: #f3f4f6;
+  color: #111827;
 }
 .section-nav {
   display: flex;
@@ -112,6 +158,10 @@ const openLatestDialogue = () => {
   color: #374151;
   text-align: left;
 }
+.settings-aside.collapsed .section-btn {
+  justify-content: center;
+  padding: 10px 8px;
+}
 .section-btn:hover,
 .section-btn.active {
   background: #f3f4f6;
@@ -121,6 +171,10 @@ const openLatestDialogue = () => {
 .back-apps {
   margin-top: 12px;
   font-size: 12px;
+}
+.collapsed-back {
+  width: 100%;
+  justify-content: center;
 }
 .settings-main {
   flex: 1;

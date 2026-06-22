@@ -12,6 +12,7 @@ import { listAIProviders } from '@/api/settings'
 import { copilotCommands } from '@/logic/CopilotCommands'
 import { createAgentSession, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
 import { getBaseUrl } from '@/utils/config'
+import { selectableExecutionDevices, pickDefaultDeviceSn } from '@/utils/devices'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res
@@ -19,14 +20,6 @@ function normalizeDeviceList(res) {
   if (Array.isArray(res?.data?.devices)) return res.data.devices
   if (Array.isArray(res?.devices)) return res.devices
   return []
-}
-
-function executionDevices(list) {
-  const online = list.filter((d) => d.status === 'online')
-  const mobile = online.filter((d) =>
-    ['android', 'ios', 'mobile'].includes(String(d.type || '').toLowerCase()),
-  )
-  return mobile.length ? mobile : online
 }
 
 const route = useRoute()
@@ -313,10 +306,13 @@ const loadDevices = async () => {
         list = normalizeDeviceList(httpRes)
       }
     }
-    devices.value = executionDevices(list)
+    devices.value = selectableExecutionDevices(list)
+    if (selectedSn.value && !devices.value.some((d) => d.sn === selectedSn.value)) {
+      selectedSn.value = pickDefaultDeviceSn(devices.value)
+      persistSession()
+    }
     if (!selectedSn.value && devices.value.length >= 1) {
-      const android = devices.value.find((d) => d.type === 'android')
-      selectedSn.value = (android || devices.value[0]).sn
+      selectedSn.value = pickDefaultDeviceSn(devices.value)
       persistSession()
     }
     if (!devices.value.length) {

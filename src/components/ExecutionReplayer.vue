@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getBaseUrl } from '@/utils/config'
@@ -53,6 +53,8 @@ const knowledgeDraft = ref({
 let playTimer = null
 let analyzeSeq = 0
 const collapsedSections = ref(new Set())
+const sidebarScrollRef = ref(null)
+const sidebarDockItems = ref([])
 
 const isGuardPlanIndex = (idx) => Number(idx) >= 1000
 const isGuardPlanEntry = (e) =>
@@ -144,7 +146,8 @@ const pushNode = (out, node) => {
 
 const observeFromPlanLog = (planLog) => {
   const log = Array.isArray(planLog) ? planLog : []
-  const entry = log.find((e) => e.type === 'screen_observe')
+  const entries = log.filter((e) => e.type === 'screen_observe')
+  const entry = entries.length ? entries[entries.length - 1] : null
   if (!entry) return null
   const detail = entry.detail || {}
   const shot = entry.screenshot || detail.image_path || ''
@@ -157,11 +160,12 @@ const observeFromPlanLog = (planLog) => {
   }
 }
 
-const emitObserve = (target, ctx, observe) => {
+const emitObserve = (target, ctx, observe, opts = {}) => {
   if (!observe?.screenshot) return
+  const depth = opts.depth ?? 1
   pushNode(target, {
     ...ctx,
-    depth: 1,
+    depth,
     role: 'observe',
     type: 'screen_observe',
     title: observe.title || 'AI 观察 · 当前屏幕',
@@ -170,12 +174,45 @@ const emitObserve = (target, ctx, observe) => {
     screenshot_before: observe.screenshot,
     screenshot_after: observe.screenshot,
     screen: observe.screen || null,
+    planIndex: opts.planIndex,
+    planRound: opts.planRound,
     ok: true,
     playable: true,
   })
 }
 
-/** 操作步骤：Plan / Tap 同级；预期动作：Plan / Assert 同级 */
+const emitReplanTrigger = (target, ctx, item) => {
+  const reason = item.reason || item.type || ''
+  const isDrift = reason === 'drift_replan' || reason === 'foreground_drift_blocked'
+  const roundNo = item.plan_round || item.plan_index + 1 || ''
+  const title = item.title || (isDrift ? `离屏重规划 · 第 ${roundNo} 次` : `继续规划 · 第 ${roundNo} 次`)
+  pushNode(target, {
+    ...ctx,
+    depth: 2,
+    role: 'replan_trigger',
+    type: 'replan_trigger',
+    planIndex: item.plan_index,
+    planRound: item.plan_round,
+    title,
+    subtitle: '',
+    msg: '',
+    replanReason: isDrift ? 'drift' : 'goal_continue',
+    replanDetail: item.detail || {},
+    ok: true,
+    playable: false,
+  })
+}
+
+const isMultiRoundOperation = (op) => {
+  if (!op) return false
+  if (op.multi_round) return true
+  const flat = op.flat_items
+  if (Array.isArray(flat) && flat.some((e) => e.type === 'replan_trigger' || e.nested)) return true
+  const plans = op.plans || []
+  return plans.some((p) => (p.plan_round || 0) > 1)
+}
+
+/** 操作步骤：多轮时 Plan 同级；Tap/观察/重规划触发器为 Plan 子级 */
 const buildFlatSteps = () => {
   const out = []
   const seenOperationKeys = new Set()
@@ -193,6 +230,7 @@ const buildFlatSteps = () => {
     }
     const opKey = `op:${ctx.stepIndex ?? ctx.stepNo ?? 'x'}`
     const skipSection = ctx.skipOperationSection || seenOperationKeys.has(opKey)
+    const multiRound = isMultiRoundOperation(op)
     if (!ctx.skipOperationSection && !seenOperationKeys.has(opKey)) {
       seenOperationKeys.add(opKey)
     }
@@ -214,12 +252,14 @@ const buildFlatSteps = () => {
         operationSummary: formatOperationSummary(op),
         operationFinalOk: operationStats(op).finalOk,
         operationMissCount: operationStats(op).misses,
+        multiRound,
         screenshot: op.screenshot || '',
         playable: false,
       })
     }
 
     const flat = op.flat_items && Array.isArray(op.flat_items) ? op.flat_items : null
+    const actionDepth = multiRound ? 2 : 1
     const plansByIndex = new Map()
     for (const p of op.plans || []) {
       plansByIndex.set(p.plan_index, p)
@@ -231,22 +271,25 @@ const buildFlatSteps = () => {
         isGuardPlanIndex(plan.plan_index) ||
         plan.kind === 'overlay_guard'
       const planShot = peekShot || plan.screenshot || ''
+      const roundAiDebug = plan.ai_debug || stepCtx.ai_debug
       pushNode(out, {
         ...stepCtx,
         depth: 1,
         role: 'plan',
         type: 'plan',
         planIndex: plan.plan_index,
+        planRound: plan.plan_round,
         isRuntimeGuard: isGuard,
+        isRemediationPlan: multiRound && (plan.plan_round || 1) < (op.plan_round_count || op.plans?.length || 1),
         title: isGuard
           ? plan.title || plan.summary
           : plan.title || `Plan - ${plan.summary}`,
-        subtitle: plan.summary,
+        subtitle: plan.summary || plan.reply || '',
         kind: plan.kind,
         ok: plan.ok,
         thought: plan.detail || {},
         planner: stepCtx.planner,
-        ai_debug: stepCtx.ai_debug,
+        ai_debug: roundAiDebug,
         run_elapsed: plan.run_elapsed,
         run_elapsed_ms: plan.run_elapsed_ms,
         screenshot: planShot,
@@ -267,10 +310,11 @@ const buildFlatSteps = () => {
       const preEntry = stepCtx.preconditionEntries?.get?.(String(act.summary || '').trim())
       pushNode(out, {
         ...stepCtx,
-        depth: 1,
+        depth: actionDepth,
         role: 'action',
         type: 'action',
         planIndex,
+        planRound: act.plan_round,
         phase: act.phase || '',
         isPlanAttempt: isAttempt,
         title: actionTitle,
@@ -355,25 +399,35 @@ const buildFlatSteps = () => {
     }
 
     if (flat) {
-      // 按后端给的展平顺序渲染，同一级：Observe / Plan / Tap1 / Tap2...
       const actionsByPlan = new Map()
       for (const p of op.plans || []) {
         actionsByPlan.set(p.plan_index, p.actions || [])
       }
       const actionOrd = new Map()
-      const hasFlatObserve = flat.some((item) => item.type === 'observe')
-      if (!hasFlatObserve) {
+      const hasFlatObserve = flat.some((item) => item.type === 'observe' && !item.nested)
+      if (!hasFlatObserve && !multiRound) {
         emitObserve(out, stepCtx, observeFromPlanLog(stepCtx.plan_log))
       }
       for (let fi = 0; fi < flat.length; fi += 1) {
         const item = flat[fi]
         if (item.type === 'observe') {
-          emitObserve(out, stepCtx, {
-            screenshot: item.screenshot,
-            screen: item.screen,
-            title: 'AI 观察 · 当前屏幕',
-            subtitle: '规划前屏幕截图',
-          })
+          if (item.nested || multiRound) continue
+          const observeDepth = 1
+          emitObserve(
+            out,
+            stepCtx,
+            {
+              screenshot: item.screenshot,
+              screen: item.screen,
+              title: 'AI 观察 · 当前屏幕',
+              subtitle: '规划前屏幕截图',
+            },
+            { depth: observeDepth, planIndex: item.plan_index, planRound: item.plan_round },
+          )
+          continue
+        }
+        if (item.type === 'replan_trigger') {
+          emitReplanTrigger(out, stepCtx, item)
           continue
         }
         const plan = plansByIndex.get(item.plan_index)
@@ -408,9 +462,28 @@ const buildFlatSteps = () => {
           if (act) emitAction(plan.plan_index, act)
         }
       }
+    } else if (multiRound && (op.plans || []).length) {
+      for (const plan of op.plans || []) {
+        emitPlan(plan)
+        for (const act of plan.actions || []) {
+          emitAction(plan.plan_index, act)
+        }
+        if (plan.replan_trigger) {
+          emitReplanTrigger(out, stepCtx, {
+            plan_index: plan.plan_index,
+            plan_round: plan.plan_round,
+            reason: plan.replan_trigger.type,
+            title: plan.replan_trigger.title,
+            summary: plan.replan_trigger.summary,
+            detail: plan.replan_trigger.detail,
+          })
+        }
+      }
     } else {
-      // 兼容旧结构：仍然按照 Plan -> actions 嵌套，但 depth 统一为 1
-      emitObserve(out, stepCtx, observeFromPlanLog(stepCtx.plan_log))
+      // 兼容旧结构：Plan depth=1，动作 depth 随 multiRound 变化
+      if (!multiRound) {
+        emitObserve(out, stepCtx, observeFromPlanLog(stepCtx.plan_log))
+      }
       for (const plan of op.plans || []) {
         emitPlan(plan)
         for (const act of plan.actions || []) {
@@ -437,7 +510,7 @@ const buildFlatSteps = () => {
         if (act) {
           pushNode(out, {
             ...ctx,
-            depth: 1,
+            depth: actionDepth,
             role: 'action',
             type: 'action',
             title: `${act.action_name || (act.kind === 'click' ? 'Tap' : act.kind === 'input' ? 'Input' : act.kind)} - ${act.summary}`,
@@ -1096,12 +1169,32 @@ const buildFlatSteps = () => {
   flatSteps.value = out
   const first = out.findIndex((s) => s.playable)
   activeIndex.value = first >= 0 ? first : 0
+  initCollapsedForMultiRound(out)
+}
+
+let lastTraceCollapseKey = ''
+const initCollapsedForMultiRound = (steps) => {
+  const key = `${props.caseName || ''}:${(props.trace || []).length}:${steps.length}`
+  if (key === lastTraceCollapseKey) return
+  lastTraceCollapseKey = key
+  const next = new Set()
+  for (const s of steps) {
+    if (s.role === 'operation' && s.multiRound && s.stepNo != null) {
+      next.add(s.stepNo)
+    }
+  }
+  collapsedSections.value = next
 }
 
 watch(
   () => [props.trace, props.stepResults, props.preconditionRaw],
   buildFlatSteps,
   { immediate: true, deep: true },
+)
+
+watch(
+  () => flatSteps.value.length,
+  () => resolveSidebarDock(activeIndex.value),
 )
 
 const timelineShots = computed(() =>
@@ -1404,6 +1497,12 @@ const extractPlanner = (node) => {
 
 const hasAiResponse = (node) => !!extractAiDebug(node)
 
+/** 同一轮 Plan 的 AI Response 相同，仅在 Plan（及 Assert）行展示徽章。 */
+const showAiBadge = (node) => {
+  if (!hasAiResponse(node)) return false
+  return node.role === 'plan' || node.role === 'verify' || node.role === 'expected_action'
+}
+
 const openAiResponse = (node) => {
   aiResponseNode.value = node || null
 }
@@ -1429,7 +1528,11 @@ const aiResponsePayload = computed(() => {
     title: node.title || node.subtitle || '',
     planner,
     response: aiDebug.raw_plan || aiDebug.raw_response || aiDebug.raw_content_preview || null,
+    raw_plan_model: aiDebug.raw_plan_model || null,
+    prompt_preview: aiDebug.prompt_preview || null,
+    doubao_coord_convert: aiDebug.doubao_coord_convert || null,
     normalized_steps: aiDebug.normalized_steps || null,
+    image_pipeline: aiDebug.image_pipeline || null,
     coordinate_scale: aiDebug.coordinate_scale || null,
     overlay_guard_before_plan: aiDebug.overlay_guard_before_plan || null,
     blockers: aiDebug.blockers || null,
@@ -1502,7 +1605,7 @@ const knowledgeHintPreview = (node) => {
 
 const thoughtBlockVisible = (node) => {
   if (!node) return false
-  if (node.role === 'action') return false
+  if (node.role === 'action' || node.role === 'replan_trigger') return false
   if (node.role === 'operation' || node.role === 'plan') {
     return !!(node.thought || node.subtitle || knowledgeHintLines(node).length)
   }
@@ -1635,6 +1738,65 @@ const effectiveStepOk = (step) => {
   return step.ok !== false
 }
 
+const resolveSidebarDock = (fromIndex) => {
+  const steps = flatSteps.value
+  if (!steps.length || fromIndex < 0) {
+    sidebarDockItems.value = []
+    return
+  }
+  const items = []
+  let pendingPlan = null
+
+  const flushPlan = () => {
+    if (!pendingPlan) return
+    items.push(pendingPlan)
+    pendingPlan = null
+  }
+
+  const end = Math.min(fromIndex, steps.length - 1)
+  for (let i = 0; i <= end; i += 1) {
+    const s = steps[i]
+    if (s.depth === 0 && s.type === 'section') {
+      flushPlan()
+      const label = [s.title, s.subtitle].filter(Boolean).join(' · ')
+      if (label) {
+        items.push({
+          level: 'section',
+          role: s.role || '',
+          title: label,
+          index: i,
+        })
+      }
+      continue
+    }
+    if ((s.role === 'plan' || s.role === 'verify_plan') && s.depth === 1) {
+      pendingPlan = {
+        level: 'plan',
+        role: s.role,
+        title: s.title || s.subtitle || '',
+        index: i,
+      }
+    }
+  }
+  flushPlan()
+  sidebarDockItems.value = items
+}
+
+const updateSidebarDockFromScroll = () => {
+  const el = sidebarScrollRef.value
+  if (!el) return
+  const top = el.scrollTop + 4
+  const nodes = el.querySelectorAll('.step-item[data-step-index]')
+  let anchor = 0
+  for (const node of nodes) {
+    const idx = Number(node.getAttribute('data-step-index'))
+    if (Number.isNaN(idx)) continue
+    if (node.offsetTop <= top) anchor = idx
+    else break
+  }
+  resolveSidebarDock(anchor)
+}
+
 const visibleSidebarSteps = computed(() => {
   const out = []
   let hideChildren = false
@@ -1662,11 +1824,25 @@ const visibleSidebarSteps = computed(() => {
 
 const toggleSectionCollapse = (stepNo, evt) => {
   evt?.stopPropagation?.()
+  const wasCollapsed = collapsedSections.value.has(stepNo)
   const next = new Set(collapsedSections.value)
   if (next.has(stepNo)) next.delete(stepNo)
   else next.add(stepNo)
   collapsedSections.value = next
+  if (wasCollapsed) {
+    nextTick(() => {
+      const el = sidebarScrollRef.value
+      if (!el) return
+      const sectionNode = el.querySelector(`.step-item[data-step-no="${stepNo}"][data-step-depth="0"]`)
+      if (sectionNode) {
+        el.scrollTo({ top: Math.max(0, sectionNode.offsetTop - 4), behavior: 'smooth' })
+      }
+      updateSidebarDockFromScroll()
+    })
+  }
 }
+
+watch(activeIndex, (i) => resolveSidebarDock(i), { immediate: true })
 
 const CHANNEL_COLORS = {
   clip: '#3b82f6',
@@ -1961,6 +2137,7 @@ const roleIcon = (s) => {
   if (s.role === 'page_recovery' || s.role === 'page_recovery_step') return '↩'
   if (s.role === 'plan') return 'P'
   if (s.role === 'observe') return '👁'
+  if (s.role === 'replan_trigger') return s.replanReason === 'drift' ? '⇄' : '↻'
   if (s.role === 'verify') return s.ok === false ? '✗' : '✓'
   if (s.role === 'action') return '▶'
   return '·'
@@ -2031,10 +2208,26 @@ onUnmounted(() => {
         </span>
       </div>
 
+      <div v-if="sidebarDockItems.length" class="replayer-sidebar-dock">
+        <div
+          v-for="(row, di) in sidebarDockItems"
+          :key="`${row.level}-${row.index}-${di}`"
+          class="dock-row"
+          :class="[`dock-${row.level}`, { 'dock-last': di === sidebarDockItems.length - 1 }]"
+          :title="row.title"
+        >
+          {{ row.title }}
+        </div>
+      </div>
+
+      <div ref="sidebarScrollRef" class="replayer-left-body" @scroll="updateSidebarDockFromScroll">
       <div
         v-for="s in visibleSidebarSteps"
         :key="s._index"
         class="step-item"
+        :data-step-index="s._index"
+        :data-step-no="s.stepNo ?? ''"
+        :data-step-depth="s.depth"
         :class="{
           active: s._index === activeIndex,
           fail: !effectiveStepOk(s) && !isPlanAttemptStep(s) && !isAssertOnlyFail(s),
@@ -2043,6 +2236,7 @@ onUnmounted(() => {
           section: s.type === 'section',
           plan: s.role === 'plan',
           action: s.role === 'action',
+          replan: s.role === 'replan_trigger',
           verify: s.role === 'verify',
           page_identify: s.role === 'page_identify',
           page_recovery: s.role === 'page_recovery' || s.role === 'page_recovery_step',
@@ -2078,12 +2272,12 @@ onUnmounted(() => {
           >
             {{ s.operationSummary }}
           </div>
-          <div v-if="s.msg && s.depth === 2" class="step-sub">
+          <div v-if="s.msg && s.depth === 2 && s.role !== 'replan_trigger'" class="step-sub">
             {{ String(s.msg || '').length > 120 ? String(s.msg || '').slice(0, 120) + '…' : String(s.msg || '') }}
           </div>
           <div v-if="s.icon_auto_learned" class="step-tag auto">已自动入库</div>
           <button
-            v-if="hasAiResponse(s)"
+            v-if="showAiBadge(s)"
             type="button"
             class="step-ai-btn"
             title="查看 AI Response"
@@ -2094,6 +2288,7 @@ onUnmounted(() => {
         </div>
         <span v-if="s.run_elapsed" class="step-ts">{{ s.run_elapsed }}</span>
         <span v-if="s.duration_ms != null" class="step-time">{{ (s.duration_ms / 1000).toFixed(2) }}s</span>
+      </div>
       </div>
     </aside>
 
@@ -2116,8 +2311,8 @@ onUnmounted(() => {
         <el-button size="small" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</el-button>
         <span class="player-pos">{{ activeIndex + 1 }} / {{ flatSteps.length }}</span>
         <el-radio-group v-model="markStyle" size="small" class="mark-toggle">
-          <el-radio-button label="midscene">Midscene</el-radio-button>
-          <el-radio-button label="screenshot">截图标记</el-radio-button>
+          <el-radio-button value="midscene">Midscene</el-radio-button>
+          <el-radio-button value="screenshot">截图标记</el-radio-button>
         </el-radio-group>
         <el-button
           v-if="channelOverlaySource.length"
@@ -2323,7 +2518,7 @@ onUnmounted(() => {
 
       <p v-if="current" class="player-caption">
         <span class="cap-done">Done:</span> {{ current.title }}
-        <template v-if="current.msg"> — {{ current.msg }}</template>
+        <template v-if="current.msg && current.role !== 'replan_trigger'"> — {{ current.msg }}</template>
       </p>
     </section>
 
@@ -2334,6 +2529,15 @@ onUnmounted(() => {
           <div class="info-label">Param</div>
           <p v-if="currentParamText">{{ currentParamText }}</p>
           <p v-else-if="command">{{ command }}</p>
+        </div>
+        <div v-if="current.role === 'replan_trigger'" class="info-block replan-info">
+          <div class="info-label">Replan</div>
+          <p v-if="current.replanReason === 'drift'" class="hint-text">
+            被测应用已离屏，系统基于新截图重新规划。
+          </p>
+          <p v-else class="hint-text">
+            前置阻碍已处理，尚未达成用例步骤目标；系统将重新截图并由 AI 继续规划。
+          </p>
         </div>
         <div v-if="thoughtBlockVisible(current)" class="info-block">
           <div class="info-label">{{ thoughtBlockLabel(current) }}</div>
@@ -2673,6 +2877,14 @@ onUnmounted(() => {
 .replayer--fullscreen .replayer-right {
   max-height: none;
   height: 100%;
+}
+.replayer--fullscreen .replayer-left {
+  overflow: hidden;
+}
+.replayer--fullscreen .replayer-right {
+  overflow-y: auto;
+}
+.replayer--fullscreen .replayer-left-body {
   overflow-y: auto;
 }
 .replayer--fullscreen .replayer-center {
@@ -2739,26 +2951,39 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .replayer-left {
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   max-height: 560px;
   background: #fff;
   border-radius: 6px;
   border: 1px solid #e5e7eb;
+}
+.replayer-left-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
 }
-
-.replayer-left::-webkit-scrollbar {
+.replayer-left-body::-webkit-scrollbar {
   width: 7px;
 }
-.replayer-left::-webkit-scrollbar-track {
+.replayer-left-body::-webkit-scrollbar-track {
   background: transparent;
 }
-.replayer-left::-webkit-scrollbar-thumb {
+.replayer-left-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 10px;
+}
+
+.replayer-left-body::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.22);
   border-radius: 10px;
 }
 .replayer-head {
+  flex-shrink: 0;
   padding: 10px 12px;
   font-weight: 700;
   border-bottom: 1px solid #f3f4f6;
@@ -2766,6 +2991,44 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  background: #fff;
+}
+.replayer-sidebar-dock {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 11px;
+  line-height: 1.4;
+  max-height: 148px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+.dock-row {
+  padding: 1px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dock-row.dock-section {
+  font-weight: 600;
+  color: #111827;
+}
+.dock-row.dock-plan {
+  color: #4b5563;
+  padding-left: 10px;
+  font-weight: 500;
+}
+.dock-row.dock-plan::before {
+  content: '└ ';
+  color: #9ca3af;
+}
+.dock-row.dock-last {
+  color: #1d4ed8;
+}
+.dock-row.dock-last.dock-section {
+  color: #1e40af;
 }
 .replayer-timing {
   font-weight: 400;
@@ -2793,8 +3056,14 @@ onUnmounted(() => {
   padding-top: 10px;
   border-top: 1px solid #e5e7eb;
 }
-.step-item.plan { color: #374151; }
+.step-item.plan { color: #374151; font-weight: 600; }
 .step-item.action { color: #1e40af; }
+.step-item.replan {
+  color: #7c3aed;
+  font-style: italic;
+  font-size: 12px;
+}
+.step-item.replan .step-icon { color: #a855f7; }
 .step-item.verify { color: #047857; }
 .step-item.active { background: #eff6ff; }
 .step-item.fail { background: #fef2f2; }

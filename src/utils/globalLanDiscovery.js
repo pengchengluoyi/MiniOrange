@@ -26,7 +26,10 @@ export const serverDevices = ref([])
 /** 桌面端已 adopt、等待手机上线 */
 export const pendingAdoptSns = ref(new Set())
 
-const adoptPromptDismissed = ref(new Set())
+/** 弹窗「暂不添加」：仅抑制 10s 快速弹窗，设备仍显示在附近列表 */
+const popupSkippedSns = ref(new Set())
+/** 附近列表「忽略」：从发现列表隐藏 */
+const lanListIgnoredSns = ref(new Set())
 const adoptPopupQueue = []
 let adoptCountdownTimer = null
 let adoptDismissTimer = null
@@ -60,7 +63,7 @@ export const isDevicePairedOnPhone = (node) => {
 
 export const canAdoptLanNode = (node) => {
   const sn = String(node?.sn || '').trim()
-  if (adoptPromptDismissed.value.has(sn)) return false
+  if (lanListIgnoredSns.value.has(sn)) return false
   if (pendingAdoptSns.value.has(sn)) return false
   if (adoptingNode.value && adoptCandidate.value?.sn === sn) return false
   return !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
@@ -69,7 +72,7 @@ export const canAdoptLanNode = (node) => {
 export const visibleDiscoveredLanNodes = computed(() =>
   discoveredLanNodes.value.filter((node) => {
     const sn = String(node?.sn || '').trim()
-    if (adoptPromptDismissed.value.has(sn)) return false
+    if (lanListIgnoredSns.value.has(sn)) return false
     const dev = findServerClawNode(node)
     return !(dev && dev.status === 'online')
   }),
@@ -171,7 +174,7 @@ export const confirmAdoptNode = async (node, runtime) => {
     })
     addKnownClawNode(sn)
     pendingAdoptSns.value = new Set([...pendingAdoptSns.value, sn])
-    adoptPromptDismissed.value = new Set([...adoptPromptDismissed.value, sn])
+    popupSkippedSns.value = new Set([...popupSkippedSns.value, sn])
     if (res?.data?.devices) {
       applyServerDeviceList(res.data.devices)
     } else {
@@ -201,17 +204,25 @@ export const requestAdoptNode = async (node, runtime = null) => {
   return confirmAdoptNode(node, runtime)
 }
 
-/** 弹窗 / 附近列表 统一的「暂不添加」入口 */
-export const declineAdoptNode = (node) => {
+/** 弹窗「暂不添加」：不再自动弹窗，但保留在附近列表 */
+export const skipAdoptPopup = (node) => {
   const sn = String(node?.sn || '').trim()
   if (!sn) return
-  adoptPromptDismissed.value = new Set([...adoptPromptDismissed.value, sn])
+  popupSkippedSns.value = new Set([...popupSkippedSns.value, sn])
   for (let i = adoptPopupQueue.length - 1; i >= 0; i -= 1) {
     if (adoptPopupQueue[i]?.sn === sn) adoptPopupQueue.splice(i, 1)
   }
   if (adoptCandidate.value?.sn === sn) {
     closeAdoptPopupUi()
   }
+}
+
+/** 附近列表「忽略」：从列表隐藏且不再弹窗 */
+export const declineAdoptNode = (node) => {
+  const sn = String(node?.sn || '').trim()
+  if (!sn) return
+  lanListIgnoredSns.value = new Set([...lanListIgnoredSns.value, sn])
+  skipAdoptPopup(node)
 }
 
 const closeAdoptPopupUi = () => {
@@ -226,7 +237,7 @@ export const dismissAdoptPopup = async (confirmed = false, runtime = null) => {
   closeAdoptPopupUi()
   if (node?.sn) {
     if (confirmed) await requestAdoptNode(node, runtime)
-    else declineAdoptNode(node)
+    else skipAdoptPopup(node)
   }
   processAdoptPopupQueue()
 }
@@ -257,7 +268,7 @@ const processAdoptPopupQueue = () => {
 const enqueueAdoptPopup = (node) => {
   const sn = String(node?.sn || '').trim()
   if (!sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
-  if (adoptPromptDismissed.value.has(sn) || pendingAdoptSns.value.has(sn)) return
+  if (popupSkippedSns.value.has(sn) || pendingAdoptSns.value.has(sn)) return
   if (adoptPopupQueue.some((item) => item.sn === sn)) return
   if (adoptPopupVisible.value && adoptCandidate.value?.sn === sn) return
   adoptPopupQueue.push({ ...node, sn })
@@ -296,8 +307,11 @@ export const notifyDeviceUnbound = (...sns) => {
     (d) => !drop.has(d.sn) && !drop.has(displayDeviceSn(d)),
   )
   discoveredLanNodes.value = discoveredLanNodes.value.filter((n) => !drop.has(n.sn))
-  adoptPromptDismissed.value = new Set(
-    [...adoptPromptDismissed.value].filter((sn) => !drop.has(sn)),
+  popupSkippedSns.value = new Set(
+    [...popupSkippedSns.value].filter((sn) => !drop.has(sn)),
+  )
+  lanListIgnoredSns.value = new Set(
+    [...lanListIgnoredSns.value].filter((sn) => !drop.has(sn)),
   )
   for (let i = adoptPopupQueue.length - 1; i >= 0; i -= 1) {
     if (drop.has(adoptPopupQueue[i]?.sn)) adoptPopupQueue.splice(i, 1)

@@ -8,7 +8,7 @@ let checkPromise = null
 const checkUrl = async (url) => {
   try {
     const controller = new AbortController()
-    const id = setTimeout(() => controller.abort(), 3000) // 🔥 增加超时时间，防止 mDNS 解析慢导致误判
+    const id = setTimeout(() => controller.abort(), 1200)
     const res = await fetch(`${url}/sys/server_info`, { method: 'GET', mode: 'cors', signal: controller.signal })
     clearTimeout(id)
     return res.ok
@@ -39,9 +39,12 @@ service.interceptors.request.use(
       if (!checkPromise) {
         checkPromise = (async () => {
           const candidates = [
-            'https://localhost:10104', 'http://localhost:10104',
-            'https://127.0.0.1:10104', 'http://127.0.0.1:10104',
-            'https://miniorange.local:10104', 'http://miniorange.local:10104'
+            'http://127.0.0.1:10104',
+            'http://localhost:10104',
+            'https://127.0.0.1:10104',
+            'https://localhost:10104',
+            'http://miniorange.local:10104',
+            'https://miniorange.local:10104',
           ]
 
           // 自动探测当前域名 (适配 miniorange-xxx.local 这种 mDNS 访问场景)

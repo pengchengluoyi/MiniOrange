@@ -7,26 +7,34 @@ const REMOTE_HOST = 'miniorange.local'
 
 // 动态检测当前使用的 Host
 export const getServiceHost = async () => {
-  // 优先检查 miniorange.local 是否可用
-  try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 1000)
-    
-    // 尝试请求一个轻量级接口或根路径
-    const response = await fetch(`http://${REMOTE_HOST}:${DEFAULT_PORT}/`, { 
-      method: 'HEAD',
-      signal: controller.signal 
-    })
-    
-    clearTimeout(timeoutId)
-    if (response.ok || response.status === 404) { // 只要能连通即可
-      console.log(`[Config] Detected ${REMOTE_HOST} is available.`)
-      return REMOTE_HOST
+  const probe = async (host, timeoutMs = 500) => {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      const response = await fetch(`http://${host}:${DEFAULT_PORT}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      if (response.ok || response.status === 404) return host
+    } catch {
+      // try next candidate
     }
-  } catch (e) {
-    // 忽略错误，降级到 localhost
+    return null
   }
-  
+
+  const local = await probe(DEFAULT_HOST, 400)
+  if (local) {
+    console.log(`[Config] Using local server ${local}.`)
+    return local
+  }
+
+  const remote = await probe(REMOTE_HOST, 800)
+  if (remote) {
+    console.log(`[Config] Detected ${remote} is available.`)
+    return remote
+  }
+
   console.log(`[Config] Fallback to ${DEFAULT_HOST}.`)
   return DEFAULT_HOST
 }

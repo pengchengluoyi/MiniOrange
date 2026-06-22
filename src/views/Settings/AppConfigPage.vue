@@ -416,9 +416,9 @@ onUnmounted(() => releaseTitlebar(TITLEBAR_ID))
         <el-form label-width="140px" style="max-width: 640px">
           <el-form-item label="环境策略">
             <el-radio-group v-model="executionEnvMode">
-              <el-radio label="fixed">固定 Profile（下方选择）</el-radio>
-              <el-radio label="project_default">跟随项目默认环境</el-radio>
-              <el-radio label="task_param">由任务/飞书参数指定</el-radio>
+              <el-radio value="fixed">固定 Profile（下方选择）</el-radio>
+              <el-radio value="project_default">跟随项目默认环境</el-radio>
+              <el-radio value="task_param">由任务/飞书参数指定</el-radio>
             </el-radio-group>
           </el-form-item>
           <el-form-item v-if="executionEnvMode === 'fixed'" label="执行 Profile">

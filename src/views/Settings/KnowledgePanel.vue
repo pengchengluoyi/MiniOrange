@@ -34,6 +34,23 @@ const globalItems = computed(() =>
   allItems.value.filter((r) => !String(r.appIdsText || '').trim() && !(r.app_ids || []).length),
 )
 
+const appItems = computed(() => {
+  if (!props.appId) {
+    return allItems.value.filter(
+      (r) => String(r.appIdsText || '').trim() || (r.app_ids || []).length,
+    )
+  }
+  return allItems.value.filter((r) => {
+    const ids = (r.app_ids || []).length
+      ? r.app_ids
+      : String(r.appIdsText || '')
+          .split(/[,，、\s]+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+    return ids.includes(props.appId)
+  })
+})
+
 const contentPreview = (text) => {
   const s = String(text || '').trim()
   if (!s) return '—'

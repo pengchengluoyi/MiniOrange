@@ -44,3 +44,14 @@
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+
+/* Toast 不被顶部 TitleBar 遮挡 */
+.el-message {
+  z-index: 20000 !important;
+  top: 58px !important;
+}
+
+.el-notification {
+  z-index: 20000 !important;
+  top: 58px !important;
+}
