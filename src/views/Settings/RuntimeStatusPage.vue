@@ -1,22 +1,46 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Monitor, Cpu, Connection, Refresh, VideoPlay, Files, Lock, Cellphone, Folder, Document, Back } from '@element-plus/icons-vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Monitor, Cpu, Connection, Refresh, VideoPlay, Files, Lock, Cellphone, Folder, Document, Back, List, Grid, ArrowRight } from '@element-plus/icons-vue'
 import { VueFlow, MarkerType, Handle, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { addMessageListener, removeMessageListener, sendWsRequest } from '@/api/mWebSocket'
+import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { getNodeStatus } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
+import { dedupeDevicesForUi, sortDevicesForDisplay } from '@/utils/devices'
+import { readKnownClawNodes, addKnownClawNode, removeKnownClawNode, pruneKnownClawNodes } from '@/utils/knownClawNodes'
+import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
+import { formatRelativeTime } from '@/utils/relativeTime'
+import { adoptClawNode, pullClawNodeLogsToClipboard, formatLogSize, listClawNodeLogs, downloadClawNodeLogUrl, unbindClawNode } from '@/api/clawnode'
+import {
+  lanDiscoveryAttempted,
+  discoveringNodes,
+  visibleDiscoveredLanNodes,
+  isNodeOnServer,
+  lanNodeStatusLabel,
+  lanNodeTagType,
+  confirmAdoptNode as adoptLanNodeGlobal,
+  notifyDeviceUnbound,
+  applyServerDeviceList,
+  adoptingNode,
+} from '@/utils/globalLanDiscovery'
 import { reconnectWebSocket } from '@/api/mWebSocket'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
 
+const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
+const initialLoading = ref(true)
 const runtime = ref(null)
 const nodeStatus = ref(null)
 const devices = ref([])
 const lastUpdated = ref('')
 const activeTab = ref('overview')
+const clusterViewMode = ref('list')
+const knownNodeSns = ref(readKnownClawNodes())
 const dialogVisible = ref(false)
 const currentDevice = ref(null)
 const commandForm = reactive({
@@ -49,18 +73,33 @@ const browserPath = ref('/')
 const browserContext = reactive({ sn: '', mode: 'source' })
 
 const discoveringGateways = ref(false)
-const discoveringNodes = ref(false)
 const discoveredGateways = ref([])
-const discoveredLanNodes = ref([])
 const gatewayDialogVisible = ref(false)
-const nodeDialogVisible = ref(false)
+const logWindowMinutes = ref(5)
+const logsDialogVisible = ref(false)
+const logFiles = ref([])
+const loadingLogs = ref(false)
 const selectedGateway = ref(null)
 const pairingGateway = ref(false)
 const pairedGatewayLabel = ref(getPairedGatewayDisplay())
+const relativeTimeTick = ref(0)
+let relativeTimer = null
 
-const onlineDevices = computed(() => devices.value.filter((d) => d.status === 'online'))
-const executorNodes = computed(() => devices.value.filter((d) => d.type === 'pc' || d.role === 'node'))
-const mobileDevices = computed(() => devices.value.filter((d) => d.type !== 'pc'))
+const formatLastOnline = (value) => {
+  void relativeTimeTick.value
+  return formatRelativeTime(value)
+}
+
+const goToDeviceDetail = (row) => {
+  const sn = row?.sn || displayDeviceSn(row)
+  if (!sn || sn === '—') return
+  router.push({ name: 'SettingsDeviceDetail', params: { sn: encodeURIComponent(sn) } })
+}
+
+const isMobileType = (device) => ['android', 'ios', 'mobile', 'android_direct'].includes(String(device?.type || '').toLowerCase())
+const isExecutorNode = (device) => device?.type === 'pc' || (device?.role === 'node' && !isMobileType(device))
+
+const executorNodes = computed(() => devices.value.filter((d) => isExecutorNode(d)))
 const serviceOnline = computed(() => !!nodeStatus.value || runtime.value?.endpoints?.some((item) => item.online))
 const serverEndpoint = computed(() => {
   const onlineEndpoint = runtime.value?.endpoints?.find((item) => item.online)
@@ -68,7 +107,16 @@ const serverEndpoint = computed(() => {
 })
 const serverRole = computed(() => nodeStatus.value?.role || 'unknown')
 const serverSn = computed(() => nodeStatus.value?.sn || runtime.value?.electron?.pid || 'local')
-const devicePool = computed(() => devices.value.filter((d) => !(d.type === 'pc' || d.role === 'node')))
+const isLocalGateway = computed(() => {
+  if (runtime.value?.isLocalGateway) return true
+  if (runtime.value?.embeddedServer?.running) return true
+  const localhost = runtime.value?.endpoints?.find((item) => item.name === 'localhost' || item.url?.includes('127.0.0.1'))
+  return localhost?.online === true
+})
+const displayDevices = computed(() => sortDevicesForDisplay(dedupeDevicesForUi(devices.value)))
+const devicePool = computed(() => displayDevices.value.filter((d) => !isExecutorNode(d)))
+const onlineDevices = computed(() => displayDevices.value.filter((d) => d.status === 'online'))
+const mobileDevices = computed(() => displayDevices.value.filter((d) => isMobileType(d)))
 const runtimeSummary = computed(() => {
   if (!lastUpdated.value) return '等待刷新'
   return `${onlineDevices.value.length} 台在线 · ${lastUpdated.value}`
@@ -79,6 +127,12 @@ const statusText = (ok) => (ok ? '在线' : '离线')
 const shortId = (value) => {
   const text = String(value || '')
   return text.length > 18 ? `${text.slice(0, 10)}...${text.slice(-4)}` : text || '—'
+}
+const shortNodeSn = (sn) => {
+  const text = String(sn || '').trim()
+  if (!text) return '—'
+  if (text.length <= 22) return text
+  return `${text.slice(0, 14)}…${text.slice(-6)}`
 }
 const connectionMode = (row) => {
   const ip = String(row?.ip || '').trim()
@@ -218,13 +272,13 @@ const topologyFlowNodes = computed(() => {
         position: { x: DEVICE_COLUMN_X, y: y + deviceIndex * DEVICE_NODE_STEP },
         data: {
           kind: 'device',
-          title: device.model || shortId(device.sn),
+          title: device.model || displayDeviceSn(device),
           status: device.status,
           online: device.status === 'online',
           hasSource: false,
           hasTarget: true,
           subtitle: connectionMode(device),
-          meta: [device.type, device.ip || '无连接地址', device.inferredOwner ? '待上报归属' : '明确归属'],
+          meta: [device.type, device.ip || '无连接地址', displayDeviceSn(device)],
         },
       })
     })
@@ -277,7 +331,7 @@ const topologyFlowEdges = computed(() => {
 
 const applyDeviceList = (data) => {
   const list = Array.isArray(data) ? data : (data?.data || [])
-  const nextDevices = Array.isArray(list) ? list : []
+  const nextDevices = Array.isArray(list) ? dedupeDevicesForUi(list) : []
 
   devices.value = nextDevices.map((item) => {
     const previous = devices.value.find((oldItem) => oldItem.sn === item.sn)
@@ -286,6 +340,8 @@ const applyDeviceList = (data) => {
     }
     return item
   })
+  knownNodeSns.value = pruneKnownClawNodes(devices.value)
+  applyServerDeviceList(nextDevices)
 }
 
 const handleCommand = (row) => {
@@ -357,6 +413,11 @@ const openTransferDialog = (sourceSn = '') => {
   transferForm.save_path = ''
   activeTransferTab.value = 'new'
   transferDialogVisible.value = true
+}
+
+const applyRouteQuery = () => {
+  if (route.query.tab === 'cluster') activeTab.value = 'topology'
+  if (route.query.transfer) openTransferDialog(String(route.query.transfer))
 }
 
 const openFileBrowser = (mode) => {
@@ -472,8 +533,10 @@ const handleWsMessage = (res) => {
   const action = res.action || res.type
   const data = res.data || {}
 
-  if (action === 'get_device_list' || action === 'device_list_update') {
+  if (action === 'get_device_list') {
     applyDeviceList(data)
+  } else if (action === 'device_list_update') {
+    applyDeviceList(data?.devices || data)
   } else if (action === 'transfer_progress') {
     const { transfer_id, progress, speed, status, source, target, filename } = data
     const existing = transferList.value.find((item) => item.id === transfer_id)
@@ -526,23 +589,66 @@ const discoverGateways = async () => {
   }
 }
 
-const discoverLanNodes = async () => {
-  discoveringNodes.value = true
+const confirmAdoptNode = async (node) => {
+  const ok = await adoptLanNodeGlobal(node, runtime.value)
+  if (ok) {
+    activeTab.value = 'topology'
+    clusterViewMode.value = 'list'
+    await load({ silent: true })
+  }
+}
+
+const handleFetchLogs = async (row) => {
+  const sn = row?.sn || displayDeviceSn(row)
   try {
-    const [lanNodes, registered] = await Promise.all([
-      window.electronAPI?.discoverLanNodes?.() || [],
-      getDeviceList().catch(() => null),
-    ])
-    discoveredLanNodes.value = lanNodes
-    if (registered) applyDeviceList(registered)
-    nodeDialogVisible.value = true
-    if (!lanNodes.length) {
-      ElMessage.info('未发现广播中的 ClawNode 设备（需手机端无障碍已开启）')
-    }
+    const result = await pullClawNodeLogsToClipboard(sn, { minutes: logWindowMinutes.value })
+    ElMessage.success(`近 ${logWindowMinutes.value} 分钟日志已复制（${formatLogSize(result.size || result.contentLength)}）`)
   } catch (e) {
-    ElMessage.error(e?.message || '设备发现失败')
+    ElMessage.error(e?.message || e?.msg || '拉取日志失败')
+  }
+}
+
+const openLogsDialog = async () => {
+  logsDialogVisible.value = true
+  loadingLogs.value = true
+  try {
+    const res = await listClawNodeLogs()
+    logFiles.value = res?.data || []
+  } catch (e) {
+    logFiles.value = []
+    ElMessage.error(e?.message || '加载日志列表失败')
   } finally {
-    discoveringNodes.value = false
+    loadingLogs.value = false
+  }
+}
+
+const downloadLog = (filename) => {
+  const url = downloadClawNodeLogUrl(filename)
+  window.open(url, '_blank')
+}
+
+const formatLogTime = (mtime) => {
+  if (!mtime) return '—'
+  return new Date(mtime * 1000).toLocaleString()
+}
+
+const handleUnbindDevice = async (row) => {
+  const sn = displayDeviceSn(row)
+  try {
+    await ElMessageBox.confirm(
+      `确定从当前 Server 解绑设备 ${sn} 吗？解绑后需重新在桌面端添加配对。`,
+      '解绑设备',
+      { type: 'warning', confirmButtonText: '解绑', cancelButtonText: '取消' },
+    )
+    await unbindClawNode(sn)
+    notifyDeviceUnbound(sn, row?.sn)
+    knownNodeSns.value = removeKnownClawNode(sn, row?.sn)
+    ElMessage.success('设备已解绑')
+    await load({ silent: true })
+  } catch (e) {
+    if (e !== 'cancel' && e?.message !== 'cancel') {
+      ElMessage.error(e?.message || '解绑失败')
+    }
   }
 }
 
@@ -587,37 +693,58 @@ const confirmPairGateway = async () => {
   }
 }
 
-const load = async () => {
-  loading.value = true
+const fetchDeviceList = async () => {
+  try {
+    const res = await wsGetDeviceList()
+    applyDeviceList(res)
+    return
+  } catch (wsErr) {
+    console.warn('[RuntimeStatus] WS device list failed, fallback HTTP', wsErr)
+  }
+  try {
+    const res = await getDeviceList()
+    applyDeviceList(res)
+  } catch (httpErr) {
+    console.warn('[RuntimeStatus] HTTP device list failed', httpErr)
+  }
+}
+
+const load = async ({ silent = false } = {}) => {
+  if (!silent) loading.value = true
   try {
     const [runtimeRes, nodeRes, deviceRes] = await Promise.allSettled([
       window.electronAPI?.getRuntimeStatus?.(),
       getNodeStatus(),
-      getDeviceList(),
+      fetchDeviceList(),
     ])
     runtime.value = runtimeRes.status === 'fulfilled' ? runtimeRes.value : null
     nodeStatus.value = nodeRes.status === 'fulfilled' ? nodeRes.value?.data : null
-    applyDeviceList(deviceRes.status === 'fulfilled' ? deviceRes.value : [])
     lastUpdated.value = new Date().toLocaleTimeString()
   } catch (e) {
     ElMessage.error(e?.message || '状态刷新失败')
   } finally {
     loading.value = false
+    initialLoading.value = false
   }
 }
 
 onMounted(() => {
   addMessageListener(handleWsMessage)
   load()
+  applyRouteQuery()
+  relativeTimer = setInterval(() => { relativeTimeTick.value += 1 }, 30000)
 })
+
+watch(() => route.query, applyRouteQuery)
 
 onUnmounted(() => {
   removeMessageListener(handleWsMessage)
+  if (relativeTimer) clearInterval(relativeTimer)
 })
 </script>
 
 <template>
-  <div class="settings-panel runtime-page wide-panel" v-loading="loading">
+  <div class="settings-panel runtime-page wide-panel" v-loading="initialLoading">
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">运行状态</h2>
@@ -625,12 +752,16 @@ onUnmounted(() => {
       </div>
       <div class="runtime-actions">
         <span class="settings-summary-pill">{{ runtimeSummary }}</span>
+        <button type="button" class="settings-action-pill refresh-pill" style="--brand: #a855f7" @click="openLogsDialog">
+          <el-icon><Document /></el-icon>
+          <span>日志导出</span>
+        </button>
         <button type="button" class="settings-action-pill refresh-pill" style="--brand: #22c55e" @click="openTransferDialog()">
           <el-icon><Files /></el-icon>
           <span>文件传输</span>
           <span class="settings-action-arrow">↗</span>
         </button>
-        <button type="button" class="settings-action-pill refresh-pill" style="--brand: #0ea5e9" @click="load">
+        <button type="button" class="settings-action-pill refresh-pill" style="--brand: #0ea5e9" :disabled="loading" @click="load()">
           <el-icon><Refresh /></el-icon>
           <span>刷新状态</span>
           <span class="settings-action-arrow">↻</span>
@@ -646,7 +777,7 @@ onUnmounted(() => {
         @click="activeTab = 'overview'"
       >
         <strong>运行概览</strong>
-        <span>服务、执行器和设备</span>
+        <span>Electron 与 Server 服务状态</span>
       </button>
       <button
         type="button"
@@ -694,89 +825,164 @@ onUnmounted(() => {
           </div>
         </article>
       </section>
-
-      <section class="settings-info-card service-card">
-        <span class="settings-kicker">服务探测</span>
-        <div class="section-head">
-          <h3>Gateway 发现与配对</h3>
-          <span>发现与鉴权分离：先选择网关，再由 Token 建立 WebSocket 连接。</span>
-        </div>
-        <div class="discovery-actions">
-          <el-button type="primary" :loading="discoveringGateways" @click="discoverGateways">
-            发现网关
-          </el-button>
-          <el-button :loading="discoveringNodes" @click="discoverLanNodes">
-            发现局域网设备
-          </el-button>
-          <span v-if="pairedGatewayLabel" class="paired-pill">已配对：{{ pairedGatewayLabel }}</span>
-        </div>
-        <div class="endpoint-list">
-          <div v-for="item in runtime?.endpoints || []" :key="item.url" class="endpoint-row">
-            <div>
-              <strong>{{ item.name }}</strong>
-              <code>{{ item.url }}</code>
-            </div>
-            <el-tag :type="statusType(item.online)" size="small">{{ statusText(item.online) }}</el-tag>
-          </div>
-        </div>
-      </section>
-
-      <section class="settings-table-card">
-        <div class="section-head">
-          <h3>执行器与设备</h3>
-          <span>Server 负责调度，执行器节点负责连接设备并执行动作。</span>
-        </div>
-        <el-table :data="devices" empty-text="暂无已注册设备" class="runtime-table">
-          <el-table-column prop="sn" label="SN" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="type" label="类型" width="100" />
-          <el-table-column prop="role" label="角色" width="100" />
-          <el-table-column prop="model" label="型号" min-width="140" show-overflow-tooltip />
-          <el-table-column prop="ip" label="IP" width="140" />
-          <el-table-column label="状态" width="90">
-            <template #default="{ row }">
-              <el-tag :type="row.status === 'online' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="锁屏密码" width="130">
-            <template #default="{ row }">
-              <div class="password-cell">
-                <span>{{ row.password ? '******' : '未设置' }}</span>
-                <el-button link type="primary" :icon="Lock" @click="handleSetPassword(row)" />
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column prop="last_online" label="最后在线" width="180" show-overflow-tooltip />
-          <el-table-column label="操作" width="260" fixed="right">
-            <template #default="{ row }">
-              <div class="device-actions">
-                <el-button link type="primary" :icon="VideoPlay" :disabled="row.status !== 'online'" @click="handleCommand(row)">
-                  下发指令
-                </el-button>
-                <el-button v-if="row.status === 'online'" link type="success" :icon="Files" @click="openTransferDialog(row.sn)">
-                  传文件
-                </el-button>
-                <el-button
-                  v-if="row.status === 'online' && row.type === 'android'"
-                  link
-                  type="warning"
-                  :icon="Cellphone"
-                  @click="handleScrcpy(row)"
-                >
-                  投屏
-                </el-button>
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
-      </section>
     </template>
 
     <template v-else>
+      <template v-if="clusterViewMode === 'list'">
+        <section class="settings-info-card service-card">
+          <span class="settings-kicker">服务探测</span>
+          <div class="section-head">
+            <h3>{{ isLocalGateway ? '本机 Gateway' : 'Gateway 发现与配对' }}</h3>
+            <span v-if="isLocalGateway">当前电脑已运行 MiniOrange Server，局域网设备可通过 mDNS 发现本机。</span>
+            <span v-else>发现与鉴权分离：先选择网关，再由 Token 建立 WebSocket 连接。</span>
+          </div>
+          <div class="discovery-actions">
+            <el-button
+              v-if="!isLocalGateway"
+              type="primary"
+              :loading="discoveringGateways"
+              @click="discoverGateways"
+            >
+              发现网关
+            </el-button>
+            <span v-if="pairedGatewayLabel && !isLocalGateway" class="paired-pill">已配对：{{ pairedGatewayLabel }}</span>
+            <span v-if="isLocalGateway && runtime?.endpoints?.[1]" class="paired-pill">
+              mDNS：{{ runtime.endpoints[1].url }}
+            </span>
+          </div>
+          <div class="endpoint-list">
+            <div v-for="item in runtime?.endpoints || []" :key="item.url" class="endpoint-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <code>{{ item.url }}</code>
+              </div>
+              <el-tag :type="statusType(item.online)" size="small">{{ statusText(item.online) }}</el-tag>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-table-card">
+          <div class="section-head with-switch">
+            <div>
+              <h3>执行器与设备</h3>
+              <span>Server 负责调度，执行器节点负责连接设备并执行动作。</span>
+            </div>
+            <div class="view-mode-switch">
+              <el-tooltip content="列表视图" placement="top">
+                <button type="button" class="view-mode-btn" :class="{ active: clusterViewMode === 'list' }" @click="clusterViewMode = 'list'">
+                  <el-icon><List /></el-icon>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="拓扑画布" placement="top">
+                <button type="button" class="view-mode-btn" :class="{ active: clusterViewMode === 'canvas' }" @click="clusterViewMode = 'canvas'">
+                  <el-icon><Grid /></el-icon>
+                </button>
+              </el-tooltip>
+            </div>
+          </div>
+          <el-table
+            :data="displayDevices"
+            empty-text="暂无已注册设备"
+            class="runtime-table device-table-clickable"
+            :row-class-name="({ row }) => (row.status === 'online' ? 'device-row-online' : 'device-row-offline')"
+            @row-click="goToDeviceDetail"
+          >
+            <el-table-column label="ClawSN" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ displayDeviceSn(row) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="类型" width="100">
+              <template #default="{ row }">{{ formatDeviceType(row) }}</template>
+            </el-table-column>
+            <el-table-column prop="role" label="角色" width="100" />
+            <el-table-column prop="model" label="型号" min-width="140" show-overflow-tooltip />
+            <el-table-column prop="ip" label="IP" width="140" />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'online' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="最后在线" width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ formatLastOnline(row.last_online) }}</template>
+            </el-table-column>
+            <el-table-column label="" width="48" fixed="right">
+              <template #default>
+                <el-icon class="row-enter-icon"><ArrowRight /></el-icon>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="device-table-footer">
+            <span class="lan-scan-status">
+              <span v-if="discoveringNodes" class="scanning-hint">正在扫描附近设备…</span>
+              <span v-else class="scan-idle-hint">每 5 秒自动扫描局域网设备</span>
+            </span>
+          </div>
+
+          <div v-if="lanDiscoveryAttempted" class="lan-discovery-panel">
+            <h4 class="wifi-section-title">
+              附近 ClawNode
+              <span v-if="discoveringNodes" class="scanning-hint">扫描中…</span>
+            </h4>
+
+            <div v-if="!discoveringNodes && !visibleDiscoveredLanNodes.length" class="discovery-empty-inline">
+              暂未发现待处理的 ClawNode。请确认手机与电脑在同一 WiFi/网段，且 ClawNode 已打开。
+            </div>
+
+            <div v-if="visibleDiscoveredLanNodes.length" class="lan-device-list">
+              <div
+                v-for="node in visibleDiscoveredLanNodes"
+                :key="`lan-${node.sn}`"
+                class="lan-device-row"
+              >
+                <span class="lan-device-icon">📱</span>
+                <div class="lan-device-main">
+                  <span class="lan-device-sn" :title="node.sn">{{ shortNodeSn(node.sn) }}</span>
+                  <span class="lan-device-sub">{{ node.model || 'Android Node' }} · {{ node.host }}</span>
+                </div>
+                <div class="lan-device-actions">
+                  <el-tag size="small" :type="lanNodeTagType(node)">{{ lanNodeStatusLabel(node) }}</el-tag>
+                  <el-button
+                    v-if="!isNodeOnServer(node)"
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="adoptingNode"
+                    @click="confirmAdoptNode(node)"
+                  >
+                    添加
+                  </el-button>
+                </div>
+              </div>
+            </div>
+
+            <p v-if="visibleDiscoveredLanNodes.length" class="discovery-hint">
+              「连接中」表示已添加但未上线；在线后会自动从列表移除。
+            </p>
+          </div>
+        </section>
+      </template>
+
+      <template v-else>
       <section class="settings-info-card topology-card">
         <span class="settings-kicker">当前状态图</span>
-        <div class="section-head">
-          <h3>Server / 执行器 / 设备连接关系</h3>
-          <span>按当前接口上报状态展示，后续可在执行器注册时补充明确的设备归属。</span>
+        <div class="section-head with-switch">
+          <div>
+            <h3>Server / 执行器 / 设备连接关系</h3>
+            <span>按当前接口上报状态展示，后续可在执行器注册时补充明确的设备归属。</span>
+          </div>
+          <div class="view-mode-switch">
+            <el-tooltip content="列表视图" placement="top">
+              <button type="button" class="view-mode-btn" :class="{ active: clusterViewMode === 'list' }" @click="clusterViewMode = 'list'">
+                <el-icon><List /></el-icon>
+              </button>
+            </el-tooltip>
+            <el-tooltip content="拓扑画布" placement="top">
+              <button type="button" class="view-mode-btn" :class="{ active: clusterViewMode === 'canvas' }" @click="clusterViewMode = 'canvas'">
+                <el-icon><Grid /></el-icon>
+              </button>
+            </el-tooltip>
+          </div>
         </div>
 
         <div class="topology-canvas vueflow-canvas">
@@ -873,6 +1079,7 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
+      </template>
     </template>
 
     <el-dialog v-model="dialogVisible" :title="`下发指令 - ${currentDevice?.sn}`" width="500px" destroy-on-close>
@@ -1047,19 +1254,26 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="nodeDialogVisible" title="局域网 ClawNode 设备" width="560px" destroy-on-close>
-      <div v-if="!discoveredLanNodes.length" class="discovery-empty">未发现 `_miniorange-node._tcp` 广播</div>
-      <div v-else class="wifi-device-list">
-        <div v-for="node in discoveredLanNodes" :key="node.sn" class="wifi-device-item readonly">
-          <span class="wifi-device-icon">📱</span>
-          <span class="wifi-device-meta">
-            <strong>{{ node.sn }}</strong>
-            <small>{{ node.model }} · {{ node.host }}</small>
-          </span>
-          <el-tag size="small" type="info">待连接网关</el-tag>
-        </div>
+    <el-dialog v-model="logsDialogVisible" title="ClawNode 日志导出" width="720px" destroy-on-close>
+      <div class="logs-toolbar">
+        <span>已上传至 Server 的设备日志，可按文件名下载。</span>
+        <el-button size="small" :loading="loadingLogs" @click="openLogsDialog">刷新</el-button>
       </div>
-      <p class="discovery-hint">设备需在本机 App 中选择网关并完成 Token 配对后，才会出现在下方设备表。</p>
+      <el-table v-loading="loadingLogs" :data="logFiles" empty-text="暂无日志文件" height="360px">
+        <el-table-column prop="filename" label="文件名" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="sn" label="设备 SN" width="180" show-overflow-tooltip />
+        <el-table-column label="大小" width="100">
+          <template #default="{ row }">{{ formatLogSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="上传时间" width="180">
+          <template #default="{ row }">{{ formatLogTime(row.mtime) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="downloadLog(row.filename)">下载</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-dialog>
 
     <el-dialog v-model="scrcpyDialogVisible" title="远程投屏" width="460px" destroy-on-close :footer="null" class="scrcpy-dialog">
@@ -1208,6 +1422,302 @@ onUnmounted(() => {
   background: #ecfdf5;
   color: #047857;
   font-size: 12px;
+}
+
+.wifi-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.wifi-section-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.section-head.with-switch {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-head.with-switch > div:first-child {
+  min-width: 0;
+}
+
+.cluster-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.view-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.view-mode-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.view-mode-btn.active {
+  background: #eff6ff;
+  color: #0284c7;
+}
+
+.view-mode-btn:hover {
+  background: #f3f4f6;
+}
+
+:deep(.device-table-clickable .el-table__row.device-row-online) {
+  background: #f0fdf4;
+}
+
+:deep(.device-table-clickable .el-table__row.device-row-online:hover) {
+  background: #dcfce7;
+}
+
+:deep(.device-table-clickable .el-table__row.device-row-offline) {
+  color: #6b7280;
+}
+
+:deep(.device-table-clickable .el-table__row) {
+  cursor: pointer;
+}
+
+:deep(.device-table-clickable .el-table__row:hover) {
+  background: #f8fafc;
+}
+
+.row-enter-icon {
+  color: #9ca3af;
+}
+
+.device-table-footer {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 14px;
+  margin-top: 4px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.lan-scan-status {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.scan-idle-hint {
+  color: #94a3b8;
+}
+
+.lan-discovery-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #e5e7eb;
+  overflow: hidden;
+}
+
+.lan-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.lan-device-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.lan-device-icon {
+  font-size: 18px;
+  text-align: center;
+}
+
+.lan-device-main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.lan-device-sn {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lan-device-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lan-device-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.adopt-popup-body {
+  padding: 0 2px;
+}
+
+.adopt-popup-lead {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #374151;
+}
+
+.adopt-device-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.adopt-device-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.adopt-device-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.adopt-device-sn {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adopt-device-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cluster-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.cluster-view-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.cluster-view-tab.active {
+  border-color: #0ea5e9;
+  box-shadow: inset 0 0 0 1px #0ea5e9;
+}
+
+.cluster-view-tab strong {
+  font-size: 14px;
+}
+
+.cluster-view-tab span {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.adopt-popup-body p {
+  margin: 0 0 12px;
+  color: #374151;
+}
+
+.adopt-countdown {
+  margin: 0;
+  font-size: 12px;
+  color: #9ca3af;
+  text-align: center;
+}
+
+.lan-discovery-panel .wifi-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.scanning-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: #0ea5e9;
+}
+
+.discovery-empty-inline {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.logs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 12px;
+  color: #6b7280;
+  font-size: 13px;
 }
 
 .wifi-device-list {

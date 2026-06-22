@@ -110,6 +110,41 @@ const checkUrl = (url) => {
     });
 };
 
+const fetchGatewayInfo = (baseUrl) => {
+    const url = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+    return new Promise((resolve) => {
+        const req = http.get(url, (res) => {
+            let body = '';
+            res.on('data', (chunk) => { body += chunk; });
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(body);
+                    const gateway = json.gateway || {};
+                    const localIp = json.ip || '';
+                    const lanHost = gateway.lanHost || (json.mdns || '').replace(/^https?:\/\//, '').split(':')[0];
+                    const port = gateway.gatewayPort || 10104;
+                    const wsUrl = gateway.wsUrl || (localIp ? `ws://${localIp}:${port}/ws` : null);
+                    resolve({
+                        displayName: gateway.displayName || gateway.instanceId || lanHost || 'gateway',
+                        mdnsUrl: json.mdns || (lanHost ? `http://${lanHost}:${port}` : null),
+                        lanHost,
+                        localIp,
+                        wsUrl,
+                        gateway,
+                    });
+                } catch {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(1500, () => {
+            req.destroy();
+            resolve(null);
+        });
+    });
+};
+
 const startPythonService = async () => {
     console.log('[Main] 准备启动 Python 服务...');
     // 如果已经能连上外部/本机 Server，就不再尝试启动内置后端，也不弹“核心服务缺失”。
@@ -772,17 +807,32 @@ ipcMain.handle('select-file', async () => {
 })
 
 ipcMain.handle('get-runtime-status', async () => {
+    const localUrl = 'http://127.0.0.1:10104';
+    const localOnline = await checkUrl(localUrl);
     const endpoints = [
-        {name: 'localhost', url: 'http://127.0.0.1:10104'},
-        {name: 'mdns', url: 'http://miniorange.local:10104'},
+        {name: 'localhost', url: localUrl, online: localOnline},
     ];
-    const checks = [];
-    for (const item of endpoints) {
-        checks.push({
-            ...item,
-            online: await checkUrl(item.url),
+
+    if (localOnline) {
+        const gatewayInfo = await fetchGatewayInfo(localUrl);
+        if (gatewayInfo?.mdnsUrl) {
+            endpoints.push({
+                name: gatewayInfo.displayName,
+                url: gatewayInfo.mdnsUrl,
+                online: true,
+                lanHost: gatewayInfo.lanHost,
+                localIp: gatewayInfo.localIp,
+                wsUrl: gatewayInfo.wsUrl,
+            });
+        }
+    } else {
+        endpoints.push({
+            name: 'mdns',
+            url: 'http://miniorange.local:10104',
+            online: await checkUrl('http://miniorange.local:10104'),
         });
     }
+
     return {
         electron: {
             online: true,
@@ -795,7 +845,8 @@ ipcMain.handle('get-runtime-status', async () => {
             running: !!pyProc,
             pid: pyProc?.pid || null,
         },
-        endpoints: checks,
+        endpoints,
+        isLocalGateway: localOnline,
         streaming: {
             wsPort: WS_PORT,
             active: !!wsServer,
@@ -815,13 +866,61 @@ ipcMain.handle('discover-gateways', async () => {
     }
 })
 
-ipcMain.handle('discover-lan-nodes', async () => {
+ipcMain.handle('discover-lan-nodes', async (_event, timeoutMs) => {
     try {
-        return await discoverLanNodes()
+        return await discoverLanNodes(timeoutMs || undefined)
     } catch (e) {
         console.error('[Discovery] nodes failed', e)
         return []
     }
+})
+
+let lanWatchTimer = null
+const lanWatchSeen = new Set()
+let lanWatchInitialized = false
+
+function startLanNodeWatch() {
+    stopLanNodeWatch()
+    const tick = async () => {
+        try {
+            const nodes = await discoverLanNodes(1800)
+            for (const node of nodes) {
+                const sn = String(node?.sn || '').trim()
+                if (!sn) continue
+                if (!lanWatchInitialized) {
+                    lanWatchSeen.add(sn)
+                    continue
+                }
+                if (lanWatchSeen.has(sn)) continue
+                lanWatchSeen.add(sn)
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('lan-node-appeared', node)
+                }
+            }
+            lanWatchInitialized = true
+        } catch (e) {
+            console.warn('[Discovery] lan watch tick failed', e?.message || e)
+        }
+    }
+    tick()
+    lanWatchTimer = setInterval(tick, 8000)
+}
+
+function stopLanNodeWatch() {
+    if (lanWatchTimer) {
+        clearInterval(lanWatchTimer)
+        lanWatchTimer = null
+    }
+}
+
+ipcMain.handle('start-lan-node-watch', () => {
+    startLanNodeWatch()
+    return true
+})
+
+ipcMain.handle('stop-lan-node-watch', () => {
+    stopLanNodeWatch()
+    return true
 })
 
 ipcMain.handle('pair-gateway', async (_event, payload = {}) => {

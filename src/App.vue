@@ -14,6 +14,7 @@
     <CommandPalette ref="commandPaletteRef" />
     <UpdatePrompt />
     <GlobalAlert />
+    <GlobalLanAdoptDialog />
   </div>
 </template>
 
@@ -25,8 +26,10 @@ import GlobalAlert from './components/GlobalAlert.vue'
 import TitleBar from './components/Core/TitleBar.vue'
 import CommandPalette from './components/Core/CommandPalette.vue'
 import CopilotWidget from './components/Ai/CopilotWidget.vue'
+import GlobalLanAdoptDialog from './components/GlobalLanAdoptDialog.vue'
 import { initWebSocket } from '@/api/mWebSocket'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
+import { startGlobalLanDiscovery, stopGlobalLanDiscovery } from '@/utils/globalLanDiscovery'
 
 const route = useRoute()
 const commandPaletteRef = ref(null)
@@ -54,10 +57,12 @@ onMounted(() => {
   // 1. 如果是 Server 模式，允许匿名连接
   // 2. 如果是 Node 模式，后端会鉴权，如果本地有缓存 Token 会自动带上
   initWebSocket()
+  startGlobalLanDiscovery()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
+  stopGlobalLanDiscovery()
 })
 </script>
 

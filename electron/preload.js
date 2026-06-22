@@ -29,8 +29,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),
     discoverGateways: () => ipcRenderer.invoke('discover-gateways'),
-    discoverLanNodes: () => ipcRenderer.invoke('discover-lan-nodes'),
+    discoverLanNodes: (timeoutMs) => ipcRenderer.invoke('discover-lan-nodes', timeoutMs),
     pairGateway: (payload) => ipcRenderer.invoke('pair-gateway', payload),
+    startLanNodeWatch: () => ipcRenderer.invoke('start-lan-node-watch'),
+    stopLanNodeWatch: () => ipcRenderer.invoke('stop-lan-node-watch'),
+    onLanNodeAppeared: (callback) => ipcRenderer.on('lan-node-appeared', (_event, value) => callback(value)),
+    removeLanNodeListeners: () => ipcRenderer.removeAllListeners('lan-node-appeared'),
 
     // 监听主进程消息
     on: (channel, func) => {

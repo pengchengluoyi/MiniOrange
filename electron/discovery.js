@@ -8,7 +8,7 @@ const LEGACY_HTTP_TYPE = 'http'
 const NODE_TYPE = 'miniorange-node'
 const COLLECT_MS = 3500
 
-function browseServices(type, filterFn = () => true) {
+function browseServices(type, filterFn = () => true, collectMs = COLLECT_MS) {
   return new Promise((resolve) => {
     const bonjour = new Bonjour()
     const found = new Map()
@@ -42,7 +42,7 @@ function browseServices(type, filterFn = () => true) {
       browser.stop()
       bonjour.destroy()
       resolve([...found.values()])
-    }, COLLECT_MS)
+    }, collectMs)
   })
 }
 
@@ -57,7 +57,7 @@ async function discoverGateways(timeoutMs = COLLECT_MS) {
 }
 
 async function discoverLanNodes(timeoutMs = COLLECT_MS) {
-  const nodes = await browseServices(NODE_TYPE)
+  const nodes = await browseServices(NODE_TYPE, () => true, timeoutMs)
   return nodes.map((n) => ({
     ...n,
     sn: n.txt?.sn || n.name.replace(/^clawnode-/, ''),
