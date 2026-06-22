@@ -8,6 +8,14 @@ const LEGACY_HTTP_TYPE = 'http'
 const NODE_TYPE = 'miniorange-node'
 const COLLECT_MS = 3500
 
+function pickIpv4Address(service) {
+  const addrs = service.addresses || []
+  const v4 = addrs.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(String(a)))
+  if (v4) return v4
+  if (service.host && /^\d+\.\d+\.\d+\.\d+$/.test(String(service.host))) return service.host
+  return addrs[0] || service.host
+}
+
 function browseServices(type, filterFn = () => true, collectMs = COLLECT_MS) {
   return new Promise((resolve) => {
     const bonjour = new Bonjour()
@@ -15,7 +23,7 @@ function browseServices(type, filterFn = () => true, collectMs = COLLECT_MS) {
 
     const upsert = (service) => {
       if (!filterFn(service)) return
-      const host = service.addresses?.[0] || service.host
+      const host = pickIpv4Address(service)
       if (!host) return
       const port = service.port || 10104
       const txt = service.txt || {}

@@ -23,6 +23,9 @@ export const adoptingNode = ref(false)
 /** 与 Server 同步的设备列表（发现状态判断的唯一依据，不含本地乐观条目） */
 export const serverDevices = ref([])
 
+/** 桌面端已 adopt、等待手机上线 */
+export const pendingAdoptSns = ref(new Set())
+
 const adoptPromptDismissed = ref(new Set())
 const adoptPopupQueue = []
 let adoptCountdownTimer = null
@@ -55,7 +58,11 @@ export const isDevicePairedOnPhone = (node) => {
   return raw === '1' || raw === 1 || raw === true
 }
 
-export const canAdoptLanNode = (node) => !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
+export const canAdoptLanNode = (node) => {
+  const sn = String(node?.sn || '').trim()
+  if (pendingAdoptSns.value.has(sn)) return false
+  return !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
+}
 
 export const visibleDiscoveredLanNodes = computed(() =>
   discoveredLanNodes.value.filter((node) => {
@@ -65,19 +72,23 @@ export const visibleDiscoveredLanNodes = computed(() =>
 )
 
 export const lanNodeStatusLabel = (node) => {
-  if (!isDevicePairedOnPhone(node)) return '待添加'
+  const sn = String(node?.sn || '').trim()
   const dev = findServerClawNode(node)
-  if (!dev) return '待添加'
-  if (dev.status === 'online') return '已在线'
-  return '连接中'
+  if (dev?.status === 'online') return '已在线'
+  if (pendingAdoptSns.value.has(sn)) return '连接中'
+  if (!isDevicePairedOnPhone(node)) return '待添加'
+  if (dev) return '连接中'
+  return '待添加'
 }
 
 export const lanNodeTagType = (node) => {
-  if (!isDevicePairedOnPhone(node)) return 'warning'
+  const sn = String(node?.sn || '').trim()
   const dev = findServerClawNode(node)
-  if (!dev) return 'warning'
-  if (dev.status === 'online') return 'success'
-  return 'info'
+  if (dev?.status === 'online') return 'success'
+  if (pendingAdoptSns.value.has(sn)) return 'info'
+  if (!isDevicePairedOnPhone(node)) return 'warning'
+  if (dev) return 'info'
+  return 'warning'
 }
 
 export const applyServerDeviceList = (data) => {
@@ -113,6 +124,15 @@ const extractIpv4 = (value) => {
   return match?.[1] || ''
 }
 
+const pickNodeIpv4 = (node) => {
+  const candidates = [node?.host, node?.txt?.host, ...(node?.addresses || [])]
+  for (const item of candidates) {
+    const ip = extractIpv4(item)
+    if (ip) return ip
+  }
+  return ''
+}
+
 export const resolveGatewayHost = async (runtime) => {
   let rt = runtime
   if (!rt?.endpoints?.length && window.electronAPI?.getRuntimeStatus) {
@@ -140,16 +160,18 @@ export const confirmAdoptNode = async (node, runtime) => {
   adoptingNode.value = true
   try {
     const res = await adoptClawNode(sn, await resolveGatewayHost(runtime), {
-      ip: node.host,
+      ip: pickNodeIpv4(node),
       model: node.model,
     })
     addKnownClawNode(sn)
+    pendingAdoptSns.value = new Set([...pendingAdoptSns.value, sn])
     adoptPromptDismissed.value = new Set([...adoptPromptDismissed.value, sn])
     if (res?.data?.devices) {
       applyServerDeviceList(res.data.devices)
     } else {
       await fetchServerDevices()
     }
+    syncPendingAdopts()
     const pending = res?.data?.pending
     ElMessage.success(
       pending ? `已添加 ${sn.slice(0, 14)}…，等待设备连接…` : `已添加设备 ${sn.slice(0, 14)}…`,
@@ -236,6 +258,9 @@ export const notifyDeviceUnbound = (...sns) => {
   const drop = new Set(sns.map((s) => String(s || '').trim()).filter(Boolean))
   if (!drop.size) return
   removeKnownClawNode(...drop)
+  pendingAdoptSns.value = new Set(
+    [...pendingAdoptSns.value].filter((sn) => !drop.has(sn)),
+  )
   serverDevices.value = serverDevices.value.filter(
     (d) => !drop.has(d.sn) && !drop.has(displayDeviceSn(d)),
   )
@@ -253,12 +278,23 @@ export const notifyDeviceUnbound = (...sns) => {
   }
 }
 
+const syncPendingAdopts = () => {
+  const online = new Set(
+    serverDevices.value.filter((d) => d.status === 'online').map((d) => d.sn),
+  )
+  if (!online.size) return
+  pendingAdoptSns.value = new Set(
+    [...pendingAdoptSns.value].filter((sn) => !online.has(sn)),
+  )
+}
+
 const handleWsMessage = (res) => {
   if (!res) return
   const action = res.action || res.type
   const data = res.data || {}
   if (action === 'get_device_list' || action === 'device_list_update') {
     applyServerDeviceList(action === 'device_list_update' ? (data.devices || data) : data)
+    syncPendingAdopts()
     if (action === 'device_list_update' && data.event === 'unbind' && data.sn) {
       notifyDeviceUnbound(data.sn)
     }
