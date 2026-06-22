@@ -8,6 +8,7 @@ export const adoptClawNode = (sn, gatewayHost, extra = {}) => {
     host: gatewayHost,
     ip: extra.ip,
     model: extra.model,
+    pair_port: extra.pair_port || 10105,
   })
 }
 

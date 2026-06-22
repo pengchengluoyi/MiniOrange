@@ -72,6 +72,7 @@ async function discoverLanNodes(timeoutMs = COLLECT_MS) {
     model: n.txt?.model || 'Android Node',
     type: n.txt?.type || 'android_direct',
     paired: n.txt?.paired ?? '1',
+    pair_port: Number(n.txt?.pair_port) || 10105,
   })).sort((a, b) => a.sn.localeCompare(b.sn))
 }
 

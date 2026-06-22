@@ -14,7 +14,7 @@ import { dedupeDevicesForUi, sortDevicesForDisplay } from '@/utils/devices'
 import { readKnownClawNodes, addKnownClawNode, removeKnownClawNode, pruneKnownClawNodes } from '@/utils/knownClawNodes'
 import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
 import { formatRelativeTime } from '@/utils/relativeTime'
-import { adoptClawNode, pullClawNodeLogsToClipboard, formatLogSize, listClawNodeLogs, downloadClawNodeLogUrl, unbindClawNode } from '@/api/clawnode'
+import { pullClawNodeLogsToClipboard, formatLogSize, listClawNodeLogs, downloadClawNodeLogUrl, unbindClawNode } from '@/api/clawnode'
 import {
   lanDiscoveryAttempted,
   discoveringNodes,
@@ -23,7 +23,8 @@ import {
   canAdoptLanNode,
   lanNodeStatusLabel,
   lanNodeTagType,
-  confirmAdoptNode as adoptLanNodeGlobal,
+  requestAdoptNode,
+  declineAdoptNode,
   notifyDeviceUnbound,
   applyServerDeviceList,
   adoptingNode,
@@ -590,14 +591,9 @@ const discoverGateways = async () => {
   }
 }
 
-const confirmAdoptNode = async (node) => {
-  const ok = await adoptLanNodeGlobal(node, runtime.value)
-  if (ok) {
-    activeTab.value = 'topology'
-    clusterViewMode.value = 'list'
-    await load({ silent: true })
-  }
-}
+const handleAdoptLanNode = (node) => requestAdoptNode(node, runtime.value)
+
+const handleDeclineLanNode = (node) => declineAdoptNode(node)
 
 const handleFetchLogs = async (row) => {
   const sn = row?.sn || displayDeviceSn(row)
@@ -949,9 +945,16 @@ onUnmounted(() => {
                     type="primary"
                     plain
                     :loading="adoptingNode"
-                    @click="confirmAdoptNode(node)"
+                    @click="handleAdoptLanNode(node)"
                   >
                     添加
+                  </el-button>
+                  <el-button
+                    v-if="canAdoptLanNode(node)"
+                    size="small"
+                    @click="handleDeclineLanNode(node)"
+                  >
+                    忽略
                   </el-button>
                 </div>
               </div>

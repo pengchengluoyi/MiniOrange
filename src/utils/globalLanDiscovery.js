@@ -60,12 +60,16 @@ export const isDevicePairedOnPhone = (node) => {
 
 export const canAdoptLanNode = (node) => {
   const sn = String(node?.sn || '').trim()
+  if (adoptPromptDismissed.value.has(sn)) return false
   if (pendingAdoptSns.value.has(sn)) return false
+  if (adoptingNode.value && adoptCandidate.value?.sn === sn) return false
   return !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
 }
 
 export const visibleDiscoveredLanNodes = computed(() =>
   discoveredLanNodes.value.filter((node) => {
+    const sn = String(node?.sn || '').trim()
+    if (adoptPromptDismissed.value.has(sn)) return false
     const dev = findServerClawNode(node)
     return !(dev && dev.status === 'online')
   }),
@@ -156,12 +160,14 @@ export const resolveGatewayHost = async (runtime) => {
 
 export const confirmAdoptNode = async (node, runtime) => {
   const sn = String(node?.sn || '').trim()
-  if (!sn) return
+  if (!sn) return false
+  if (pendingAdoptSns.value.has(sn)) return true
   adoptingNode.value = true
   try {
     const res = await adoptClawNode(sn, await resolveGatewayHost(runtime), {
       ip: pickNodeIpv4(node),
       model: node.model,
+      pair_port: node.pair_port || node.txt?.pair_port || 10105,
     })
     addKnownClawNode(sn)
     pendingAdoptSns.value = new Set([...pendingAdoptSns.value, sn])
@@ -178,6 +184,7 @@ export const confirmAdoptNode = async (node, runtime) => {
     )
     return true
   } catch (e) {
+    pendingAdoptSns.value = new Set([...pendingAdoptSns.value].filter((s) => s !== sn))
     ElMessage.error(e?.message || e?.msg || '添加设备失败')
     return false
   } finally {
@@ -185,17 +192,41 @@ export const confirmAdoptNode = async (node, runtime) => {
   }
 }
 
-export const dismissAdoptPopup = async (confirmed = false) => {
+/** 弹窗 / 附近列表 统一的「确认添加」入口 */
+export const requestAdoptNode = async (node, runtime = null) => {
+  const sn = String(node?.sn || '').trim()
+  if (!sn) return false
+  if (pendingAdoptSns.value.has(sn)) return true
+  closeAdoptPopupUi()
+  return confirmAdoptNode(node, runtime)
+}
+
+/** 弹窗 / 附近列表 统一的「暂不添加」入口 */
+export const declineAdoptNode = (node) => {
+  const sn = String(node?.sn || '').trim()
+  if (!sn) return
+  adoptPromptDismissed.value = new Set([...adoptPromptDismissed.value, sn])
+  for (let i = adoptPopupQueue.length - 1; i >= 0; i -= 1) {
+    if (adoptPopupQueue[i]?.sn === sn) adoptPopupQueue.splice(i, 1)
+  }
+  if (adoptCandidate.value?.sn === sn) {
+    closeAdoptPopupUi()
+  }
+}
+
+const closeAdoptPopupUi = () => {
   clearAdoptTimers()
-  const node = adoptCandidate.value
   adoptPopupVisible.value = false
   adoptCandidate.value = null
   adoptCountdown.value = 10
-  if (!confirmed && node?.sn) {
-    adoptPromptDismissed.value = new Set([...adoptPromptDismissed.value, node.sn])
-  }
-  if (confirmed && node) {
-    await confirmAdoptNode(node)
+}
+
+export const dismissAdoptPopup = async (confirmed = false, runtime = null) => {
+  const node = adoptCandidate.value
+  closeAdoptPopupUi()
+  if (node?.sn) {
+    if (confirmed) await requestAdoptNode(node, runtime)
+    else declineAdoptNode(node)
   }
   processAdoptPopupQueue()
 }
@@ -226,7 +257,7 @@ const processAdoptPopupQueue = () => {
 const enqueueAdoptPopup = (node) => {
   const sn = String(node?.sn || '').trim()
   if (!sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
-  if (adoptPromptDismissed.value.has(sn)) return
+  if (adoptPromptDismissed.value.has(sn) || pendingAdoptSns.value.has(sn)) return
   if (adoptPopupQueue.some((item) => item.sn === sn)) return
   if (adoptPopupVisible.value && adoptCandidate.value?.sn === sn) return
   adoptPopupQueue.push({ ...node, sn })
