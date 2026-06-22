@@ -137,7 +137,20 @@ export const wsGetTimelineDetail = (id) => {
 }
 
 export const getConnectedUrl = () => {
-  return getWsUrl()
+  return customBaseUrl || getWsUrl()
+}
+
+export const reconnectWebSocket = (token) => {
+  if (ws) {
+    try { ws.close() } catch (_) { /* noop */ }
+    ws = null
+  }
+  if (reconnectTimer) {
+    clearInterval(reconnectTimer)
+    reconnectTimer = null
+  }
+  isConnected = false
+  initWebSocket(token)
 }
 
 export default {
@@ -150,5 +163,6 @@ export default {
   wsUploadFile,
   wsGetTimelineList,
   wsGetTimelineDetail,
-  getConnectedUrl
+  getConnectedUrl,
+  reconnectWebSocket,
 }

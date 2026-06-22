@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 🔥 核心修复: 暴露 invoke 方法，用于调用 ipcMain.handle 定义的接口
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),
+    discoverGateways: () => ipcRenderer.invoke('discover-gateways'),
+    discoverLanNodes: () => ipcRenderer.invoke('discover-lan-nodes'),
+    pairGateway: (payload) => ipcRenderer.invoke('pair-gateway', payload),
 
     // 监听主进程消息
     on: (channel, func) => {

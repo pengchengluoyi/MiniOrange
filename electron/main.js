@@ -804,6 +804,41 @@ ipcMain.handle('get-runtime-status', async () => {
     };
 })
 
+const { discoverGateways, discoverLanNodes } = require('./discovery')
+
+ipcMain.handle('discover-gateways', async () => {
+    try {
+        return await discoverGateways()
+    } catch (e) {
+        console.error('[Discovery] gateways failed', e)
+        return []
+    }
+})
+
+ipcMain.handle('discover-lan-nodes', async () => {
+    try {
+        return await discoverLanNodes()
+    } catch (e) {
+        console.error('[Discovery] nodes failed', e)
+        return []
+    }
+})
+
+ipcMain.handle('pair-gateway', async (_event, payload = {}) => {
+    const host = String(payload.host || '').trim()
+    const wsUrl = String(payload.wsUrl || '').trim()
+    const httpUrl = String(payload.httpUrl || `http://${host}:10104`).trim()
+    const online = await checkUrl(httpUrl)
+    return {
+        success: online,
+        host,
+        wsUrl,
+        gatewayId: payload.gatewayId || payload.instanceId || '',
+        displayName: payload.displayName || host,
+        httpUrl,
+    }
+})
+
 // 7. 扫描 Android 设备 (使用 ADB) - 保持不变
 ipcMain.handle('scan-devices', async () => {
     return new Promise((resolve, reject) => {

@@ -49,6 +49,20 @@ export const getWsUrl = () => {
   return `ws://${cachedHost}:${DEFAULT_PORT}/ws`
 }
 
+export const getPairedGatewayId = () => localStorage.getItem('paired_gateway_id') || ''
+export const getPairedGatewayDisplay = () => localStorage.getItem('paired_gateway_display') || ''
+
+export const savePairedGateway = ({ host, gatewayId, displayName }) => {
+  if (host) localStorage.setItem('service_host', host)
+  if (gatewayId) localStorage.setItem('paired_gateway_id', gatewayId)
+  if (displayName) localStorage.setItem('paired_gateway_display', displayName)
+}
+
+export const clearPairedGateway = () => {
+  localStorage.removeItem('paired_gateway_id')
+  localStorage.removeItem('paired_gateway_display')
+}
+
 // 初始化服务地址（在 main.js 或 App.vue 中调用）
 export const initServiceConfig = async () => {
   const host = await getServiceHost()

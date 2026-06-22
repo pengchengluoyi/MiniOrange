@@ -7,7 +7,8 @@ import { Background } from '@vue-flow/background'
 import { addMessageListener, removeMessageListener, sendWsRequest } from '@/api/mWebSocket'
 import { getNodeStatus } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
-import { getBaseUrl } from '@/utils/config'
+import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
+import { reconnectWebSocket } from '@/api/mWebSocket'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
 
 const loading = ref(false)
@@ -46,6 +47,16 @@ const browserLoading = ref(false)
 const browserFiles = ref([])
 const browserPath = ref('/')
 const browserContext = reactive({ sn: '', mode: 'source' })
+
+const discoveringGateways = ref(false)
+const discoveringNodes = ref(false)
+const discoveredGateways = ref([])
+const discoveredLanNodes = ref([])
+const gatewayDialogVisible = ref(false)
+const nodeDialogVisible = ref(false)
+const selectedGateway = ref(null)
+const pairingGateway = ref(false)
+const pairedGatewayLabel = ref(getPairedGatewayDisplay())
 
 const onlineDevices = computed(() => devices.value.filter((d) => d.status === 'online'))
 const executorNodes = computed(() => devices.value.filter((d) => d.type === 'pc' || d.role === 'node'))
@@ -499,6 +510,83 @@ const handleScrcpy = (row) => {
   scrcpyDialogVisible.value = true
 }
 
+const discoverGateways = async () => {
+  discoveringGateways.value = true
+  try {
+    discoveredGateways.value = await window.electronAPI?.discoverGateways?.() || []
+    selectedGateway.value = discoveredGateways.value[0] || null
+    gatewayDialogVisible.value = true
+    if (!discoveredGateways.value.length) {
+      ElMessage.warning('未发现局域网网关，请确认 MiniOrangeServer 已启动')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '网关发现失败')
+  } finally {
+    discoveringGateways.value = false
+  }
+}
+
+const discoverLanNodes = async () => {
+  discoveringNodes.value = true
+  try {
+    const [lanNodes, registered] = await Promise.all([
+      window.electronAPI?.discoverLanNodes?.() || [],
+      getDeviceList().catch(() => null),
+    ])
+    discoveredLanNodes.value = lanNodes
+    if (registered) applyDeviceList(registered)
+    nodeDialogVisible.value = true
+    if (!lanNodes.length) {
+      ElMessage.info('未发现广播中的 ClawNode 设备（需手机端无障碍已开启）')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '设备发现失败')
+  } finally {
+    discoveringNodes.value = false
+  }
+}
+
+const selectGatewayCandidate = (gateway) => {
+  selectedGateway.value = gateway
+}
+
+const confirmPairGateway = async () => {
+  const gateway = selectedGateway.value
+  if (!gateway) {
+    ElMessage.warning('请先选择一个网关')
+    return
+  }
+  pairingGateway.value = true
+  try {
+    const token = localStorage.getItem('ws_token') || ''
+    const result = await window.electronAPI?.pairGateway?.({
+      host: gateway.host,
+      wsUrl: gateway.wsUrl,
+      httpUrl: gateway.httpUrl,
+      gatewayId: gateway.instanceId,
+      displayName: gateway.displayName,
+    })
+    if (!result?.success) {
+      ElMessage.error('网关不可达，请检查网络或服务端状态')
+      return
+    }
+    savePairedGateway({
+      host: gateway.host,
+      gatewayId: gateway.instanceId,
+      displayName: gateway.displayName,
+    })
+    pairedGatewayLabel.value = gateway.displayName
+    reconnectWebSocket(token)
+    gatewayDialogVisible.value = false
+    ElMessage.success(`已配对网关：${gateway.displayName}`)
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.message || '配对失败')
+  } finally {
+    pairingGateway.value = false
+  }
+}
+
 const load = async () => {
   loading.value = true
   try {
@@ -610,8 +698,17 @@ onUnmounted(() => {
       <section class="settings-info-card service-card">
         <span class="settings-kicker">服务探测</span>
         <div class="section-head">
-          <h3>Server 可达性</h3>
-          <span>本地内置后端缺失时，只要任一 Server 在线就不应弹出缺失弹窗。</span>
+          <h3>Gateway 发现与配对</h3>
+          <span>发现与鉴权分离：先选择网关，再由 Token 建立 WebSocket 连接。</span>
+        </div>
+        <div class="discovery-actions">
+          <el-button type="primary" :loading="discoveringGateways" @click="discoverGateways">
+            发现网关
+          </el-button>
+          <el-button :loading="discoveringNodes" @click="discoverLanNodes">
+            发现局域网设备
+          </el-button>
+          <span v-if="pairedGatewayLabel" class="paired-pill">已配对：{{ pairedGatewayLabel }}</span>
         </div>
         <div class="endpoint-list">
           <div v-for="item in runtime?.endpoints || []" :key="item.url" class="endpoint-row">
@@ -925,6 +1022,46 @@ onUnmounted(() => {
       </div>
     </el-dialog>
 
+    <el-dialog v-model="gatewayDialogVisible" title="发现网关" width="560px" destroy-on-close>
+      <div v-if="!discoveredGateways.length" class="discovery-empty">未发现 `_miniorange-gw._tcp` 网关</div>
+      <div v-else class="wifi-device-list">
+        <button
+          v-for="gw in discoveredGateways"
+          :key="gw.instanceId"
+          type="button"
+          class="wifi-device-item"
+          :class="{ active: selectedGateway?.instanceId === gw.instanceId }"
+          @click="selectGatewayCandidate(gw)"
+        >
+          <span class="wifi-device-icon">📡</span>
+          <span class="wifi-device-meta">
+            <strong>{{ gw.displayName }}</strong>
+            <small>{{ gw.wsUrl }}</small>
+            <small v-if="gw.lanHost">{{ gw.lanHost }}</small>
+          </span>
+        </button>
+      </div>
+      <template #footer>
+        <el-button @click="gatewayDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pairingGateway" @click="confirmPairGateway">确认连接</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="nodeDialogVisible" title="局域网 ClawNode 设备" width="560px" destroy-on-close>
+      <div v-if="!discoveredLanNodes.length" class="discovery-empty">未发现 `_miniorange-node._tcp` 广播</div>
+      <div v-else class="wifi-device-list">
+        <div v-for="node in discoveredLanNodes" :key="node.sn" class="wifi-device-item readonly">
+          <span class="wifi-device-icon">📱</span>
+          <span class="wifi-device-meta">
+            <strong>{{ node.sn }}</strong>
+            <small>{{ node.model }} · {{ node.host }}</small>
+          </span>
+          <el-tag size="small" type="info">待连接网关</el-tag>
+        </div>
+      </div>
+      <p class="discovery-hint">设备需在本机 App 中选择网关并完成 Token 配对后，才会出现在下方设备表。</p>
+    </el-dialog>
+
     <el-dialog v-model="scrcpyDialogVisible" title="远程投屏" width="460px" destroy-on-close :footer="null" class="scrcpy-dialog">
       <div class="scrcpy-frame">
         <ScrcpyWindow :target-device-id="currentScrcpySn" />
@@ -1054,6 +1191,88 @@ onUnmounted(() => {
 .endpoint-row code {
   color: #475569;
   font-size: 12px;
+}
+
+.discovery-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.paired-pill {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 12px;
+}
+
+.wifi-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.wifi-device-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wifi-device-item.active {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.wifi-device-item.readonly {
+  cursor: default;
+}
+
+.wifi-device-icon {
+  font-size: 22px;
+  width: 32px;
+  text-align: center;
+}
+
+.wifi-device-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.wifi-device-meta strong {
+  color: #111827;
+  font-size: 14px;
+}
+
+.wifi-device-meta small {
+  color: #6b7280;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.discovery-empty,
+.discovery-hint {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.discovery-hint {
+  margin-top: 12px;
 }
 
 .runtime-table {
