@@ -20,6 +20,7 @@ import {
   discoveringNodes,
   visibleDiscoveredLanNodes,
   isNodeOnServer,
+  canAdoptLanNode,
   lanNodeStatusLabel,
   lanNodeTagType,
   confirmAdoptNode as adoptLanNodeGlobal,
@@ -943,7 +944,7 @@ onUnmounted(() => {
                 <div class="lan-device-actions">
                   <el-tag size="small" :type="lanNodeTagType(node)">{{ lanNodeStatusLabel(node) }}</el-tag>
                   <el-button
-                    v-if="!isNodeOnServer(node)"
+                    v-if="canAdoptLanNode(node)"
                     size="small"
                     type="primary"
                     plain

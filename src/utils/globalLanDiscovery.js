@@ -49,6 +49,14 @@ export const findServerClawNode = (node) => {
 
 export const isNodeOnServer = (node) => !!findServerClawNode(node)
 
+export const isDevicePairedOnPhone = (node) => {
+  const raw = node?.paired ?? node?.txt?.paired
+  if (raw === undefined || raw === null || raw === '') return true
+  return raw === '1' || raw === 1 || raw === true
+}
+
+export const canAdoptLanNode = (node) => !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
+
 export const visibleDiscoveredLanNodes = computed(() =>
   discoveredLanNodes.value.filter((node) => {
     const dev = findServerClawNode(node)
@@ -57,6 +65,7 @@ export const visibleDiscoveredLanNodes = computed(() =>
 )
 
 export const lanNodeStatusLabel = (node) => {
+  if (!isDevicePairedOnPhone(node)) return '待添加'
   const dev = findServerClawNode(node)
   if (!dev) return '待添加'
   if (dev.status === 'online') return '已在线'
@@ -64,6 +73,7 @@ export const lanNodeStatusLabel = (node) => {
 }
 
 export const lanNodeTagType = (node) => {
+  if (!isDevicePairedOnPhone(node)) return 'warning'
   const dev = findServerClawNode(node)
   if (!dev) return 'warning'
   if (dev.status === 'online') return 'success'
@@ -169,7 +179,7 @@ export const dismissAdoptPopup = async (confirmed = false) => {
 }
 
 const openAdoptPopup = (node) => {
-  if (!node?.sn || isNodeOnServer(node)) return
+  if (!node?.sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
   adoptCandidate.value = node
   adoptPopupVisible.value = true
   adoptCountdown.value = 10
@@ -185,7 +195,7 @@ const processAdoptPopupQueue = () => {
   if (adoptPopupVisible.value) return
   while (adoptPopupQueue.length) {
     const next = adoptPopupQueue.shift()
-    if (!next?.sn || isNodeOnServer(next)) continue
+    if (!next?.sn || (isNodeOnServer(next) && isDevicePairedOnPhone(next))) continue
     openAdoptPopup(next)
     return
   }
@@ -193,7 +203,7 @@ const processAdoptPopupQueue = () => {
 
 const enqueueAdoptPopup = (node) => {
   const sn = String(node?.sn || '').trim()
-  if (!sn || isNodeOnServer(node)) return
+  if (!sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
   if (adoptPromptDismissed.value.has(sn)) return
   if (adoptPopupQueue.some((item) => item.sn === sn)) return
   if (adoptPopupVisible.value && adoptCandidate.value?.sn === sn) return

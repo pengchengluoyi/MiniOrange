@@ -63,6 +63,7 @@ async function discoverLanNodes(timeoutMs = COLLECT_MS) {
     sn: n.txt?.sn || n.name.replace(/^clawnode-/, ''),
     model: n.txt?.model || 'Android Node',
     type: n.txt?.type || 'android_direct',
+    paired: n.txt?.paired ?? '1',
   })).sort((a, b) => a.sn.localeCompare(b.sn))
 }
 
