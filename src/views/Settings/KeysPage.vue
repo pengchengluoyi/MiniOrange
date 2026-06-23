@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import RobotIntegrationsPanel from './RobotIntegrationsPanel.vue'
@@ -250,37 +250,27 @@ const previewSizeHint = (ratio) => {
 }
 
 onMounted(() => {
+  syncTabFromRoute()
+  load()
+})
+
+const syncTabFromRoute = () => {
   if (['model-keys', 'robots'].includes(route.query.tab)) {
     activeTab.value = route.query.tab
   } else if (route.query.tab === 'ai-usage') {
     activeTab.value = 'model-keys'
+  } else {
+    activeTab.value = 'model-keys'
   }
-  load()
-})
+}
+
+watch(() => route.query.tab, syncTabFromRoute)
 </script>
 
 <template>
   <div class="settings-panel keys-page" v-loading="loading">
-    <header class="settings-page-header">
-      <div>
-        <h2 class="settings-page-title">密钥配置</h2>
-        <p class="settings-page-desc">统一管理大模型 Key、用例执行 AI 策略和平台机器人凭据。</p>
-      </div>
-      <div class="settings-summary-pill">{{ configuredCount }} 个模型已配置</div>
-    </header>
-
-    <div class="settings-tabbar">
-      <button
-        v-for="t in tabs"
-        :key="t.id"
-        type="button"
-        class="settings-tab"
-        :class="{ active: activeTab === t.id }"
-        @click="activeTab = t.id"
-      >
-        <strong>{{ t.label }}</strong>
-        <span>{{ t.desc }}</span>
-      </button>
+    <div class="settings-toolbar keys-toolbar">
+      <span class="settings-summary-pill">{{ configuredCount }} 个模型已配置</span>
     </div>
 
     <section v-if="activeTab === 'model-keys'" class="keys-content">

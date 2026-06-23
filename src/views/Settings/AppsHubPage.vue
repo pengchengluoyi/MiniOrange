@@ -56,34 +56,6 @@ const openApp = (app, project) => {
 
 <template>
   <div class="settings-panel hub-panel" v-loading="loading">
-    <header class="settings-page-header">
-      <div>
-        <h2 class="settings-page-title">应用与环境</h2>
-        <p class="settings-page-desc">项目运行环境、应用自动化与知识库统一管理。</p>
-      </div>
-    </header>
-
-    <div class="settings-tabbar">
-      <button
-        type="button"
-        class="settings-tab"
-        :class="{ active: hubTab === 'projects' }"
-        @click="hubTab = 'projects'"
-      >
-        <strong>项目与应用</strong>
-        <span>项目、应用和运行环境</span>
-      </button>
-      <button
-        type="button"
-        class="settings-tab"
-        :class="{ active: hubTab === 'knowledge' }"
-        @click="hubTab = 'knowledge'"
-      >
-        <strong>知识库</strong>
-        <span>测试经验和失败知识</span>
-      </button>
-    </div>
-
     <template v-if="hubTab === 'projects'">
         <div v-for="p in projects" :key="p.id" class="settings-table-card project-block">
           <div class="project-head">

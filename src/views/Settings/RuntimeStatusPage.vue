@@ -10,7 +10,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { getNodeStatus } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
-import { dedupeDevicesForUi, applyStableDeviceOrder } from '@/utils/devices'
+import { dedupeDevicesForUi, applyStableDeviceOrder, applyOnlineStatusGrace } from '@/utils/devices'
 import { readKnownClawNodes, addKnownClawNode, removeKnownClawNode, pruneKnownClawNodes } from '@/utils/knownClawNodes'
 import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
 import { formatRelativeTime } from '@/utils/relativeTime'
@@ -352,7 +352,8 @@ const applyDeviceList = (data) => {
     return item
   })
 
-  devices.value = applyStableDeviceOrder(merged, previous)
+  const withGrace = applyOnlineStatusGrace(merged, previous)
+  devices.value = applyStableDeviceOrder(withGrace, previous)
   knownNodeSns.value = pruneKnownClawNodes(devices.value)
   applyServerDeviceList(nextDevices)
 }

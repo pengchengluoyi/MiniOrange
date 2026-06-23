@@ -1,12 +1,7 @@
 <template>
   <header class="app-titlebar">
-    <!-- Mac Traffic Lights Spacer -->
     <div class="mac-spacer" v-if="isMac"></div>
-
-    <!-- Dynamic Content Portal -->
     <div id="titlebar-center-portal" class="titlebar-center"></div>
-
-    <!-- Windows Controls -->
     <div class="win-controls" v-if="!isMac">
       <div class="control-btn minimize" @click="handleMinimize">
         <el-icon><Minus /></el-icon>

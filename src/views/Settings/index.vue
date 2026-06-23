@@ -1,15 +1,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar, Fold, Expand } from '@element-plus/icons-vue'
+import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
 import { readAgentSessions } from '@/utils/agentSessions'
-import { useSettingsAside } from '@/composables/useSettingsAside'
 import './settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
-const { collapsed, toggleAside } = useSettingsAside()
 const isMac = ref(false)
 
 onMounted(() => {
@@ -168,23 +166,15 @@ const handleClose = () => window.electronAPI?.close()
 
 <template>
   <div class="settings-layout">
-    <div class="settings-sidebar-col" :class="{ collapsed }">
+    <div class="settings-sidebar-col">
       <div class="aside-chrome">
         <div v-if="isMac" class="mac-traffic-zone" aria-hidden="true" />
-        <button
-          type="button"
-          class="aside-collapse-btn"
-          :title="collapsed ? '展开侧栏' : '收起侧栏'"
-          @click="toggleAside"
-        >
-          <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
-        </button>
       </div>
 
       <aside class="settings-aside">
         <div class="aside-head">
           <el-icon><Setting /></el-icon>
-          <span v-if="!collapsed">设置</span>
+          <span>设置</span>
         </div>
 
         <nav class="section-nav">
@@ -197,11 +187,11 @@ const handleClose = () => window.electronAPI?.close()
               @click="go(s)"
             >
               <el-icon><component :is="s.icon" /></el-icon>
-              <span v-if="!collapsed">{{ s.label }}</span>
+              <span>{{ s.label }}</span>
             </button>
 
             <div
-              v-if="!collapsed && secondaryNav && isActive(s) && (secondaryNav.parent === s.id || (secondaryNav.kind === 'app' && s.id === 'hub'))"
+              v-if="secondaryNav && isActive(s) && (secondaryNav.parent === s.id || (secondaryNav.kind === 'app' && s.id === 'hub'))"
               class="sub-nav"
             >
               <template v-if="secondaryNav.kind === 'app' && s.id === 'hub'">
@@ -233,8 +223,7 @@ const handleClose = () => window.electronAPI?.close()
           </template>
         </nav>
 
-        <el-button v-if="!collapsed" text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
-        <el-button v-else text class="back-apps collapsed-back" title="返回对话记录" @click="openLatestDialogue">←</el-button>
+        <el-button text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
       </aside>
     </div>
 
@@ -274,11 +263,6 @@ const handleClose = () => window.electronAPI?.close()
   flex-direction: column;
   background: #fff;
   border-right: 1px solid #e5e7eb;
-  transition: width 0.2s ease;
-}
-
-.settings-sidebar-col.collapsed {
-  width: 72px;
 }
 
 .aside-chrome {
@@ -286,8 +270,6 @@ const handleClose = () => window.electronAPI?.close()
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px 0 0;
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
   -webkit-app-region: drag;
@@ -298,40 +280,6 @@ const handleClose = () => window.electronAPI?.close()
   width: 68px;
   height: 100%;
   flex-shrink: 0;
-}
-
-.aside-collapse-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #6b7280;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  -webkit-app-region: no-drag;
-}
-
-/* 折叠：交通灯占上行，折叠按钮在下方，避免与 ●●● 重叠 */
-.settings-sidebar-col.collapsed .aside-chrome {
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: center;
-  gap: 2px;
-  padding: 8px 0 4px;
-}
-
-.settings-sidebar-col.collapsed .mac-traffic-zone {
-  width: 56px;
-  height: 14px;
-}
-
-.aside-collapse-btn:hover {
-  background: #f3f4f6;
-  color: #111827;
 }
 
 .settings-aside {
@@ -354,11 +302,6 @@ const handleClose = () => window.electronAPI?.close()
   color: #374151;
 }
 
-.settings-sidebar-col.collapsed .aside-head {
-  justify-content: center;
-  padding-bottom: 10px;
-}
-
 .section-nav {
   display: flex;
   flex-direction: column;
@@ -378,11 +321,6 @@ const handleClose = () => window.electronAPI?.close()
   font-size: 13px;
   color: #374151;
   text-align: left;
-}
-
-.settings-sidebar-col.collapsed .section-btn {
-  justify-content: center;
-  padding: 10px 6px;
 }
 
 .section-btn:hover,
@@ -433,11 +371,6 @@ const handleClose = () => window.electronAPI?.close()
 .back-apps {
   margin-top: 12px;
   font-size: 12px;
-}
-
-.collapsed-back {
-  width: 100%;
-  justify-content: center;
 }
 
 .settings-main {

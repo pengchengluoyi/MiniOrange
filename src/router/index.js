@@ -40,7 +40,7 @@ const routes = [
         path: '/settings',
         component: SettingsLayout,
         meta: { title: '设置', requiresAuth: true },
-        redirect: '/settings/runtime',
+        redirect: '/settings/runtime?view=overview',
         children: [
             { path: 'hub', name: 'SettingsHub', component: SettingsHub, meta: { title: '应用与环境' } },
             { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },

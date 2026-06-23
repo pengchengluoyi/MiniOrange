@@ -1,9 +1,9 @@
 <template>
   <div class="app-root">
     <!-- 🔥 Global TitleBar -->
-    <TitleBar />
+    <TitleBar v-if="!isSettingsRoute && !isDialogueRoute" />
     
-    <div class="content-area">
+    <div class="content-area" :class="{ 'is-settings': isSettingsRoute || isDialogueRoute }">
       <router-view />
     </div>
 
@@ -33,6 +33,7 @@ import { startGlobalLanDiscovery, stopGlobalLanDiscovery } from '@/utils/globalL
 
 const route = useRoute()
 const commandPaletteRef = ref(null)
+const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
 const isDialogueRoute = computed(() => route.name === 'Dialogue')
 const showCopilotWidget = computed(() => (
   route.name !== 'Dialogue' &&
@@ -90,9 +91,18 @@ body {
 .content-area {
   width: 100%;
   height: 100vh;
-  padding-top: 50px; /* Space for TitleBar */
+  padding-top: 50px;
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
+}
+
+.content-area.is-settings {
+  padding-top: 0;
+}
+
+.content-area.is-settings > * {
+  height: 100%;
+  min-height: 0;
 }
 </style>

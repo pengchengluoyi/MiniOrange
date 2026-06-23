@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -25,9 +25,6 @@ import FeishuRegressionPanel from './FeishuRegressionPanel.vue'
 import ProjectEnvEditor from './ProjectEnvEditor.vue'
 import KnowledgePanel from './KnowledgePanel.vue'
 import { getFigmaSettings } from '@/api/settings'
-import { titlebarOwner, claimTitlebar, releaseTitlebar } from '@/composables/useTitlebar'
-
-const TITLEBAR_ID = 'app-config'
 
 const route = useRoute()
 const router = useRouter()
@@ -361,17 +358,7 @@ watch(section, (s) => {
 
 watch(() => appId.value, load)
 
-const syncAppTitlebar = () => {
-  nextTick(() => {
-    if (titlebarOwner.value === 'feishu-report') return
-    claimTitlebar(TITLEBAR_ID)
-  })
-}
-
-watch(section, () => syncAppTitlebar())
-
 onMounted(async () => {
-  syncAppTitlebar()
   try {
     const res = await getFigmaSettings()
     figmaTokenConfigured.value = !!res?.data?.configured
@@ -380,37 +367,14 @@ onMounted(async () => {
   }
   await Promise.all([load(), loadDevices()])
 })
-
-onUnmounted(() => releaseTitlebar(TITLEBAR_ID))
 </script>
 
 <template>
   <div class="settings-panel app-config-panel" :class="{ 'wide-panel': section === 'regression' }" v-loading="loading">
-    <Teleport to="#titlebar-center-portal">
-      <div v-if="titlebarOwner === TITLEBAR_ID" class="settings-titlebar-portal">
-        <el-button text class="portal-back-btn" @click="router.push({ name: 'SettingsHub' })">← 应用与环境</el-button>
-        <div class="portal-title-block">
-          <span class="portal-title">{{ appName }}</span>
-          <span class="portal-meta">{{ projectName ? `${projectName} · ` : '' }}应用级自动化与执行策略</span>
-        </div>
-        <el-button
-          v-if="section === 'env'"
-          type="primary"
-          size="small"
-          :loading="saving || envEditorRef?.saving"
-          @click="saveEnvTab"
-        >
-          保存
-        </el-button>
-        <el-button v-else-if="section === 'figma'" size="small" plain @click="openKnowledge">知识库 / Token</el-button>
-      </div>
-    </Teleport>
-
-    <el-tabs :model-value="section" @tab-change="switchTab" class="config-tabs">
-      <el-tab-pane v-for="t in tabs" :key="t.key" :label="t.label" :name="t.key" />
-    </el-tabs>
-
     <div v-show="section === 'env'" class="tab-body">
+      <div class="settings-toolbar">
+        <el-button type="primary" size="small" :loading="saving || envEditorRef?.saving" @click="saveEnvTab">保存</el-button>
+      </div>
       <el-card shadow="never" class="card">
         <h3>执行时如何切换环境</h3>
         <el-form label-width="140px" style="max-width: 640px">

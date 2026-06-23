@@ -20,6 +20,23 @@
   margin-bottom: 18px;
 }
 
+.settings-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.settings-toolbar.runtime-toolbar {
+  justify-content: flex-end;
+}
+
+.settings-toolbar.runtime-toolbar .settings-summary-pill {
+  margin-right: auto;
+}
+
 .settings-page-title {
   margin: 0 0 6px;
   color: var(--settings-text);

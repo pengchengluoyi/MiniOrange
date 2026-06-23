@@ -8,7 +8,7 @@ import { getDeviceList } from '@/api/device'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { adoptClawNode } from '@/api/clawnode'
-import { addKnownClawNode, removeKnownClawNode } from '@/utils/knownClawNodes'
+import { addKnownClawNode, removeKnownClawNode, readKnownClawNodes } from '@/utils/knownClawNodes'
 import { displayDeviceSn } from '@/utils/deviceDisplay'
 import { dedupeDevicesForUi } from '@/utils/devices'
 
@@ -55,6 +55,14 @@ export const findServerClawNode = (node) => {
 
 export const isNodeOnServer = (node) => !!findServerClawNode(node)
 
+/** 已在服务端或本地 adopt 过：不再弹窗/不再出现在附近列表 */
+export const isNodeAlreadyRegistered = (node) => {
+  const sn = String(node?.sn || '').trim()
+  if (!sn) return false
+  if (isNodeOnServer(node)) return true
+  return readKnownClawNodes().includes(sn)
+}
+
 export const isDevicePairedOnPhone = (node) => {
   const raw = node?.paired ?? node?.txt?.paired
   if (raw === undefined || raw === null || raw === '') return true
@@ -66,7 +74,8 @@ export const canAdoptLanNode = (node) => {
   if (lanListIgnoredSns.value.has(sn)) return false
   if (pendingAdoptSns.value.has(sn)) return false
   if (adoptingNode.value && adoptCandidate.value?.sn === sn) return false
-  return !isNodeOnServer(node) || !isDevicePairedOnPhone(node)
+  if (isNodeAlreadyRegistered(node)) return false
+  return !isDevicePairedOnPhone(node)
 }
 
 export const visibleDiscoveredLanNodes = computed(() =>
@@ -74,7 +83,8 @@ export const visibleDiscoveredLanNodes = computed(() =>
     const sn = String(node?.sn || '').trim()
     if (lanListIgnoredSns.value.has(sn)) return false
     const dev = findServerClawNode(node)
-    return !(dev && dev.status === 'online')
+    if (dev || readKnownClawNodes().includes(sn)) return false
+    return true
   }),
 )
 
@@ -101,6 +111,10 @@ export const lanNodeTagType = (node) => {
 export const applyServerDeviceList = (data) => {
   const list = Array.isArray(data) ? data : (data?.data || data?.devices || [])
   serverDevices.value = Array.isArray(list) ? dedupeDevicesForUi(list) : []
+  for (const d of serverDevices.value) {
+    const sn = String(d?.sn || '').trim()
+    if (sn.startsWith('claw-')) addKnownClawNode(sn)
+  }
 }
 
 export const fetchServerDevices = async () => {
@@ -243,7 +257,7 @@ export const dismissAdoptPopup = async (confirmed = false, runtime = null) => {
 }
 
 const openAdoptPopup = (node) => {
-  if (!node?.sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
+  if (!node?.sn || isNodeAlreadyRegistered(node)) return
   adoptCandidate.value = node
   adoptPopupVisible.value = true
   adoptCountdown.value = 10
@@ -259,7 +273,7 @@ const processAdoptPopupQueue = () => {
   if (adoptPopupVisible.value) return
   while (adoptPopupQueue.length) {
     const next = adoptPopupQueue.shift()
-    if (!next?.sn || (isNodeOnServer(next) && isDevicePairedOnPhone(next))) continue
+    if (!next?.sn || isNodeAlreadyRegistered(next)) continue
     openAdoptPopup(next)
     return
   }
@@ -267,7 +281,7 @@ const processAdoptPopupQueue = () => {
 
 const enqueueAdoptPopup = (node) => {
   const sn = String(node?.sn || '').trim()
-  if (!sn || (isNodeOnServer(node) && isDevicePairedOnPhone(node))) return
+  if (!sn || isNodeAlreadyRegistered(node)) return
   if (popupSkippedSns.value.has(sn) || pendingAdoptSns.value.has(sn)) return
   if (adoptPopupQueue.some((item) => item.sn === sn)) return
   if (adoptPopupVisible.value && adoptCandidate.value?.sn === sn) return
@@ -324,12 +338,11 @@ export const notifyDeviceUnbound = (...sns) => {
 }
 
 const syncPendingAdopts = () => {
-  const online = new Set(
-    serverDevices.value.filter((d) => d.status === 'online').map((d) => d.sn),
-  )
-  if (!online.size) return
   pendingAdoptSns.value = new Set(
-    [...pendingAdoptSns.value].filter((sn) => !online.has(sn)),
+    [...pendingAdoptSns.value].filter((sn) => {
+      const dev = serverDevices.value.find((d) => d.sn === sn)
+      return !dev
+    }),
   )
 }
 

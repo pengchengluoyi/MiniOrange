@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listRobotIntegrations } from '@/api/settings'
@@ -22,9 +22,6 @@ import RunSummaryPanel from '@/components/RunSummaryPanel.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
-import { titlebarOwner, claimTitlebar, releaseTitlebar } from '@/composables/useTitlebar'
-
-const TITLEBAR_ID = 'feishu-report'
 
 const props = defineProps({
   appId: { type: String, required: true },
@@ -394,10 +391,6 @@ watch(resultView, (view) => {
   const open = view !== 'list'
   reportOverlayOpen.value = open
   document.body.style.overflow = open ? 'hidden' : ''
-  nextTick(() => {
-    if (open) claimTitlebar(TITLEBAR_ID)
-    else releaseTitlebar(TITLEBAR_ID)
-  })
 }, { immediate: true })
 
 watch(activeTab, (tab) => {
@@ -417,7 +410,6 @@ const clearRunState = () => {
 
 onUnmounted(() => {
   clearRunState()
-  releaseTitlebar(TITLEBAR_ID)
   document.body.style.overflow = ''
   reportOverlayOpen.value = false
 })
@@ -656,39 +648,6 @@ onUnmounted(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <Teleport to="#settings-overlay-portal">
-      <div v-if="titlebarOwner === TITLEBAR_ID && resultView !== 'list'" class="report-titlebar-portal">
-        <el-button text class="portal-back-btn" @click="goBackInReport">{{ backLabel }}</el-button>
-        <div class="portal-title-block">
-          <template v-if="resultView === 'playback' && selectedCaseForLog">
-            <span class="portal-title">{{ selectedCaseForLog.name }}</span>
-            <span class="portal-meta">
-              {{ selectedCaseForLog.case_id }} · {{ lastRun?.sn }} ·
-              {{ formatDuration(selectedCaseForLog.duration_ms) || lastRun?.finished_at?.slice(0, 16) }}
-            </span>
-          </template>
-          <template v-else-if="lastRun">
-            <span class="portal-title">已执行用例</span>
-            <span class="portal-meta">
-              {{ lastRun.started_at?.slice(0, 19).replace('T', ' ') }} · {{ lastRun.sn }} ·
-              总计 {{ formatDuration(lastRun.duration_ms) || '—' }} ·
-              已执行 {{ lastRun.executed ?? lastRun.cases?.length ?? 0 }}/{{ lastRun.total }} ·
-              通过 {{ lastRun.passed }}/{{ lastRun.total }}
-              <template v-if="lastRun.skipped"> · 跳过 {{ lastRun.skipped }}</template>
-            </span>
-          </template>
-        </div>
-        <el-tag
-          v-if="resultView === 'playback' && selectedCaseForLog"
-          :type="statusTag(selectedCaseForLog.status)"
-          size="small"
-          class="portal-status"
-        >
-          {{ selectedCaseForLog.status }}
-        </el-tag>
-      </div>
-    </Teleport>
-
     <el-dialog v-model="devicePickerVisible" title="选择执行设备" width="520px" destroy-on-close @close="cancelDevicePicker">
       <p class="picker-hint">从运行状态设备列表中选择在线设备（含 ClawNode / USB Hub 等）。</p>
       <el-radio-group v-model="devicePickerSn" class="device-picker-list">
@@ -730,46 +689,46 @@ onUnmounted(() => {
 </style>
 
 <style>
-.report-titlebar-portal {
+.report-fullpage-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  height: 100%;
-  padding: 0 16px 0 8px;
   box-sizing: border-box;
 }
-.report-titlebar-portal .portal-back-btn {
+.report-fullpage-header .portal-back-btn {
   flex-shrink: 0;
   font-size: 13px;
   font-weight: 600;
   color: #374151;
-  padding: 6px 10px;
+  padding: 4px 8px;
 }
-.report-titlebar-portal .portal-title-block {
+.report-fullpage-header .portal-title-block {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-  line-height: 1.25;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.3;
+  overflow: hidden;
 }
-.report-titlebar-portal .portal-title {
+.report-fullpage-header .portal-title {
+  flex-shrink: 0;
   font-size: 14px;
   font-weight: 700;
   color: #111827;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.report-titlebar-portal .portal-meta {
-  font-size: 11px;
+.report-fullpage-header .portal-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
   color: #9ca3af;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.report-titlebar-portal .portal-status {
+.report-fullpage-header .portal-status {
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -785,9 +744,9 @@ onUnmounted(() => {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 52px;
-  padding: 0 16px 0 8px;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 12px 0 6px;
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
   box-sizing: border-box;
@@ -804,7 +763,7 @@ onUnmounted(() => {
 }
 .report-body--cases {
   overflow: auto;
-  padding: 16px 24px 24px;
+  padding: 10px 16px 16px;
 }
 .report-body .replayer {
   flex: 1;

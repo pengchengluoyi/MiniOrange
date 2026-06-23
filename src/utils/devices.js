@@ -1,8 +1,32 @@
+const BRAND_TOKENS = new Set([
+  'MOTOROLA', 'MOTO', 'XIAOMI', 'REDMI', 'SAMSUNG', 'HUAWEI', 'HONOR',
+  'GOOGLE', 'ONEPLUS', 'OPPO', 'VIVO', 'REALME', 'ANDROID', 'IPHONE', 'APPLE',
+])
+
 function normalizeModel(model) {
   if (!model) return ''
-  const text = String(model).trim().toUpperCase()
-  const match = text.match(/[A-Z0-9]{5,}/)
-  return match ? match[0] : text
+  const text = String(model).trim().toUpperCase().replace(/[^A-Z0-9]+/g, ' ')
+  const tokens = text.split(/\s+/).filter(Boolean)
+  if (!tokens.length) return ''
+
+  const series = new Set()
+  for (const tok of tokens) {
+    if (/^[A-Z]{1,4}\d{2,}[A-Z0-9]*$/.test(tok)) series.add(tok)
+    else if (/^\d{5,}[A-Z0-9]*$/.test(tok)) series.add(tok)
+  }
+  if (series.size) return [...series].sort().join('|')
+
+  const rest = tokens.filter((t) => !BRAND_TOKENS.has(t) && t.length >= 2)
+  return (rest.length ? rest : tokens).join(' ')
+}
+
+function canonicalDeviceKey(device) {
+  const sn = String(device?.sn || '').trim()
+  const alt = String(device?.claw_sn || device?.node_sn || '').trim()
+  if (sn.startsWith('claw-')) return sn
+  if (alt.startsWith('claw-')) return alt
+  if (sn && alt && sn.toLowerCase() === alt.toLowerCase()) return sn
+  return sn || alt
 }
 
 function isClawDirect(device) {
@@ -41,9 +65,7 @@ export function dedupeDevicesForUi(list) {
   const filtered = devices.filter((device) => !skipSns.has(device.sn))
   const byKey = new Map()
   for (const device of filtered) {
-    const key = String(device.sn || '').startsWith('claw-')
-      ? device.sn
-      : (device.claw_sn || device.node_sn || device.sn || '')
+    const key = canonicalDeviceKey(device)
     if (!key) {
       byKey.set(`__${Math.random()}`, device)
       continue
@@ -65,19 +87,79 @@ export function dedupeDevicesForUi(list) {
   return [...byKey.values()]
 }
 
-function parseLastOnline(value) {
-  if (!value) return 0
-  const ts = new Date(String(value).replace(' ', 'T')).getTime()
-  return Number.isNaN(ts) ? 0 : ts
+/** 运行状态页：按接入顺序稳定排序，避免 last_online 秒级刷新导致列表跳动 */
+const displayOrderBySn = new Map()
+let displayOrderSeq = 1
+
+/**
+ * 在线设备按接入顺序展示；离线后重新上线则移到在线组末尾。
+ * @param {Array} nextList 本次设备列表
+ * @param {Array} previousList 上一帧列表（用于检测 offline→online）
+ */
+export function applyStableDeviceOrder(nextList, previousList = []) {
+  const list = Array.isArray(nextList) ? [...nextList] : []
+  const prevStatus = new Map(
+    (Array.isArray(previousList) ? previousList : []).map((d) => [String(d?.sn || ''), d?.status]),
+  )
+
+  for (const device of list) {
+    const sn = String(device?.sn || '').trim()
+    if (!sn || displayOrderBySn.has(sn)) continue
+    displayOrderBySn.set(sn, displayOrderSeq++)
+  }
+
+  for (const device of list) {
+    const sn = String(device?.sn || '').trim()
+    if (!sn) continue
+    const isOnline = device.status === 'online'
+    const wasOnline = prevStatus.get(sn) === 'online'
+    if (isOnline && prevStatus.has(sn) && !wasOnline) {
+      displayOrderBySn.set(sn, displayOrderSeq++)
+    }
+  }
+
+  return list.sort((a, b) => {
+    const aOnline = a.status === 'online'
+    const bOnline = b.status === 'online'
+    if (aOnline !== bOnline) return aOnline ? -1 : 1
+    const ao = displayOrderBySn.get(String(a?.sn || '')) ?? 0
+    const bo = displayOrderBySn.get(String(b?.sn || '')) ?? 0
+    return ao - bo
+  })
 }
 
-/** 在线设备置顶，同组内按最后在线时间倒序 */
+/** @deprecated 请用 applyStableDeviceOrder；保留兼容，不再按 last_online 排序 */
 export function sortDevicesForDisplay(list) {
-  return [...list].sort((a, b) => {
-    const aOn = a.status === 'online' ? 1 : 0
-    const bOn = b.status === 'online' ? 1 : 0
-    if (aOn !== bOn) return bOn - aOn
-    return parseLastOnline(b.last_online) - parseLastOnline(a.last_online)
+  return applyStableDeviceOrder(list, [])
+}
+
+/** WS 短暂断连时避免 UI 秒级闪烁 offline（与服务端 180s 宽限配合，客户端先 hold 90s） */
+const onlineGraceUntilBySn = new Map()
+const ONLINE_UI_GRACE_MS = 90_000
+
+export function applyOnlineStatusGrace(nextList, previousList = []) {
+  const now = Date.now()
+  const prevBySn = new Map(
+    (Array.isArray(previousList) ? previousList : []).map((d) => [String(d?.sn || ''), d]),
+  )
+
+  return (Array.isArray(nextList) ? nextList : []).map((device) => {
+    const sn = String(device?.sn || '').trim()
+    if (!sn) return device
+
+    if (device.status === 'online') {
+      onlineGraceUntilBySn.set(sn, now + ONLINE_UI_GRACE_MS)
+      return device
+    }
+
+    const graceUntil = onlineGraceUntilBySn.get(sn) || 0
+    const prev = prevBySn.get(sn)
+    if (prev?.status === 'online' && now < graceUntil) {
+      return { ...device, status: 'online' }
+    }
+
+    onlineGraceUntilBySn.delete(sn)
+    return device
   })
 }
 

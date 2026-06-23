@@ -95,19 +95,33 @@ const killPythonProcess = () => {
     });
 };
 
-// 🔥 新增：检查 URL 是否可访问
-const checkUrl = (url) => {
+// 检查 Server HTTP 健康（/ 返回 status=ok）
+const checkUrl = (url, timeoutMs = 3000) => {
+    const probe = url.endsWith('/') ? url : `${url}/`;
     return new Promise((resolve) => {
-        const req = http.get(url, (res) => {
-            resolve(true);
+        const req = http.get(probe, (res) => {
+            const ok = res.statusCode >= 200 && res.statusCode < 500;
+            resolve(ok);
             res.resume();
         });
         req.on('error', () => resolve(false));
-        req.setTimeout(1000, () => {
+        req.setTimeout(timeoutMs, () => {
             req.destroy();
             resolve(false);
         });
     });
+};
+
+const probeLocalServer = async () => {
+    const candidates = [
+        'http://127.0.0.1:10104',
+        'http://localhost:10104',
+        'http://miniorange.local:10104',
+    ];
+    for (const url of candidates) {
+        if (await checkUrl(url)) return url;
+    }
+    return null;
 };
 
 const fetchGatewayInfo = (baseUrl) => {
@@ -807,8 +821,9 @@ ipcMain.handle('select-file', async () => {
 })
 
 ipcMain.handle('get-runtime-status', async () => {
-    const localUrl = 'http://127.0.0.1:10104';
-    const localOnline = await checkUrl(localUrl);
+    const reachableUrl = await probeLocalServer();
+    const localOnline = !!reachableUrl;
+    const localUrl = reachableUrl || 'http://127.0.0.1:10104';
     const endpoints = [
         {name: 'localhost', url: localUrl, online: localOnline},
     ];
@@ -817,7 +832,7 @@ ipcMain.handle('get-runtime-status', async () => {
         const gatewayInfo = await fetchGatewayInfo(localUrl);
         if (gatewayInfo?.mdnsUrl) {
             endpoints.push({
-                name: gatewayInfo.displayName,
+                name: gatewayInfo.displayName || 'gateway',
                 url: gatewayInfo.mdnsUrl,
                 online: true,
                 lanHost: gatewayInfo.lanHost,
@@ -826,10 +841,11 @@ ipcMain.handle('get-runtime-status', async () => {
             });
         }
     } else {
+        const mdnsOnline = await checkUrl('http://miniorange.local:10104');
         endpoints.push({
             name: 'mdns',
             url: 'http://miniorange.local:10104',
-            online: await checkUrl('http://miniorange.local:10104'),
+            online: mdnsOnline,
         });
     }
 
@@ -842,7 +858,7 @@ ipcMain.handle('get-runtime-status', async () => {
             platform: process.platform,
         },
         embeddedServer: {
-            running: !!pyProc,
+            running: !!pyProc || localOnline,
             pid: pyProc?.pid || null,
         },
         endpoints,

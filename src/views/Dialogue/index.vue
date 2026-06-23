@@ -2,7 +2,11 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElIcon, ElButton, ElInput, ElMessage, ElMessageBox } from 'element-plus'
-import { Promotion, MagicStick, User, ChatDotRound, Setting, SwitchButton, Plus } from '@element-plus/icons-vue'
+import {
+  Promotion, MagicStick, User, ChatDotRound, Setting, SwitchButton, Plus, Fold, Expand,
+  Minus, FullScreen, Close,
+} from '@element-plus/icons-vue'
+import { useDialogueAside } from '@/composables/useDialogueAside'
 import { copilotChat, copilotExecute } from '@/api/copilot'
 import { initWebSocket } from '@/api/mWebSocket'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
@@ -12,7 +16,7 @@ import { listAIProviders } from '@/api/settings'
 import { copilotCommands } from '@/logic/CopilotCommands'
 import { createAgentSession, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
 import { getBaseUrl } from '@/utils/config'
-import { selectableExecutionDevices, pickDefaultDeviceSn } from '@/utils/devices'
+import { selectableExecutionDevices, pickDefaultDeviceSn, applyOnlineStatusGrace, dedupeDevicesForUi } from '@/utils/devices'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res
@@ -24,6 +28,8 @@ function normalizeDeviceList(res) {
 
 const route = useRoute()
 const router = useRouter()
+const { collapsed, toggleAside } = useDialogueAside()
+const isMac = ref(false)
 const messages = ref([])
 const inputValue = ref('')
 const isLoading = ref(false)
@@ -306,7 +312,7 @@ const loadDevices = async () => {
         list = normalizeDeviceList(httpRes)
       }
     }
-    devices.value = selectableExecutionDevices(list)
+    devices.value = selectableExecutionDevices(applyOnlineStatusGrace(dedupeDevicesForUi(list), devices.value))
     if (selectedSn.value && !devices.value.some((d) => d.sn === selectedSn.value)) {
       selectedSn.value = pickDefaultDeviceSn(devices.value)
       persistSession()
@@ -629,6 +635,7 @@ const handleKeydown = (e) => {
 }
 
 onMounted(async () => {
+  isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
   document.addEventListener('click', closeFloatingMenus)
   await loadAIProviders()
   await loadDevices()
@@ -640,12 +647,29 @@ onUnmounted(() => {
   document.removeEventListener('click', closeFloatingMenus)
   if (devicePollTimer) clearInterval(devicePollTimer)
 })
+
+const handleMinimize = () => window.electronAPI?.minimize()
+const handleMaximize = () => window.electronAPI?.maximize()
+const handleClose = () => window.electronAPI?.close()
 </script>
 
 <template>
-  <div class="dialogue-page">
-    <aside class="side-nav">
-      <div class="brand">MiniOrange</div>
+  <div class="dialogue-layout">
+    <div class="dialogue-sidebar-col" :class="{ collapsed }">
+      <div class="aside-chrome">
+        <div v-if="isMac" class="mac-traffic-zone" aria-hidden="true" />
+        <button
+          type="button"
+          class="aside-collapse-btn"
+          :title="collapsed ? '展开侧栏' : '收起侧栏'"
+          @click="toggleAside"
+        >
+          <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
+        </button>
+      </div>
+
+      <aside v-show="!collapsed" class="dialogue-aside">
+        <div class="brand">MiniOrange</div>
       <button type="button" class="new-agent-side-btn" @click="startNewAgent">
         <el-icon><Plus /></el-icon>
         <span>New Agent</span>
@@ -712,9 +736,10 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-    </aside>
+      </aside>
+    </div>
 
-    <main class="main-panel">
+    <main class="dialogue-main">
       <div class="chat-panel" ref="chatRef" :class="{ 'is-draft': isDraftAgent }" @scroll="handleChatScroll">
         <div v-if="isDraftAgent" class="draft-hero">
           <div class="draft-orb">
@@ -1000,33 +1025,142 @@ onUnmounted(() => {
         <pre class="response-json">{{ modelResponseText }}</pre>
       </div>
     </el-drawer>
+
+    <div v-if="!isMac" class="dialogue-win-controls">
+      <div class="control-btn minimize" @click="handleMinimize">
+        <el-icon><Minus /></el-icon>
+      </div>
+      <div class="control-btn maximize" @click="handleMaximize">
+        <el-icon><FullScreen /></el-icon>
+      </div>
+      <div class="control-btn close" @click="handleClose">
+        <el-icon><Close /></el-icon>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.dialogue-page {
+.dialogue-layout {
+  --dialogue-chrome-h: 52px;
   display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: #f0f2f5;
+  position: relative;
 }
 
-.side-nav {
+.dialogue-sidebar-col {
   width: 200px;
   flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.85);
   border-right: 1px solid rgba(0, 0, 0, 0.06);
+  transition: width 0.2s ease;
+}
+
+.dialogue-sidebar-col.collapsed {
+  width: 72px;
+}
+
+.aside-chrome {
+  height: var(--dialogue-chrome-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.95);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.mac-traffic-zone {
+  width: 68px;
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.aside-collapse-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+.dialogue-sidebar-col.collapsed .aside-chrome {
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0 4px;
+}
+
+.dialogue-sidebar-col.collapsed .mac-traffic-zone {
+  width: 56px;
+  height: 14px;
+}
+
+.aside-collapse-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.dialogue-aside {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 16px 10px 20px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  height: 100%;
   box-sizing: border-box;
-  overflow-y: auto;
 }
 
-.nav-spacer {
-  flex: 1;
-  min-height: 24px;
+.dialogue-win-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  height: var(--dialogue-chrome-h);
+  z-index: 30;
+  -webkit-app-region: no-drag;
+}
+
+.control-btn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s;
+  color: #666;
+}
+
+.control-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.control-btn.close:hover {
+  background: #e81123;
+  color: white;
 }
 
 .brand {
@@ -1034,6 +1168,11 @@ onUnmounted(() => {
   font-size: 15px;
   padding: 8px 12px 16px;
   color: #4f46e5;
+}
+
+.nav-spacer {
+  flex: 1;
+  min-height: 24px;
 }
 
 .new-agent-side-btn {
@@ -1085,7 +1224,10 @@ onUnmounted(() => {
 }
 
 .agent-records {
-  margin-top: 16px;
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+  overflow-y: auto;
 }
 
 .records-label {
@@ -1372,12 +1514,14 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.main-panel {
+.dialogue-main {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 16px 24px 24px;
+  box-sizing: border-box;
 }
 
 .chat-panel {
