@@ -2,7 +2,7 @@
   <div class="case-result-container">
     <!-- 顶部导航 -->
     <div class="nav-header">
-      <el-page-header @back="$router.back()">
+      <el-page-header @back="goBack">
         <template #content>
           <span class="text-large font-600 mr-3"> {{ caseData.name }} </span>
           <el-tag :type="caseData.status === 'pass' ? 'success' : 'danger'" effect="dark">
@@ -77,14 +77,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useGraphLogic } from '../composables/useGraphLogic'
 import { ElPageHeader, ElTag, ElCard, ElTimeline, ElTimelineItem, ElImage } from 'element-plus'
 
 const route = useRoute()
+const router = useRouter()
 const { getCaseDetail } = useGraphLogic()
 const caseData = ref({ steps: [] })
 const currentStep = ref(0)
+
+function goBack() {
+  router.back()
+}
 
 onMounted(async () => {
   caseData.value = await getCaseDetail(route.params.id)

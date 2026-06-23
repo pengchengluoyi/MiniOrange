@@ -7,7 +7,7 @@ import { VueFlow, MarkerType, Handle, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { addMessageListener, removeMessageListener, sendWsRequest } from '@/api/mWebSocket'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
-import { getNodeStatus } from '@/api/system'
+import { getNodeStatus, updateConfig } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
 import { dedupeDevicesForUi, applyStableDeviceOrder, applyOnlineStatusGrace } from '@/utils/devices'
@@ -80,6 +80,9 @@ const logWindowMinutes = ref(5)
 const logsDialogVisible = ref(false)
 const logFiles = ref([])
 const loadingLogs = ref(false)
+const logPrefix = ref('download')
+const logPrefixInput = ref('download')
+const savingLogPrefix = ref(false)
 const selectedGateway = ref(null)
 const pairingGateway = ref(false)
 const pairedGatewayLabel = ref(getPairedGatewayDisplay())
@@ -625,11 +628,39 @@ const openLogsDialog = async () => {
   try {
     const res = await listClawNodeLogs()
     logFiles.value = res?.data || []
+    if (res?.download_prefix) {
+      logPrefix.value = res.download_prefix
+      logPrefixInput.value = res.download_prefix
+    }
   } catch (e) {
     logFiles.value = []
     ElMessage.error(e?.message || '加载日志列表失败')
   } finally {
     loadingLogs.value = false
+  }
+}
+
+const saveLogPrefix = async () => {
+  const next = String(logPrefixInput.value || '').trim().replace(/^\/+|\/+$/g, '')
+  if (!next) {
+    ElMessage.warning('日志前缀不能为空')
+    return
+  }
+  if (next === logPrefix.value) {
+    ElMessage.info('日志前缀未变化')
+    return
+  }
+  savingLogPrefix.value = true
+  try {
+    await updateConfig({ clawnode_log_prefix: next })
+    logPrefix.value = next
+    logPrefixInput.value = next
+    ElMessage.success(`日志下载前缀已更新为 ${next}`)
+    await openLogsDialog()
+  } catch (e) {
+    ElMessage.error(e?.message || e?.msg || '更新日志前缀失败')
+  } finally {
+    savingLogPrefix.value = false
   }
 }
 
@@ -640,9 +671,12 @@ const resolveLogDeviceModel = (sn) => {
   return dev?.model || key
 }
 
-const downloadLog = async (filename) => {
+const downloadLog = async (row) => {
+  const filename = typeof row === 'string' ? row : row?.filename
+  if (!filename) return
   try {
-    const url = downloadClawNodeLogUrl(filename)
+    const relative = typeof row === 'object' ? row?.download_url : null
+    const url = relative ? `${getBaseUrl()}${relative}` : downloadClawNodeLogUrl(filename, logPrefix.value)
     const res = await fetch(url)
     if (!res.ok) throw new Error(`下载失败 (${res.status})`)
     const blob = await res.blob()
@@ -1274,6 +1308,24 @@ onUnmounted(() => {
         <span>已上传至 Server 的设备日志，可按文件名下载。</span>
         <el-button size="small" :loading="loadingLogs" @click="openLogsDialog">刷新</el-button>
       </div>
+      <div class="logs-prefix-bar">
+        <span class="logs-prefix-label">下载地址前缀</span>
+        <el-input
+          v-model="logPrefixInput"
+          size="small"
+          class="logs-prefix-input"
+          placeholder="download"
+        >
+          <template #prepend>/api/clawnode/</template>
+        </el-input>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="savingLogPrefix"
+          :disabled="logPrefixInput.trim() === logPrefix"
+          @click="saveLogPrefix"
+        >保存</el-button>
+      </div>
       <el-table v-loading="loadingLogs" :data="logFiles" empty-text="暂无日志文件" height="360px">
         <el-table-column prop="filename" label="文件名" min-width="240" show-overflow-tooltip />
         <el-table-column label="设备型号" width="180" show-overflow-tooltip>
@@ -1287,7 +1339,7 @@ onUnmounted(() => {
         </el-table-column>
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="downloadLog(row.filename)">下载</el-button>
+            <el-button link type="primary" @click="downloadLog(row)">下载</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -1735,6 +1787,24 @@ onUnmounted(() => {
   gap: 12px;
   color: #6b7280;
   font-size: 13px;
+}
+
+.logs-prefix-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.logs-prefix-label {
+  color: #6b7280;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.logs-prefix-input {
+  flex: 1;
+  max-width: 360px;
 }
 
 .wifi-device-list {

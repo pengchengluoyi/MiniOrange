@@ -25,6 +25,7 @@ const SettingsRuntime = () => import('../views/Settings/RuntimeStatusPage.vue')
 const SettingsDeviceDetail = () => import('../views/Settings/DeviceDetailPage.vue')
 const SettingsProjectEnv = () => import('../views/Settings/ProjectEnvPage.vue')
 const SettingsAppConfig = () => import('../views/Settings/AppConfigPage.vue')
+const SettingsSystem = () => import('../views/Settings/SystemPage.vue')
 const routes = [
     {
         path: '/login',
@@ -48,6 +49,7 @@ const routes = [
             { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
             { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
             { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },
+            { path: 'system', name: 'SettingsSystem', component: SettingsSystem, meta: { title: '系统设置' } },
             { path: 'ai', redirect: { name: 'SettingsKeys', query: { tab: 'model-keys' } } },
             { path: 'feishu', redirect: { name: 'SettingsKeys', query: { tab: 'robots' } } },
             { path: 'knowledge', name: 'SettingsKnowledge', redirect: { name: 'SettingsHub', query: { tab: 'knowledge' } } },

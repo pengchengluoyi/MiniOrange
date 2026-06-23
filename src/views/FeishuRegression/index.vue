@@ -547,6 +547,9 @@ onBeforeUnmount(clearRunState)
               <ExecutionReplayer
                 :app-id="String(appId)"
                 :app-name="appName"
+                show-back
+                back-label="返回列表"
+                @back="() => { selectedCaseForLog = null }"
                 :trace="selectedCaseForLog.execution_trace || []"
                 :step-results="selectedCaseForLog.step_results || []"
                 :case-name="selectedCaseForLog.name"

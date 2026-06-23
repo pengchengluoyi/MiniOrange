@@ -69,3 +69,10 @@ export const saveAIUsage = (data) =>
 
 export const getAIPlanPrompt = () =>
   request({ url: '/settings/ai/plan-prompt', method: 'get' })
+
+/** 系统设置 - ClawNode 日志存储目录 */
+export const getClawnodeLogsDir = () =>
+  request({ url: '/settings/system/clawnode/logs-dir', method: 'get' })
+
+export const saveClawnodeLogsDir = (path) =>
+  request({ url: '/settings/system/clawnode/logs-dir', method: 'put', data: { path } })

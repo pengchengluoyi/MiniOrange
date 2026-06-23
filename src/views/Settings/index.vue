@@ -20,6 +20,7 @@ const sections = [
   { id: 'hub', label: '应用与环境', icon: OfficeBuilding, to: '/settings/hub' },
   { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
   { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
+  { id: 'system', label: '系统设置', icon: Setting, to: '/settings/system' },
 ]
 
 const runtimeSubNav = [
@@ -58,6 +59,9 @@ const isActive = (s) => {
   }
   if (s.id === 'keys') {
     return route.path.startsWith('/settings/keys') || route.path.startsWith('/settings/ai') || route.path.startsWith('/settings/feishu')
+  }
+  if (s.id === 'system') {
+    return route.path.startsWith('/settings/system')
   }
   return route.path === s.to || route.path.startsWith(s.to + '/')
 }

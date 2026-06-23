@@ -630,6 +630,9 @@ onUnmounted(() => {
                 fullscreen
                 :app-id="appId"
                 :app-name="appName"
+                show-back
+                back-label="返回用例列表"
+                @back="goBackInReport"
                 :trace="selectedCaseForLog.execution_trace || []"
                 :step-results="selectedCaseForLog.step_results || []"
                 :case-name="selectedCaseForLog.name"
@@ -750,6 +753,8 @@ onUnmounted(() => {
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
   box-sizing: border-box;
+  position: relative;
+  z-index: 100;
 }
 .report-body {
   flex: 1;

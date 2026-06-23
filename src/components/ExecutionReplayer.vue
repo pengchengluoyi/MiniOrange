@@ -6,12 +6,21 @@ import { getBaseUrl } from '@/utils/config'
 import { importIconFromLocate } from '@/api/appAutomation'
 import { analyzeFailureKnowledge, appendAppKnowledge } from '@/api/settings'
 
+const emit = defineEmits(['back'])
+
 const CATEGORY_OPTIONS = ['业务逻辑', 'UI导航', '登录注册', 'Tab切换', '交互规范', '其他']
+
+function triggerBack() {
+  emit('back')
+}
 
 const props = defineProps({
   appId: { type: String, default: '' },
   appName: { type: String, default: '' },
   fullscreen: { type: Boolean, default: false },
+  /** 是否显示返回按钮（用于报告/回放详情页） */
+  showBack: { type: Boolean, default: false },
+  backLabel: { type: String, default: '返回' },
   trace: { type: Array, default: () => [] },
   stepResults: { type: Array, default: () => [] },
   caseName: { type: String, default: '' },
@@ -2200,7 +2209,10 @@ onUnmounted(() => {
   <div v-if="flatSteps.length" class="replayer" :class="{ 'replayer--fullscreen': fullscreen }">
     <aside class="replayer-left">
       <div class="replayer-head">
-        回放报告
+        <div class="replayer-head-row">
+          <span v-if="showBack" class="replayer-back" @click.stop="triggerBack">← {{ backLabel }}</span>
+          <span class="replayer-head-title">回放报告</span>
+        </div>
         <span v-if="caseDurationMs != null || runDurationMs != null" class="replayer-timing">
           <template v-if="caseDurationMs != null">本用例 {{ formatDuration(caseDurationMs) }}</template>
           <template v-if="caseDurationMs != null && runDurationMs != null"> · </template>
@@ -2992,6 +3004,24 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 2px;
   background: #fff;
+}
+.replayer-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.replayer-head-title {
+  font-weight: 700;
+}
+.replayer-back {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3b82f6;
+  cursor: pointer;
+  user-select: none;
+}
+.replayer-back:hover {
+  text-decoration: underline;
 }
 .replayer-sidebar-dock {
   flex-shrink: 0;
