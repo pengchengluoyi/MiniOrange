@@ -26,6 +26,10 @@ export const listClawNodeLogs = () => {
   return request({ url: '/api/clawnode/logs', method: 'get' })
 }
 
+export const listClawNodeScripts = () => {
+  return request({ url: '/api/clawnode/scripts', method: 'get' })
+}
+
 export const downloadClawNodeLogUrl = (filename, prefix = 'download') => {
   const safePrefix = String(prefix || '').trim().replace(/^\/+|\/+$/g, '') || 'download'
   return `${getBaseUrl()}/api/clawnode/${safePrefix}/${encodeURIComponent(filename)}`

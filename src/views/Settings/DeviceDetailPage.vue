@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -11,7 +11,15 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { displayDeviceSn, formatDeviceType, isClawDevice } from '@/utils/deviceDisplay'
 import { formatRelativeTime } from '@/utils/relativeTime'
 import { dedupeDevicesForUi } from '@/utils/devices'
-import { pullClawNodeLogsToClipboard, formatLogSize, unbindClawNode, uploadApkForClawInstall } from '@/api/clawnode'
+import { pullClawNodeLogsToClipboard, formatLogSize, unbindClawNode, uploadApkForClawInstall, listClawNodeScripts } from '@/api/clawnode'
+import {
+  CLAWNODE_COMMAND_GROUPS,
+  flattenCommandPresets,
+  applyFieldValues,
+  getByPath,
+  deepClone,
+  formatParamsJson,
+} from '@/constants/clawnodeCommands'
 import { notifyDeviceUnbound } from '@/utils/globalLanDiscovery'
 import { removeKnownClawNode } from '@/utils/knownClawNodes'
 import ScrcpyWindow from '@/views/WorkflowEditor/components/ScrcpyWindow.vue'
@@ -22,6 +30,10 @@ const router = useRouter()
 const loading = ref(true)
 const devices = ref([])
 const commandForm = reactive({ command: '', params: '{\n  \n}' })
+const commandPresetId = ref('exec_open_app_settings')
+const commandFieldValues = reactive({})
+const commandShowAdvanced = ref(false)
+const scriptCatalog = ref([])
 const sending = ref(false)
 const passwordForm = reactive({ sn: '', password: '' })
 const settingPassword = ref(false)
@@ -47,6 +59,13 @@ const displaySn = computed(() => (device.value ? displayDeviceSn(device.value) :
 const isAndroid = computed(() => formatDeviceType(device.value || {}).includes('android'))
 const isClaw = computed(() => device.value && isClawDevice(device.value))
 const isOnline = computed(() => device.value?.status === 'online')
+
+const commandGroups = computed(() => (
+  isClaw.value ? CLAWNODE_COMMAND_GROUPS : CLAWNODE_COMMAND_GROUPS.filter((g) => g.label !== '脚本 (EXEC_SCRIPT)')
+))
+const commandPresets = computed(() => flattenCommandPresets(commandGroups.value))
+const selectedCommandPreset = computed(() => commandPresets.value.find((p) => p.id === commandPresetId.value) || null)
+const commandDynamicFields = computed(() => selectedCommandPreset.value?.fields || [])
 
 const lastOnlineText = computed(() => {
   void relativeTimeTick.value
@@ -83,25 +102,85 @@ const loadDevices = async () => {
 
 const goBack = () => router.push({ name: 'SettingsRuntime', query: { tab: 'cluster' } })
 
-const submitCommand = async () => {
-  if (!device.value || !commandForm.command.trim()) {
-    ElMessage.warning('请输入指令名称')
+const resetCommandFieldValues = (preset) => {
+  Object.keys(commandFieldValues).forEach((k) => delete commandFieldValues[k])
+  if (!preset?.fields?.length) return
+  for (const f of preset.fields) {
+    const existing = getByPath(preset.params, f.path)
+    commandFieldValues[f.path] = existing != null && existing !== '' ? String(existing) : ''
+  }
+}
+
+const syncCommandFormFromPreset = (preset) => {
+  if (!preset) return
+  if (preset.custom) {
+    commandForm.command = commandForm.command || ''
+    commandForm.params = commandForm.params || '{\n  \n}'
     return
   }
+  const baseParams = deepClone(preset.params)
+  const merged = applyFieldValues(baseParams, preset.fields, commandFieldValues)
+  commandForm.command = preset.command
+  commandForm.params = formatParamsJson(merged)
+}
+
+const applyCommandPreset = (presetId) => {
+  const preset = commandPresets.value.find((p) => p.id === presetId)
+  if (!preset) return
+  resetCommandFieldValues(preset)
+  syncCommandFormFromPreset(preset)
+}
+
+const buildCommandPayload = () => {
+  const preset = selectedCommandPreset.value
+  if (preset && !preset.custom && !commandShowAdvanced.value) {
+    const missing = (preset.fields || []).filter((f) => f.required && !String(commandFieldValues[f.path] || '').trim())
+    if (missing.length) {
+      throw new Error(`请填写：${missing.map((f) => f.label).join('、')}`)
+    }
+    const params = applyFieldValues(deepClone(preset.params), preset.fields, commandFieldValues)
+    return { command: preset.command, params }
+  }
+  const cmdName = commandForm.command.trim()
+  if (!cmdName) throw new Error('请输入指令名称')
   let params = {}
   try {
     params = JSON.parse(commandForm.params)
   } catch {
-    ElMessage.error('参数必须是合法的 JSON 格式')
+    throw new Error('参数必须是合法的 JSON 格式')
+  }
+  return { command: cmdName, params }
+}
+
+const loadScriptCatalog = async () => {
+  if (!isClaw.value) return
+  try {
+    const res = await listClawNodeScripts()
+    scriptCatalog.value = Array.isArray(res?.data) ? res.data : []
+  } catch {
+    scriptCatalog.value = []
+  }
+}
+
+watch(commandPresetId, (id) => applyCommandPreset(id))
+
+watch(commandFieldValues, () => {
+  if (commandShowAdvanced.value || selectedCommandPreset.value?.custom) return
+  syncCommandFormFromPreset(selectedCommandPreset.value)
+}, { deep: true })
+
+const submitCommand = async () => {
+  if (!device.value) return
+  let payload
+  try {
+    payload = buildCommandPayload()
+  } catch (e) {
+    ElMessage.error(e?.message || '参数无效')
     return
   }
   sending.value = true
   try {
-    const cmdName = commandForm.command.trim()
-    // 统一使用后端当前接受的 command + params 格式。
-    // ClawNode 1.7.23+ 已与 server 使用同一套格式（command + params），
-    // server 直接下发即可，无需特殊翻译。
-    await sendCommand({ sn: device.value.sn, command: cmdName, params })
+    await sendCommand({ sn: device.value.sn, command: payload.command, params: payload.params })
     ElMessage.success('指令已发送')
   } catch (e) {
     ElMessage.error(e?.message || '发送失败')
@@ -343,6 +422,8 @@ onMounted(async () => {
     passwordForm.sn = device.value.sn
     passwordForm.password = device.value.password || ''
   }
+  await loadScriptCatalog()
+  applyCommandPreset(commandPresetId.value)
   relativeTimer = setInterval(() => { relativeTimeTick.value += 1 }, 30000)
 })
 
@@ -464,15 +545,66 @@ onUnmounted(() => {
       <section class="panel command-panel">
         <div class="panel-head">
           <h3>下发指令</h3>
-          <p>向设备发送自定义命令（ClawNode 设备支持 INSTALL_APK / SET_CLIPBOARD 等，与 server 使用同一格式）</p>
+          <p>选择常用指令并填写参数；高级模式可编辑原始 JSON</p>
         </div>
         <el-form label-position="top" @submit.prevent>
-          <el-form-item label="指令名称" required>
-            <el-input v-model="commandForm.command" placeholder="例如: reboot（ClawNode 设备可直接用 INSTALL_APK / SET_CLIPBOARD 等）" />
+          <el-form-item label="指令类型" required>
+            <el-select
+              v-model="commandPresetId"
+              filterable
+              placeholder="选择指令"
+              style="width: 100%"
+            >
+              <el-option-group v-for="group in commandGroups" :key="group.label" :label="group.label">
+                <el-option
+                  v-for="item in group.commands"
+                  :key="item.id"
+                  :label="item.label"
+                  :value="item.id"
+                />
+              </el-option-group>
+            </el-select>
+            <p v-if="selectedCommandPreset && !selectedCommandPreset.custom" class="field-hint">
+              命令：<code>{{ selectedCommandPreset.command }}</code>
+              <template v-if="scriptCatalog.length && selectedCommandPreset.command === 'EXEC_SCRIPT'">
+                · Server 脚本库：{{ scriptCatalog.join(', ') }}
+              </template>
+            </p>
           </el-form-item>
-          <el-form-item label="参数 JSON">
-            <el-input v-model="commandForm.params" type="textarea" :rows="6" class="code-input" />
+
+          <template v-if="commandDynamicFields.length && !commandShowAdvanced">
+            <el-form-item
+              v-for="field in commandDynamicFields"
+              :key="field.path"
+              :label="field.label"
+              :required="field.required"
+            >
+              <el-input
+                v-model="commandFieldValues[field.path]"
+                :placeholder="field.placeholder || ''"
+                :type="field.type === 'number' ? 'number' : 'text'"
+                clearable
+              />
+            </el-form-item>
+          </template>
+
+          <el-form-item v-if="selectedCommandPreset?.custom || commandShowAdvanced" label="指令名称" :required="selectedCommandPreset?.custom">
+            <el-input v-model="commandForm.command" placeholder="例如 EXEC_SCRIPT、OPEN_APP" />
           </el-form-item>
+
+          <el-form-item>
+            <div class="command-advanced-toggle">
+              <el-switch v-model="commandShowAdvanced" active-text="高级：编辑 JSON" />
+            </div>
+          </el-form-item>
+
+          <el-form-item v-if="commandShowAdvanced || selectedCommandPreset?.custom" label="参数 JSON">
+            <el-input v-model="commandForm.params" type="textarea" :rows="8" class="code-input" />
+          </el-form-item>
+          <el-form-item v-else label="将发送的参数（预览）">
+            <el-input :model-value="commandForm.params" type="textarea" :rows="6" class="code-input" readonly />
+          </el-form-item>
+
           <el-button type="primary" :loading="sending" :disabled="!isOnline" @click="submitCommand">
             发送指令
           </el-button>
@@ -805,6 +937,26 @@ onUnmounted(() => {
 .code-input :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;
+}
+
+.command-advanced-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.field-hint code {
+  font-size: 11px;
+  color: #6366f1;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 
 .scrcpy-frame {
