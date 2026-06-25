@@ -35,6 +35,7 @@ const commandFieldValues = reactive({})
 const commandShowAdvanced = ref(false)
 const scriptCatalog = ref([])
 const sending = ref(false)
+const commandResult = ref(null)
 const passwordForm = reactive({ sn: '', password: '' })
 const settingPassword = ref(false)
 const scrcpyVisible = ref(false)
@@ -133,6 +134,22 @@ const applyCommandPreset = (presetId) => {
 
 const buildCommandPayload = () => {
   const preset = selectedCommandPreset.value
+  if (preset?.id === 'input_text_clipboard') {
+    const text = String(commandFieldValues.text || '')
+    if (!text.trim()) throw new Error('请填写要输入的文字')
+    const x = commandFieldValues.x
+    const y = commandFieldValues.y
+    const textLit = JSON.stringify(text)
+    let script = 'claw.wake();\nclaw.sleep(800);\n'
+    if (x !== '' && y !== '' && x != null && y != null) {
+      script += `claw.tap(${Number(x)}, ${Number(y)});\nclaw.sleep(400);\n`
+    }
+    script += `claw.setClipboard(${textLit});\nclaw.key("paste");\nclaw.foreground();`
+    return {
+      command: 'EXEC_SCRIPT',
+      params: { language: 'js', script, timeout_ms: 60000 },
+    }
+  }
   if (preset && !preset.custom && !commandShowAdvanced.value) {
     const missing = (preset.fields || []).filter((f) => f.required && !String(commandFieldValues[f.path] || '').trim())
     if (missing.length) {
@@ -179,9 +196,28 @@ const submitCommand = async () => {
     return
   }
   sending.value = true
+  commandResult.value = null
   try {
-    await sendCommand({ sn: device.value.sn, command: payload.command, params: payload.params })
-    ElMessage.success('指令已发送')
+    const res = await sendCommand({
+      sn: device.value.sn,
+      command: payload.command,
+      params: payload.params,
+      wait_result: true,
+      wait_timeout: 90,
+    })
+    const deviceData = res?.device || {}
+    const stdout = deviceData.stdout || deviceData.message || ''
+    const ok = res?.ok ?? (res?.code === 200)
+    commandResult.value = {
+      ok,
+      msg: res?.msg || (ok ? '成功' : '失败'),
+      stdout,
+      stderr: deviceData.stderr || '',
+      traceId: res?.trace_id,
+      timeout: res?.timeout,
+    }
+    if (ok) ElMessage.success(commandResult.value.msg)
+    else ElMessage.error(commandResult.value.msg)
   } catch (e) {
     ElMessage.error(e?.message || '发送失败')
   } finally {
@@ -564,6 +600,7 @@ onUnmounted(() => {
                 />
               </el-option-group>
             </el-select>
+            <p v-if="selectedCommandPreset?.hint" class="field-hint">{{ selectedCommandPreset.hint }}</p>
             <p v-if="selectedCommandPreset && !selectedCommandPreset.custom" class="field-hint">
               命令：<code>{{ selectedCommandPreset.command }}</code>
               <template v-if="scriptCatalog.length && selectedCommandPreset.command === 'EXEC_SCRIPT'">
@@ -580,6 +617,15 @@ onUnmounted(() => {
               :required="field.required"
             >
               <el-input
+                v-if="field.type === 'textarea'"
+                v-model="commandFieldValues[field.path]"
+                type="textarea"
+                :rows="8"
+                :placeholder="field.placeholder || ''"
+                class="code-input"
+              />
+              <el-input
+                v-else
                 v-model="commandFieldValues[field.path]"
                 :placeholder="field.placeholder || ''"
                 :type="field.type === 'number' ? 'number' : 'text'"
@@ -608,6 +654,16 @@ onUnmounted(() => {
           <el-button type="primary" :loading="sending" :disabled="!isOnline" @click="submitCommand">
             发送指令
           </el-button>
+
+          <div v-if="commandResult" class="command-result" :class="{ ok: commandResult.ok, fail: !commandResult.ok }">
+            <div class="command-result-head">
+              <span>{{ commandResult.ok ? '设备已执行' : '执行失败' }}</span>
+              <span v-if="commandResult.traceId" class="trace-id">{{ commandResult.traceId }}</span>
+            </div>
+            <pre v-if="commandResult.stdout">{{ commandResult.stdout }}</pre>
+            <pre v-if="commandResult.stderr" class="stderr">{{ commandResult.stderr }}</pre>
+            <p v-if="commandResult.timeout" class="field-hint">设备回传超时，可在 Server 日志查看 ACTION_RESULT</p>
+          </div>
         </el-form>
 
         <!-- ClawNode 通用能力：支持通过 server 下发 INSTALL_APK 安装任意 App（非仅 Claw 自升级）。
@@ -957,6 +1013,50 @@ onUnmounted(() => {
   background: #f1f5f9;
   padding: 1px 6px;
   border-radius: 4px;
+}
+
+.command-result {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 12px;
+}
+
+.command-result.ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.command-result.fail {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.command-result pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.command-result .stderr {
+  color: #b91c1c;
+}
+
+.command-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.trace-id {
+  font-weight: 400;
+  color: #94a3b8;
+  font-size: 11px;
 }
 
 .scrcpy-frame {
