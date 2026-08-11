@@ -22,6 +22,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import { ENV_PROFILES } from '@/constants/envProfiles'
 import FeishuRegressionPanel from './FeishuRegressionPanel.vue'
+import CaseRunnerPanel from './CaseRunnerPanel.vue'
 import ProjectEnvEditor from './ProjectEnvEditor.vue'
 import KnowledgePanel from './KnowledgePanel.vue'
 import { getFigmaSettings } from '@/api/settings'
@@ -39,7 +40,8 @@ const tabs = [
   { key: 'env', label: '执行环境' },
   { key: 'icons', label: '无字图标' },
   { key: 'logic', label: '应用逻辑' },
-  { key: 'regression', label: '飞书回归' },
+  { key: 'regression', label: '回归' },
+  { key: 'feishu-legacy', label: '飞书回归(旧)' },
   { key: 'figma', label: '设计稿' },
 ]
 
@@ -370,7 +372,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="settings-panel app-config-panel" :class="{ 'wide-panel': section === 'regression' }" v-loading="loading">
+  <div class="settings-panel app-config-panel" :class="{ 'wide-panel': section === 'regression' || section === 'feishu-legacy' }" v-loading="loading">
     <div v-show="section === 'env'" class="tab-body">
       <div class="settings-toolbar">
         <el-button type="primary" size="small" :loading="saving || envEditorRef?.saving" @click="saveEnvTab">保存</el-button>
@@ -482,6 +484,10 @@ onMounted(async () => {
     </div>
 
     <div v-show="section === 'regression'" class="tab-body">
+      <CaseRunnerPanel :app-id="appId" :app-name="appName" embedded />
+    </div>
+
+    <div v-show="section === 'feishu-legacy'" class="tab-body">
       <FeishuRegressionPanel :app-id="appId" :app-name="appName" embedded />
     </div>
 
