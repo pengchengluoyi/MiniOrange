@@ -15,6 +15,7 @@
     <UpdatePrompt />
     <GlobalAlert />
     <GlobalLanAdoptDialog />
+    <GlobalHitlDialog />
   </div>
 </template>
 
@@ -27,6 +28,7 @@ import TitleBar from './components/Core/TitleBar.vue'
 import CommandPalette from './components/Core/CommandPalette.vue'
 import CopilotWidget from './components/Ai/CopilotWidget.vue'
 import GlobalLanAdoptDialog from './components/GlobalLanAdoptDialog.vue'
+import GlobalHitlDialog from './components/GlobalHitlDialog.vue'
 import { initWebSocket } from '@/api/mWebSocket'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
 import { startGlobalLanDiscovery, stopGlobalLanDiscovery } from '@/utils/globalLanDiscovery'

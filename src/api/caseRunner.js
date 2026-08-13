@@ -11,6 +11,15 @@ export const getCaseRunnerRun = (runId) =>
 export const listCaseRunnerRuns = (limit = 30) =>
   request({ url: '/case-runner/runs', method: 'get', params: { limit } })
 
+// ---- Agent 流式执行（实时 + 历史回填） ----
+
+export const getAgentRuns = () =>
+  request({ url: '/case-runner/agent/runs', method: 'get' })
+
+export const getAgentSteps = (runId) =>
+  request({ url: `/case-runner/agent/steps/${encodeURIComponent(runId)}`, method: 'get' })
+
+
 // ---- Trace（持久化的 m_case_run_trace） ----
 
 export const listCaseRunnerTraces = ({ caseId, deviceSignature, onlyPass, limit = 20 } = {}) =>
