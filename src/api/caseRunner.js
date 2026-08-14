@@ -11,6 +11,35 @@ export const getCaseRunnerRun = (runId) =>
 export const listCaseRunnerRuns = (limit = 30) =>
   request({ url: '/case-runner/runs', method: 'get', params: { limit } })
 
+/** P0 任务中心：GET /case-runner/tasks?app_id= */
+export const listTestingTasks = ({ appId, status, limit = 50, offset = 0 } = {}) =>
+  request({
+    url: '/case-runner/tasks',
+    method: 'get',
+    params: {
+      app_id: appId || undefined,
+      status: status || undefined,
+      limit,
+      offset,
+    },
+  })
+
+export const getTestingTask = (taskId) =>
+  request({ url: `/case-runner/tasks/${encodeURIComponent(taskId)}`, method: 'get' })
+
+export const cancelTestingTask = (taskId) =>
+  request({ url: `/case-runner/tasks/${encodeURIComponent(taskId)}/cancel`, method: 'post' })
+
+export const retryFailedTestingTask = (taskId) =>
+  request({ url: `/case-runner/tasks/${encodeURIComponent(taskId)}/retry-failed`, method: 'post' })
+
+export const listTestingTaskSummary = (appIds = []) =>
+  request({
+    url: '/case-runner/tasks/summary',
+    method: 'get',
+    params: { app_ids: (appIds || []).filter(Boolean).join(',') || undefined },
+  })
+
 // ---- Agent 流式执行（实时 + 历史回填） ----
 
 export const getAgentRuns = () =>

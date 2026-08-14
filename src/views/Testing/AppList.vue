@@ -3,8 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getProjects } from '@/api/workReport'
 import { formatPlatformTags } from '@/constants/appPlatforms'
-import { listCaseRunnerRuns } from '@/api/caseRunner'
-import { normalizeMemoryRun, statusTagType } from '@/utils/testingTasks'
+import { listCaseRunnerRuns, listTestingTaskSummary } from '@/api/caseRunner'
+import { isMissingTaskEndpoint, normalizeTask, statusLabel, statusTagType } from '@/utils/testingTasks'
 import WorkShell from '@/layouts/WorkShell.vue'
 
 const route = useRoute()
@@ -12,6 +12,7 @@ const router = useRouter()
 const loading = ref(false)
 const projects = ref([])
 const liveByApp = ref({})
+const runningCountByApp = ref({})
 const filterProjectId = ref('')
 
 const filteredProjects = computed(() => {
@@ -29,17 +30,52 @@ const load = async () => {
   } finally {
     loading.value = false
   }
+  liveByApp.value = {}
+  runningCountByApp.value = {}
+  const appIds = projects.value.flatMap((p) => (p.apps || []).map((a) => a.id)).filter(Boolean)
+  try {
+    const s = await listTestingTaskSummary(appIds)
+    const rows = s?.data?.items || s?.data || []
+    const list = Array.isArray(rows) ? rows : []
+    if (list.length) {
+      const live = {}
+      const counts = {}
+      for (const row of list) {
+        const id = row.app_id || row.appId
+        if (!id) continue
+        counts[id] = Number(row.running_count || 0)
+        if (row.latest || row.status) {
+          live[id] = normalizeTask({
+            task_id: row.latest_task_id || row.task_id || `app-${id}`,
+            app_id: id,
+            status: row.status || row.latest?.status,
+            completed: row.completed ?? row.latest?.completed,
+            total: row.total ?? row.latest?.total,
+            started_at: row.started_at || row.latest?.started_at,
+          })
+        }
+      }
+      liveByApp.value = live
+      runningCountByApp.value = counts
+      return
+    }
+  } catch (e) {
+    if (!isMissingTaskEndpoint(e)) console.warn('[testing] summary failed', e)
+  }
   try {
     const r = await listCaseRunnerRuns(40)
-    const runs = (r?.data?.runs || []).map(normalizeMemoryRun).filter(Boolean)
+    const runs = (r?.data?.runs || []).map((row) => normalizeTask(row, { source: 'memory' })).filter(Boolean)
     const map = {}
+    const counts = {}
     for (const t of runs) {
       if (!t.appId) continue
+      if (t.status === 'running') counts[t.appId] = (counts[t.appId] || 0) + 1
       if (!map[t.appId] || String(t.startedAt) > String(map[t.appId].startedAt || '')) {
         map[t.appId] = t
       }
     }
     liveByApp.value = map
+    runningCountByApp.value = counts
   } catch (_) {
     liveByApp.value = {}
   }
@@ -120,11 +156,14 @@ watch(() => route.fullPath, () => {
             <span class="meta">
               <span v-for="t in formatPlatformTags(app.platforms)" :key="t" class="tag">{{ t }}</span>
             </span>
-            <span class="recent" v-if="liveByApp[app.id]">
-              <el-tag size="small" :type="statusTagType(liveByApp[app.id].status)">{{ liveByApp[app.id].status }}</el-tag>
+            <span class="recent" v-if="runningCountByApp[app.id]">
+              <el-tag size="small" type="primary">运行中 {{ runningCountByApp[app.id] }}</el-tag>
+            </span>
+            <span class="recent" v-else-if="liveByApp[app.id]">
+              <el-tag size="small" :type="statusTagType(liveByApp[app.id].status)">{{ statusLabel(liveByApp[app.id].status) }}</el-tag>
               {{ liveByApp[app.id].completed }}/{{ liveByApp[app.id].total }}
             </span>
-            <span class="recent muted" v-else>暂无进行中任务</span>
+            <span class="recent muted" v-else>暂无最近任务</span>
           </button>
         </div>
       </div>

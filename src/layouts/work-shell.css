@@ -306,10 +306,19 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+  width: auto;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   overflow: hidden;
   background: #f6f7fb;
+}
+
+.work-main > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
 }
 
 .work-records-label {

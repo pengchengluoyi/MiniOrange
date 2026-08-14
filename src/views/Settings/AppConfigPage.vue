@@ -26,6 +26,7 @@ import CaseRunnerPanel from './CaseRunnerPanel.vue'
 import ProjectEnvEditor from './ProjectEnvEditor.vue'
 import KnowledgePanel from './KnowledgePanel.vue'
 import { getFigmaSettings } from '@/api/settings'
+import './settings-ui.css'
 
 const props = defineProps({
   embedded: { type: Boolean, default: false },
@@ -403,7 +404,7 @@ onMounted(async () => {
   <div
     class="settings-panel app-config-panel"
     :class="{
-      'wide-panel': section === 'regression' || section === 'feishu-legacy' || section === 'cases',
+      'wide-panel': true,
       embedded: embedded,
     }"
     v-loading="loading"
@@ -426,16 +427,16 @@ onMounted(async () => {
       </div>
       <el-card shadow="never" class="card">
         <h3>执行时如何切换环境</h3>
-        <el-form label-width="140px" style="max-width: 640px">
+        <el-form label-width="140px" class="config-form">
           <el-form-item label="环境策略">
-            <el-radio-group v-model="executionEnvMode">
+            <el-radio-group v-model="executionEnvMode" class="env-radios">
               <el-radio value="fixed">固定 Profile（下方选择）</el-radio>
               <el-radio value="project_default">跟随项目默认环境</el-radio>
               <el-radio value="task_param">由任务/飞书参数指定</el-radio>
             </el-radio-group>
           </el-form-item>
           <el-form-item v-if="executionEnvMode === 'fixed'" label="执行 Profile">
-            <el-select v-model="envProfile" style="width: 160px">
+            <el-select v-model="envProfile" class="config-select">
               <el-option v-for="p in ENV_PROFILES" :key="p.key" :label="p.label" :value="p.key" />
             </el-select>
           </el-form-item>
@@ -550,7 +551,7 @@ onMounted(async () => {
             {{ figmaTokenConfigured ? 'Token 已配置' : 'Token 未配置' }}
           </el-tag>
         </p>
-        <el-form label-width="120px" style="max-width: 640px">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="文件链接">
             <el-input
               v-model="figmaForm.file_url"
@@ -602,10 +603,11 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.app-config-panel { padding-top: 0; }
+.app-config-panel { padding-top: 0; width: 100%; box-sizing: border-box; }
 .app-config-panel.embedded {
   padding: 0;
   max-width: none;
+  width: 100%;
   height: 100%;
   overflow: auto;
   background: transparent;
@@ -616,12 +618,36 @@ onMounted(async () => {
   top: 0;
   z-index: 2;
   background: #fff;
+  width: 100%;
 }
 .config-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
-.tab-body { margin-top: 8px; }
+.tab-body { margin-top: 8px; width: 100%; }
 .env-config-card { margin-top: 0; }
 .env-missing { margin-top: 12px; }
-.card { border: 1px solid #e5e7eb; margin-bottom: 16px; }
+.card { border: 1px solid #e5e7eb; margin-bottom: 16px; width: 100%; box-sizing: border-box; }
+.config-form {
+  width: 100%;
+  max-width: none;
+}
+.config-form :deep(.el-form-item__content) {
+  flex: 1;
+  min-width: 0;
+}
+.config-select {
+  width: min(280px, 100%);
+}
+.env-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  width: 100%;
+}
+.env-radios :deep(.el-radio) {
+  margin-right: 0;
+  height: auto;
+  white-space: normal;
+  align-items: flex-start;
+}
 .logic-tab .logic-graph-card { margin-bottom: 20px; }
 .card h3 { margin: 0 0 12px; font-size: 15px; }
 .hint { color: #6b7280; font-size: 12px; }

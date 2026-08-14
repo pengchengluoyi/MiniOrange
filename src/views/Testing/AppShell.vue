@@ -4,9 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   runCaseRunner,
-  listCaseRunnerRuns,
-  getCaseRunnerRun,
-  listCaseRunnerTraces,
   listCaseRunnerDevices,
 } from '@/api/caseRunner'
 import { getFeishuCasesCached } from '@/api/feishuRegression'
@@ -17,14 +14,14 @@ import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import { filterExecutableDevices, formatDeviceOption } from '@/utils/testingDevices'
 import {
-  groupTracesIntoTasks,
-  mergeTaskLists,
-  normalizeMemoryRun,
+  parseBusyConflict,
   progressStatus,
+  runTypeLabel,
   shortTaskId,
   statusLabel,
   statusTagType,
 } from '@/utils/testingTasks'
+import { fetchTaskDetail, fetchTasksForApp, useTestingTaskList } from '@/composables/useTestingTasks'
 
 const route = useRoute()
 const router = useRouter()
@@ -52,7 +49,7 @@ watch(
 )
 
 const loading = ref(false)
-const tasks = ref([])
+const { tasks, upsert } = useTestingTaskList(appId)
 const pollTimer = ref(null)
 const projects = ref([])
 /** 详情打开时默认折叠中间任务栏；用户可临时展开换任务 */
@@ -145,14 +142,20 @@ const selectTask = (task) => {
   replaceQuery({ ...baseQuery(), tab: 'tasks', task: task.taskId, configSection: undefined })
 }
 
+const onOpenTask = async (id) => {
+  await loadTasks()
+  selectTask({ taskId: id })
+}
+
 const toggleTaskRail = () => {
   taskRailOpen.value = !taskRailOpen.value
 }
 
 const taskRowClass = (row) => {
   const s = row.status
-  if (s === 'running') return 'is-running'
+  if (s === 'running' || s === 'queued') return 'is-running'
   if (s === 'failed' || (row.failed > 0 && s !== 'running')) return 'is-failed'
+  if (s === 'cancelled') return 'is-cancelled'
   if (s === 'done' || s === 'pass') return 'is-done'
   return ''
 }
@@ -216,21 +219,9 @@ const loadTasks = async () => {
   if (!appId.value) return
   loading.value = true
   try {
-    const [runsRes, tracesRes] = await Promise.all([
-      listCaseRunnerRuns(50).catch(() => null),
-      listCaseRunnerTraces({ limit: 80 }).catch(() => null),
-    ])
-    const memory = (runsRes?.data?.runs || [])
-      .map(normalizeMemoryRun)
-      .filter((t) => t && t.appId === appId.value)
-
-    // 仅纳入本 App 用例集合内的 traces；用例未加载/为空时不回退成「全量 traces」
-    const caseIdSet = new Set((cases.value || []).map((c) => c.case_id).filter(Boolean))
-    const traces = caseIdSet.size
-      ? (tracesRes?.data?.items || []).filter((t) => caseIdSet.has(t.case_id))
-      : []
-    const fromTraces = groupTracesIntoTasks(traces, { appId: appId.value })
-    tasks.value = mergeTaskLists(memory, fromTraces)
+    const caseIds = (cases.value || []).map((c) => c.case_id).filter(Boolean)
+    const { tasks: next } = await fetchTasksForApp(appId.value, { caseIds })
+    tasks.value = next
   } finally {
     loading.value = false
   }
@@ -279,19 +270,28 @@ const openNewRun = async () => {
 const submitRun = async () => {
   if (!runForm.value.sn) { ElMessage.warning('请先选择在线设备'); return }
   if (!selectedCaseIds.value.length) { ElMessage.warning('请至少选择一条用例'); return }
+  const busyDev = devices.value.find((d) => d.sn === runForm.value.sn && d.busy_task_id)
+  if (busyDev) {
+    ElMessage.warning(`设备占用中（任务 ${shortTaskId(busyDev.busy_task_id)}）`)
+    return
+  }
   submitting.value = true
   try {
+    const picked = devices.value.find((d) => d.sn === runForm.value.sn)
+    const ch = String(picked?.execChannel || picked?.device_type || '').toLowerCase()
+    const platform = ch.includes('ios') ? 'ios' : (runForm.value.platform || 'android')
     const res = await runCaseRunner({
       app_id: appId.value,
       sn: runForm.value.sn,
-      platform: runForm.value.platform,
+      platform,
       case_ids: selectedCaseIds.value,
       async_exec: runForm.value.async_exec,
       use_persisted_baseline: runForm.value.use_persisted_baseline,
       use_cache: runForm.value.use_cache,
       execution_mode: 'auto',
+      run_type: 'manual',
     })
-    const batch = res?.data?.run_id
+    const batch = res?.data?.run_id || res?.data?.task_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }
     newRunVisible.value = false
     ElMessage.success('已启动任务')
@@ -300,22 +300,30 @@ const submitRun = async () => {
     selectedTaskId.value = batch
     replaceQuery({ ...baseQuery(), tab: 'tasks', task: batch })
   } catch (e) {
-    ElMessage.error(`启动失败: ${e?.message || e}`)
+    const busy = parseBusyConflict(e)
+    if (busy.isBusy) {
+      ElMessage.warning(busy.message || '设备正在执行其他任务')
+      if (busy.busyTaskId) {
+        newRunVisible.value = false
+        tab.value = 'tasks'
+        selectedTaskId.value = busy.busyTaskId
+        replaceQuery({ ...baseQuery(), tab: 'tasks', task: busy.busyTaskId })
+      }
+      return
+    }
+    ElMessage.error(`启动失败: ${e?.response?.data?.detail || e?.message || e}`)
   } finally {
     submitting.value = false
   }
 }
 
 const refreshLive = async () => {
-  const running = tasks.value.filter((t) => t.status === 'running' && t.source === 'memory')
+  const running = tasks.value.filter((t) => t.status === 'running' || t.status === 'queued')
   if (!running.length) return
   try {
     await Promise.all(running.map(async (t) => {
-      const r = await getCaseRunnerRun(t.taskId)
-      const next = normalizeMemoryRun(r?.data)
-      if (!next) return
-      const idx = tasks.value.findIndex((x) => x.taskId === t.taskId)
-      if (idx >= 0) tasks.value[idx] = next
+      const next = await fetchTaskDetail(t.taskId, t)
+      if (next) upsert(next)
     }))
   } catch (_) {}
 }
@@ -323,7 +331,7 @@ const refreshLive = async () => {
 onMounted(async () => {
   await Promise.all([loadCases(), loadProjects(), loadProviders()])
   await loadTasks()
-  pollTimer.value = setInterval(refreshLive, 4000)
+  pollTimer.value = setInterval(refreshLive, 20000)
 })
 
 onUnmounted(() => {
@@ -443,6 +451,7 @@ watch(selectedTaskId, (id) => {
             <div class="task-item-top">
               <el-tag :type="statusTagType(row.status)" size="small" effect="light" round>{{ statusLabel(row.status) }}</el-tag>
               <strong :title="row.taskId">{{ shortTaskId(row.taskId) }}</strong>
+              <span v-if="row.runType && row.runType !== 'manual'" class="run-type">{{ runTypeLabel(row.runType) }}</span>
             </div>
             <div class="task-item-prog">
               <el-progress
@@ -455,6 +464,7 @@ watch(selectedTaskId, (id) => {
               <span class="rate">{{ row.completed }}/{{ row.total }}</span>
               <span class="time">{{ (row.startedAt || '').replace('T', ' ').slice(5, 16) || '—' }}</span>
             </div>
+            <div v-if="row.error && !hasDetail" class="task-err">{{ row.error }}</div>
           </button>
           <el-empty v-if="!tasks.length && !loading" description="暂无任务" :image-size="48" />
         </aside>
@@ -465,6 +475,7 @@ watch(selectedTaskId, (id) => {
             :task-id="selectedTaskId"
             :app-id="appId"
             :seed="selectedTask"
+            @open-task="onOpenTask"
           />
         </section>
       </div>
@@ -492,9 +503,13 @@ watch(selectedTaskId, (id) => {
               :key="d.sn"
               :label="formatDeviceOption(d)"
               :value="d.sn"
+              :disabled="Boolean(d.busy_task_id)"
             />
           </el-select>
-          <div v-if="!devices.length" class="hint warn">暂无在线 adb / ios / clawnode 设备，请到运行状态确认连接。</div>
+          <div v-if="!devices.length" class="hint warn">暂无在线 adb / ios（USB 或 Wi‑Fi）/ clawnode 设备，请到运行状态确认连接。</div>
+          <div v-else-if="selectedDevice?.busy_task_id" class="hint warn">
+            该设备占用中（任务 {{ shortTaskId(selectedDevice.busy_task_id) }}），请等当前任务结束或打开该任务。
+          </div>
           <div v-else-if="selectedDevice" class="hint">通道 {{ selectedDevice.execChannel }} · {{ selectedDevice.sn }}</div>
         </div>
         <div class="field">
@@ -519,7 +534,7 @@ watch(selectedTaskId, (id) => {
       </div>
       <template #footer>
         <el-button @click="newRunVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!devices.length" @click="submitRun">▶ 启动</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!devices.length || Boolean(selectedDevice?.busy_task_id)" @click="submitRun">▶ 启动</el-button>
       </template>
     </el-dialog>
   </WorkShell>
@@ -610,10 +625,13 @@ watch(selectedTaskId, (id) => {
 .side-empty { padding: 8px 10px; font-size: 12px; color: #94a3b8; }
 
 .testing-workspace {
+  width: 100%;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   padding: 14px 18px 16px;
   box-sizing: border-box;
   overflow: hidden;
@@ -653,20 +671,23 @@ watch(selectedTaskId, (id) => {
 }
 .ws-body {
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  width: 100%;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 /* 选中任务后默认详情全宽；仅「展开任务列表」时并排窄轨 */
 .ws-body.with-detail {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 .ws-body.with-detail.rail-open {
-  grid-template-columns: 156px 1fr;
+  grid-template-columns: 200px minmax(0, 1fr);
 }
 .task-rail {
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 8px;
   border: 1px solid #e3e8f0;
@@ -676,9 +697,6 @@ watch(selectedTaskId, (id) => {
   width: 100%;
   box-sizing: border-box;
 }
-.ws-body:not(.with-detail) .task-rail {
-  max-width: 520px;
-}
 .ws-body.with-detail.rail-open .task-rail {
   padding: 6px;
 }
@@ -686,7 +704,7 @@ watch(selectedTaskId, (id) => {
   padding: 8px;
 }
 .ws-body.with-detail.rail-open .mini-progress {
-  width: 40px;
+  width: 48px;
 }
 .ws-body.with-detail.rail-open .time {
   display: none;
@@ -726,31 +744,58 @@ watch(selectedTaskId, (id) => {
 }
 .task-item.is-failed { border-left-color: #f87171; background: #fef2f2; }
 .task-item.is-done { border-left-color: #34d399; }
+.task-item.is-cancelled { border-left-color: #fbbf24; background: #fffbeb; }
+.run-type {
+  font-size: 10px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 0 6px;
+  border-radius: 999px;
+}
+.task-err {
+  font-size: 11px;
+  color: #b91c1c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .task-item.is-running.active { background: #d1fae5; border-color: #6ee7b7; }
 @keyframes task-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.28); }
   50% { box-shadow: 0 0 0 5px rgba(52, 211, 153, 0.1); }
 }
 .task-item.wide {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(160px, max-content) minmax(180px, 1fr) auto;
   align-items: center;
-  justify-content: flex-start;
-  gap: 14px;
+  column-gap: 16px;
+  row-gap: 6px;
   width: 100%;
 }
 .task-item.wide .task-item-top {
-  flex: 0 1 auto;
+  min-width: 0;
 }
 .task-item.wide .task-item-prog {
-  flex: 0 0 auto;
-  margin-left: 0;
+  min-width: 0;
+  width: 100%;
+}
+.task-item.wide .task-err {
+  grid-column: 1 / -1;
+  white-space: normal;
+}
+.task-item.wide .mini-progress {
+  flex: 1;
+  width: auto;
+  min-width: 80px;
+  max-width: none;
 }
 .task-item-top {
   display: flex;
   justify-content: flex-start;
   gap: 8px;
   align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .task-item-top strong {
   font-size: 13px;
@@ -759,6 +804,7 @@ watch(selectedTaskId, (id) => {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .task-item-prog {
   display: flex;
@@ -791,12 +837,13 @@ watch(selectedTaskId, (id) => {
 .ws-config {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   width: 100%;
   overflow: auto;
   border: 1px solid #e3e8f0;
   border-radius: 16px;
   background: #fff;
-  padding: 12px 14px;
+  padding: 12px 16px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
   box-sizing: border-box;
 }
@@ -808,7 +855,9 @@ watch(selectedTaskId, (id) => {
 .case { display: block; margin: 0 0 6px; }
 .opts { display: flex; gap: 16px; }
 @media (max-width: 960px) {
-  .ws-body.with-detail.rail-open { grid-template-columns: 1fr; }
-  .task-item.wide { flex-direction: column; align-items: stretch; }
+  .ws-body.with-detail.rail-open { grid-template-columns: minmax(0, 1fr); }
+  .task-item.wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

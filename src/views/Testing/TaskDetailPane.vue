@@ -2,19 +2,23 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  getCaseRunnerRun,
+  cancelTestingTask,
   getCaseRunnerTraceDetail,
-  listCaseRunnerTraces,
   promoteCaseRunnerBaseline,
+  retryFailedTestingTask,
+  runCaseRunner,
 } from '@/api/caseRunner'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
+import { fetchTaskDetail } from '@/composables/useTestingTasks'
+import { getFeishuCasesCached } from '@/api/feishuRegression'
+import { normalizeCaseRow } from '@/utils/caseText'
 import {
-  batchIdFromCaseRunId,
-  caseIdFromCaseRunId,
-  normalizeMemoryRun,
+  apiErrorDetail,
+  applyTestingTaskEvent,
+  isMissingTaskEndpoint,
+  isStepLimitCase,
   shortTaskId,
-  sortCasesForRail,
   statusLabel,
   statusTagType,
 } from '@/utils/testingTasks'
@@ -24,6 +28,7 @@ const props = defineProps({
   appId: { type: String, default: '' },
   seed: { type: Object, default: null },
 })
+const emit = defineEmits(['open-task'])
 
 const loading = ref(false)
 const task = ref(null)
@@ -32,14 +37,72 @@ const headerMeta = ref(null)
 const pollTimer = ref(null)
 const view = ref('cases')
 const hitlPending = ref(null)
+const cancelling = ref(false)
+const retrying = ref(false)
+const catalog = ref([])
+
+const caseRunIdOf = (c) => c.report_run_id || (c.case_id ? `${props.taskId}::${c.case_id}` : '')
+
+const isEmptySpecVal = (v) => v == null || v === '' || (Array.isArray(v) && !v.length)
+
+const mergeCaseSpec = (hit, c) => {
+  const out = { ...(hit || {}), ...(c || {}) }
+  const keys = [
+    'module', 'name', 'case_name', 'title', 'platform', 'client', 'terminal',
+    'precondition', 'precondition_raw',
+    'steps', 'step_lines', 'steps_raw',
+    'expected', 'expected_lines', 'expected_raw', 'expected_by_step', 'goal',
+  ]
+  for (const k of keys) {
+    if (isEmptySpecVal(c?.[k]) && !isEmptySpecVal(hit?.[k])) out[k] = hit[k]
+  }
+  return out
+}
+
+const specOf = (c) => {
+  if (!c) return {}
+  const cid = String(c.case_id || '')
+  const name = String(c.name || c.case_name || '')
+  const list = catalog.value || []
+  const hit = list.find((x) => String(x.case_id || '') === cid)
+    || list.find((x) => name && String(x.name || x.case_name || x.title || '') === name)
+  const merged = mergeCaseSpec(normalizeCaseRow(hit || {}), normalizeCaseRow(c))
+  if (isEmptySpecVal(merged.platform) && task.value?.platform) merged.platform = task.value.platform
+  return merged
+}
+const selectedSpec = computed(() => specOf(selectedCase.value))
+const caseTab = ref('executed')
+const isPendingStatus = (s) => ['pending', 'queued'].includes(String(s || ''))
+const sourceCases = computed(() => task.value?.cases || [])
+const pendingCases = computed(() => sourceCases.value.filter((c) => isPendingStatus(c.status)))
+const executedCases = computed(() => sourceCases.value.filter((c) => !isPendingStatus(c.status)))
+const showPendingTab = computed(() => pendingCases.value.length > 0)
+const railCases = computed(() => (caseTab.value === 'pending' && showPendingTab.value ? pendingCases.value : executedCases.value))
 
 const isLive = computed(() => task.value?.status === 'running')
 const failedCases = computed(() =>
-  (task.value?.cases || []).filter((c) => ['fail', 'failed', 'blocked', 'declined', 'partial'].includes(c.status)),
+  (task.value?.cases || []).filter((c) => ['fail', 'blocked', 'declined', 'partial'].includes(c.status)),
+)
+const skippedCases = computed(() =>
+  (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
 )
 const passRate = computed(() => task.value?.passRate ?? 0)
-const orderedCases = computed(() => sortCasesForRail(task.value?.cases || []))
+const selectedCase = computed(() =>
+  (task.value?.cases || []).find((c) => caseRunIdOf(c) === selectedCaseRunId.value) || null,
+)
+const showTimeline = computed(() => {
+  const s = selectedCase.value?.status
+  return Boolean(selectedCaseRunId.value && s && !['pending', 'cancelled', 'skipped'].includes(s))
+})
+const runningCaseName = computed(() => {
+  const row = (task.value?.cases || []).find((c) => c.status === 'running')
+  return row?.name || row?.case_id || task.value?.currentCaseId || ''
+})
 const hitlForThisTask = computed(() => {
+  const fromCases = (task.value?.cases || []).find((c) => c.hitl)
+  if (fromCases) {
+    return { case_id: fromCases.case_id, title: '等待人工确认', body: fromCases.summary }
+  }
   const h = hitlPending.value
   if (!h) return null
   const rid = String(h.run_id || '')
@@ -48,11 +111,10 @@ const hitlForThisTask = computed(() => {
   return null
 })
 
-const caseRunIdOf = (c) => c.report_run_id || (c.case_id ? `${props.taskId}::${c.case_id}` : '')
-
 const pickDefaultCase = (cases) => {
   if (!cases?.length) return null
-  return cases.find((c) => c.status === 'running')
+  return cases.find((c) => c.hitl)
+    || cases.find((c) => c.status === 'running')
     || cases.find((c) => c.status === 'blocked')
     || cases.find((c) => c.status === 'pending')
     || cases[0]
@@ -85,65 +147,24 @@ const selectCase = async (c) => {
   if (!id) return
   selectedCaseRunId.value = id
   view.value = 'cases'
+  if (isPendingStatus(c.status) && pendingCases.value.length) caseTab.value = 'pending'
+  else caseTab.value = 'executed'
   await loadHeader(id)
-}
-
-const buildFromTraces = async () => {
-  const tr = await listCaseRunnerTraces({ limit: 100 })
-  const items = (tr?.data?.items || []).filter((t) => batchIdFromCaseRunId(t.run_id) === props.taskId)
-  const caseRows = items.map((t) => ({
-    case_id: t.case_id || caseIdFromCaseRunId(t.run_id),
-    name: t.case_name || t.case_id || '',
-    status: t.status || t.overall_status || 'unknown',
-    report_run_id: t.run_id,
-    summary: t.summary || '',
-    elapsed_ms: t.elapsed_ms,
-    passed: t.passed,
-    failed: t.failed,
-    blocked: t.blocked,
-    skipped: t.skipped,
-  }))
-  const passed = caseRows.filter((c) => c.status === 'pass').length
-  const failed = caseRows.filter((c) => !['pass', 'running', 'pending'].includes(c.status)).length
-  return {
-    taskId: props.taskId,
-    appId: props.appId,
-    sn: items[0]?.sn || props.seed?.sn || '',
-    status: caseRows.some((c) => c.status === 'running') ? 'running' : (failed ? 'failed' : 'done'),
-    total: caseRows.length,
-    completed: caseRows.filter((c) => !['pending', 'running'].includes(c.status)).length,
-    passed,
-    failed,
-    blocked: 0,
-    declined: 0,
-    progress: caseRows.length ? Math.round((caseRows.filter((c) => !['pending', 'running'].includes(c.status)).length / caseRows.length) * 100) : 0,
-    passRate: caseRows.length ? Math.round((passed / caseRows.length) * 100) : 0,
-    startedAt: items[0]?.created_at || props.seed?.startedAt || '',
-    finishedAt: '',
-    error: '',
-    cases: caseRows,
-    source: 'traces',
-  }
 }
 
 const loadTask = async ({ silent = false } = {}) => {
   if (!props.taskId) return
   if (!silent) loading.value = true
   try {
-    let next = null
-    try {
-      const r = await getCaseRunnerRun(props.taskId)
-      next = normalizeMemoryRun(r?.data)
-    } catch (_) {}
-    if (!next) next = await buildFromTraces()
-    if ((!next.cases || !next.cases.length) && props.seed?.cases?.length) {
+    let next = await fetchTaskDetail(props.taskId, props.seed)
+    if (next && (!next.cases || !next.cases.length) && props.seed?.cases?.length) {
       next = { ...next, cases: props.seed.cases }
     }
     task.value = next
 
     const stillValid = selectedCaseRunId.value
-      && next.cases?.some((c) => caseRunIdOf(c) === selectedCaseRunId.value)
-    if (!stillValid && next.cases?.length) {
+      && next?.cases?.some((c) => caseRunIdOf(c) === selectedCaseRunId.value)
+    if (!stillValid && next?.cases?.length) {
       await selectCase(pickDefaultCase(next.cases))
     } else if (selectedCaseRunId.value) {
       await loadHeader(selectedCaseRunId.value)
@@ -168,7 +189,68 @@ const promoteRun = async () => {
   }
 }
 
-const onHitlWs = (res) => {
+const cancelTask = async () => {
+  try {
+    await ElMessageBox.confirm('将在当前用例边界停止，剩余待执行用例标为已取消。', '取消任务', { type: 'warning' })
+  } catch (_) { return }
+  cancelling.value = true
+  try {
+    await cancelTestingTask(props.taskId)
+    ElMessage.success('已请求取消')
+    await loadTask({ silent: true })
+  } catch (e) {
+    const status = e?.response?.status
+    if (status === 405 || status === 501) ElMessage.warning('后端尚未提供取消接口')
+    else ElMessage.error(`取消失败: ${apiErrorDetail(e)}`)
+  } finally {
+    cancelling.value = false
+  }
+}
+
+const retryFailed = async () => {
+  retrying.value = true
+  try {
+    const r = await retryFailedTestingTask(props.taskId)
+    const nid = r?.data?.task_id || r?.data?.run_id
+    if (nid) {
+      ElMessage.success('已创建重跑任务')
+      emit('open-task', nid)
+    } else {
+      ElMessage.success('已提交重跑')
+      await loadTask({ silent: true })
+    }
+  } catch (e) {
+    if (isMissingTaskEndpoint(e)) ElMessage.warning('后端尚未提供重跑接口')
+    else ElMessage.error(`重跑失败: ${e?.message || e}`)
+  } finally {
+    retrying.value = false
+  }
+}
+
+const retryOne = async (c) => {
+  if (!c?.case_id) return
+  retrying.value = true
+  try {
+    const r = await runCaseRunner({
+      app_id: props.appId,
+      sn: task.value?.sn,
+      platform: task.value?.platform || 'android',
+      case_ids: [c.case_id],
+      async_exec: true,
+      execution_mode: 'auto',
+      run_type: 'manual',
+    })
+    const nid = r?.data?.run_id || r?.data?.task_id
+    if (nid) emit('open-task', nid)
+    else ElMessage.success('已提交单条重跑')
+  } catch (e) {
+    ElMessage.error(`重跑失败: ${e?.message || e}`)
+  } finally {
+    retrying.value = false
+  }
+}
+
+const onWs = (res) => {
   if (!res) return
   const type = res.type || res.action
   const data = res.data || {}
@@ -176,6 +258,23 @@ const onHitlWs = (res) => {
     hitlPending.value = data
   } else if (type === 'hitl_revoke' || type === 'hitl_resolved') {
     if (hitlPending.value?.request_id === data.request_id) hitlPending.value = null
+    if (task.value && data.case_id) {
+      task.value = applyTestingTaskEvent(task.value, {
+        event: 'case_finished',
+        case: { case_id: data.case_id, hitl: false },
+      })
+    }
+  } else if (type === 'testing_task') {
+    const tid = data.task_id
+    if (tid && tid !== props.taskId) return
+    if (task.value) task.value = applyTestingTaskEvent(task.value, data)
+    if (data.event === 'case_running' && data.case) {
+      const row = (task.value?.cases || []).find((c) => c.case_id === data.case.case_id)
+      if (row) selectCase(row)
+    }
+    if (data.event === 'task_finished' || data.event === 'cancelled') {
+      loadTask({ silent: true })
+    }
   }
 }
 
@@ -190,17 +289,32 @@ const focusHitlCase = async () => {
 }
 
 onMounted(async () => {
-  addMessageListener(onHitlWs)
-  await loadTask()
+  addMessageListener(onWs)
+  await Promise.all([loadTask(), loadCatalog()])
   pollTimer.value = setInterval(() => {
-    if (task.value?.status === 'running') loadTask({ silent: true })
-  }, 2500)
+    if (task.value?.status === 'running' || task.value?.status === 'queued') loadTask({ silent: true })
+  }, 15000)
 })
 
 onUnmounted(() => {
-  removeMessageListener(onHitlWs)
+  removeMessageListener(onWs)
   if (pollTimer.value) clearInterval(pollTimer.value)
 })
+
+watch(
+  () => props.appId,
+  () => { loadCatalog() },
+)
+
+const loadCatalog = async () => {
+  if (!props.appId) return
+  try {
+    const r = await getFeishuCasesCached(props.appId, false)
+    catalog.value = r?.data?.cases || []
+  } catch (_) {
+    catalog.value = []
+  }
+}
 
 watch(
   () => props.taskId,
@@ -208,9 +322,20 @@ watch(
     selectedCaseRunId.value = ''
     view.value = 'cases'
     hitlPending.value = null
+    caseTab.value = 'executed'
     loadTask()
   },
 )
+
+watch(showPendingTab, (show) => {
+  if (!show) caseTab.value = 'executed'
+})
+
+watch(selectedCase, (c) => {
+  if (!c) return
+  if (isPendingStatus(c.status) && showPendingTab.value) caseTab.value = 'pending'
+  else if (!isPendingStatus(c.status)) caseTab.value = 'executed'
+})
 </script>
 
 <template>
@@ -223,6 +348,21 @@ watch(
           <span v-if="task.sn">设备 {{ task.sn }}</span>
           <span>P{{ task.passed }} F{{ task.failed }} B{{ task.blocked }}</span>
           <span>{{ task.completed }}/{{ task.total }} · 通过率 {{ passRate }}%</span>
+          <el-button
+            v-if="task.status === 'running' || task.status === 'queued'"
+            size="small"
+            type="warning"
+            plain
+            :loading="cancelling"
+            @click="cancelTask"
+          >取消任务</el-button>
+          <el-button
+            v-if="failedCases.length && task.status !== 'running'"
+            size="small"
+            plain
+            :loading="retrying"
+            @click="retryFailed"
+          >重跑失败用例</el-button>
         </div>
         <el-progress
           :percentage="task.progress"
@@ -264,62 +404,110 @@ watch(
               </template>
             </el-table-column>
             <el-table-column prop="summary" label="摘要" min-width="160" show-overflow-tooltip />
-            <el-table-column label="操作" width="90">
+            <el-table-column label="操作" width="140">
               <template #default="{ row }">
                 <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
+                <el-button link type="primary" :disabled="retrying" @click="retryOne(row)">重跑</el-button>
               </template>
             </el-table-column>
+          </el-table>
+        </div>
+        <div v-if="skippedCases.length" class="fail-block">
+          <h4>未执行 / 已取消</h4>
+          <el-table :data="skippedCases" size="small">
+            <el-table-column prop="case_id" label="用例" width="120" />
+            <el-table-column prop="name" label="名称" min-width="120" />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="summary" label="摘要" min-width="160" show-overflow-tooltip />
           </el-table>
         </div>
       </template>
 
       <div v-else class="split">
         <div class="case-list">
-          <div class="case-list-head">
+          <div v-if="showPendingTab" class="case-tabs">
+            <button
+              type="button"
+              :class="{ active: caseTab === 'pending' }"
+              @click="caseTab = 'pending'"
+            >待执行 {{ pendingCases.length }}</button>
+            <button
+              type="button"
+              :class="{ active: caseTab === 'executed' }"
+              @click="caseTab = 'executed'"
+            >已执行 {{ executedCases.length }}</button>
+          </div>
+          <div v-else class="case-list-head">
             <strong>用例</strong>
-            <span>{{ orderedCases.length }}</span>
+            <span>{{ railCases.length }}</span>
           </div>
           <button
-            v-for="c in orderedCases"
+            v-for="c in railCases"
             :key="caseRunIdOf(c)"
             type="button"
             class="case-row"
             :class="[
               c.status,
-              { active: caseRunIdOf(c) === selectedCaseRunId },
+              {
+                active: caseRunIdOf(c) === selectedCaseRunId,
+                hitl: c.hitl,
+                limit: isStepLimitCase(c),
+              },
             ]"
             @click="selectCase(c)"
           >
             <span class="case-top">
-              <el-tag :type="statusTagType(c.status)" size="small" effect="light">{{ statusLabel(c.status) }}</el-tag>
-              <strong>{{ c.case_id }}</strong>
+              <el-tag
+                :type="statusTagType(c.status, c)"
+                size="small"
+                effect="light"
+                :class="{ 'tag-limit': isStepLimitCase(c) }"
+              >{{ statusLabel(c.status, c) }}</el-tag>
+              <strong :title="c.case_id">{{ c.case_id }}</strong>
             </span>
             <span class="case-sub">{{ c.name || c.summary || caseRunIdOf(c) }}</span>
           </button>
           <el-empty
-            v-if="!orderedCases.length"
-            :description="task.total === 0 ? '任务尚未开始' : '尚无用例'"
+            v-if="!railCases.length"
+            :description="caseTab === 'pending' ? '没有待执行用例' : (task.total === 0 ? '任务尚未开始' : '尚无已执行用例')"
             :image-size="48"
           />
         </div>
         <div class="timeline-pane">
-          <template v-if="selectedCaseRunId">
+          <template v-if="selectedCase">
             <div class="tl-head">
               <div class="tl-title">{{ selectedCaseRunId }}</div>
               <div v-if="headerMeta && !headerMeta.live" class="tl-meta">
-                <el-tag v-if="headerMeta.overall" :type="statusTagType(headerMeta.overall)" size="small">{{ headerMeta.overall }}</el-tag>
+                <el-tag
+                  v-if="headerMeta.overall"
+                  :type="statusTagType(headerMeta.overall, selectedCase)"
+                  size="small"
+                  :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
+                >{{ statusLabel(headerMeta.overall, selectedCase) }}</el-tag>
                 <span v-if="headerMeta.elapsed">{{ headerMeta.elapsed }}ms</span>
                 <el-button size="small" text type="primary" @click="promoteRun">提升为 Baseline</el-button>
               </div>
-              <p v-if="headerMeta?.goal" class="goal">目标：{{ headerMeta.goal }}</p>
             </div>
+            <p v-if="selectedCase.status === 'pending'" class="pending-hint">
+              {{ runningCaseName ? `排队中，当前正在跑 ${runningCaseName}` : '排队中，等待执行' }}
+            </p>
+            <p v-else-if="selectedCase.status === 'cancelled' || selectedCase.status === 'skipped'" class="pending-hint">
+              {{ selectedCase.summary || '该用例未执行或已取消' }}
+            </p>
             <ExecutionTimeline
               class="tl"
-              :run-id="selectedCaseRunId"
-              :live="isLive && selectedCaseRunId.startsWith(taskId + '::')"
+              :run-id="showTimeline ? selectedCaseRunId : ''"
+              :live="isLive && selectedCase?.status === 'running'"
+              :case-summary="selectedCase?.summary || ''"
+              :case-goal="headerMeta?.goal || selectedCase?.name || ''"
+              :case-spec="selectedSpec"
             />
           </template>
-          <el-empty v-else description="选择左侧用例查看时间线" />
+          <el-empty v-else description="选择左侧用例查看详情" />
         </div>
       </div>
     </template>
@@ -434,14 +622,15 @@ watch(
 .split {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px;
   width: 100%;
 }
 .case-list {
   overflow: auto;
-  padding: 6px;
+  padding: 8px;
   border: 1px solid #e3e8f0;
   border-radius: 14px;
   background: #fff;
@@ -455,12 +644,42 @@ watch(
   color: #6b7280;
 }
 .case-list-head strong { color: #111827; }
+.case-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: #f1f5f9;
+}
+.case-tabs button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+}
+.case-tabs button.active {
+  background: #fff;
+  color: #4f46e5;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+.pending-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #64748b;
+  flex-shrink: 0;
+}
 .case-row {
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid transparent;
   border-left: 3px solid transparent;
   border-radius: 10px;
@@ -468,6 +687,8 @@ watch(
   cursor: pointer;
   text-align: left;
   margin-bottom: 4px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .case-row:hover { background: #f3f4f6; }
 .case-row.active { background: #eff6ff; border-color: #bfdbfe; }
@@ -481,12 +702,36 @@ watch(
 .case-row.fail,
 .case-row.failed { border-left-color: #f87171; }
 .case-row.blocked { border-left-color: #fbbf24; }
+.case-row.hitl { background: #fffbeb; border-left-color: #f59e0b; }
+.case-row.limit { border-left-color: #8b5cf6; }
+.tag-limit {
+  --el-tag-bg-color: #f5f3ff !important;
+  --el-tag-border-color: #c4b5fd !important;
+  --el-tag-text-color: #6d28d9 !important;
+}
+.case-row.cancelled,
+.case-row.skipped { border-left-color: #cbd5e1; opacity: 0.85; }
 @keyframes case-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.25); }
   50% { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.12); }
 }
-.case-top { display: flex; justify-content: flex-start; gap: 6px; align-items: center; }
-.case-top strong { font-size: 13px; color: #111827; }
+.case-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.case-top strong {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #111827;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .case-sub { font-size: 11px; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-pane {
   min-width: 0;
@@ -507,7 +752,7 @@ watch(
 .goal { margin: 6px 0 0; font-size: 12px; color: #374151; }
 .tl { flex: 1; min-height: 0; width: 100%; overflow: auto; padding-top: 4px; }
 @media (max-width: 1100px) {
-  .split { grid-template-columns: 1fr; }
+  .split { grid-template-columns: minmax(0, 1fr); }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

@@ -168,13 +168,15 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
   display: flex;
   gap: 0;
   min-height: 280px;
+  width: 100%;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   overflow: hidden;
   background: #fafafa;
+  box-sizing: border-box;
 }
 .env-nav {
-  width: 132px;
+  width: 168px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -186,6 +188,7 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
 .env-nav-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   width: 100%;
   padding: 10px 12px;
@@ -196,6 +199,7 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
   text-align: left;
   font-size: 14px;
   color: #4b5563;
+  box-sizing: border-box;
 }
 .env-nav-item:hover,
 .env-nav-item.active {
@@ -203,7 +207,7 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
   color: #111827;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
-.nav-label { flex: 1; }
+.nav-label { flex: 1; min-width: 0; }
 .nav-badge {
   font-size: 10px;
   font-weight: 600;
@@ -220,7 +224,8 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
 }
 .env-panel {
   flex: 1;
-  padding: 16px 20px;
+  min-width: 0;
+  padding: 16px 20px 20px;
   background: #fff;
 }
 .panel-toolbar {
@@ -237,31 +242,49 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
 .field-list {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 .field-row {
   display: grid;
-  grid-template-columns: 148px 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(168px, 220px) minmax(0, 1fr);
+  gap: 12px 16px;
   align-items: center;
+}
+.field-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
 }
 .field-name {
   font-size: 13px;
   font-weight: 600;
+  color: #111827;
 }
 .var-chip {
   border: none;
-  background: none;
+  background: #f3f4f6;
   font-size: 11px;
   font-family: ui-monospace, monospace;
   color: #6b7280;
   cursor: pointer;
-  padding: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.var-chip:hover { background: #eef2ff; color: #4f46e5; }
+.field-row :deep(.el-input) {
+  width: 100%;
 }
 .panel-hint {
-  margin-top: 16px;
+  margin-top: 18px;
+  margin-bottom: 0;
   font-size: 12px;
   color: #9ca3af;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 </style>
