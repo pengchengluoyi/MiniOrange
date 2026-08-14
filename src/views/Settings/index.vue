@@ -1,9 +1,9 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, OfficeBuilding, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
+import { Setting, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
-import { readAgentSessions } from '@/utils/agentSessions'
+import { returnFromSettingsPath } from '@/utils/workMode'
 import './settings-ui.css'
 
 const route = useRoute()
@@ -17,7 +17,6 @@ onMounted(() => {
 const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
   { id: 'schedule', label: '定时任务', icon: Calendar, to: '/settings/schedule' },
-  { id: 'hub', label: '应用与环境', icon: OfficeBuilding, to: '/settings/hub' },
   { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
   { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
   { id: 'system', label: '系统设置', icon: Setting, to: '/settings/system' },
@@ -26,11 +25,6 @@ const sections = [
 const runtimeSubNav = [
   { id: 'overview', label: '运行概览', query: { view: 'overview' } },
   { id: 'topology', label: '多机方案', query: { view: 'topology' } },
-]
-
-const hubSubNav = [
-  { id: 'projects', label: '项目与应用', query: { tab: 'projects' } },
-  { id: 'knowledge', label: '知识库', query: { tab: 'knowledge' } },
 ]
 
 const keysSubNav = [
@@ -42,18 +36,11 @@ const appConfigSubNav = [
   { key: 'env', label: '执行环境' },
   { key: 'icons', label: '无字图标' },
   { key: 'logic', label: '应用逻辑' },
-  { key: 'regression', label: '飞书回归' },
+  { key: 'regression', label: '用例来源' },
   { key: 'figma', label: '设计稿' },
 ]
 
 const isActive = (s) => {
-  if (s.id === 'hub') {
-    return (
-      route.path.startsWith('/settings/hub') ||
-      route.path.startsWith('/settings/apps') ||
-      route.path.startsWith('/settings/projects')
-    )
-  }
   if (s.id === 'runtime') {
     return route.path.startsWith('/settings/runtime')
   }
@@ -73,7 +60,7 @@ const secondaryNav = computed(() => {
     return {
       kind: 'app',
       title: appName,
-      back: { name: 'SettingsHub' },
+      back: { name: 'TestingApp', params: { appId }, query: { ...route.query, tab: 'config' } },
       items: appConfigSubNav.map((item) => ({
         id: item.key,
         label: item.label,
@@ -87,9 +74,6 @@ const secondaryNav = computed(() => {
   }
   if (route.path.startsWith('/settings/runtime') && route.name !== 'SettingsDeviceDetail') {
     return { kind: 'simple', parent: 'runtime', items: runtimeSubNav }
-  }
-  if (route.path.startsWith('/settings/hub')) {
-    return { kind: 'simple', parent: 'hub', items: hubSubNav }
   }
   if (route.path.startsWith('/settings/keys')) {
     return { kind: 'simple', parent: 'keys', items: keysSubNav }
@@ -153,14 +137,11 @@ const goSub = (item) => {
 }
 
 const goAppBack = () => {
-  router.push(secondaryNav.value?.back || { name: 'SettingsHub' })
+  router.push(secondaryNav.value?.back || { name: 'TestingHome' })
 }
 
-const openLatestDialogue = () => {
-  const latest = readAgentSessions()
-    .filter((session) => (session.messages || []).some((item) => item.role === 'user' && String(item.content || '').trim()))
-    .sort((a, b) => new Date(b.lastUserMessageAt || b.updatedAt) - new Date(a.lastUserMessageAt || a.updatedAt))[0]
-  router.push(latest ? { name: 'Dialogue', query: { sessionId: latest.id } } : { name: 'Dialogue', query: { fresh: '1' } })
+const leaveSettings = () => {
+  router.push(returnFromSettingsPath())
 }
 
 const handleMinimize = () => window.electronAPI?.minimize()
@@ -195,39 +176,38 @@ const handleClose = () => window.electronAPI?.close()
             </button>
 
             <div
-              v-if="secondaryNav && isActive(s) && (secondaryNav.parent === s.id || (secondaryNav.kind === 'app' && s.id === 'hub'))"
+              v-if="secondaryNav && secondaryNav.parent === s.id && isActive(s)"
               class="sub-nav"
             >
-              <template v-if="secondaryNav.kind === 'app' && s.id === 'hub'">
-                <button type="button" class="sub-nav-back" @click="goAppBack">← {{ secondaryNav.title }}</button>
-                <button
-                  v-for="item in secondaryNav.items"
-                  :key="item.id"
-                  type="button"
-                  class="sub-nav-btn"
-                  :class="{ active: isSubActive(item) }"
-                  @click="goSub(item)"
-                >
-                  {{ item.label }}
-                </button>
-              </template>
-              <template v-else-if="secondaryNav.parent === s.id">
-                <button
-                  v-for="item in secondaryNav.items"
-                  :key="item.id"
-                  type="button"
-                  class="sub-nav-btn"
-                  :class="{ active: isSubActive(item) }"
-                  @click="goSub(item)"
-                >
-                  {{ item.label }}
-                </button>
-              </template>
+              <button
+                v-for="item in secondaryNav.items"
+                :key="item.id"
+                type="button"
+                class="sub-nav-btn"
+                :class="{ active: isSubActive(item) }"
+                @click="goSub(item)"
+              >
+                {{ item.label }}
+              </button>
             </div>
           </template>
+
+          <div v-if="secondaryNav?.kind === 'app'" class="sub-nav app-config-nav">
+            <button type="button" class="sub-nav-back" @click="goAppBack">← {{ secondaryNav.title }}</button>
+            <button
+              v-for="item in secondaryNav.items"
+              :key="item.id"
+              type="button"
+              class="sub-nav-btn"
+              :class="{ active: isSubActive(item) }"
+              @click="goSub(item)"
+            >
+              {{ item.label }}
+            </button>
+          </div>
         </nav>
 
-        <el-button text class="back-apps" @click="openLatestDialogue">← 返回对话记录</el-button>
+        <el-button text class="back-apps" @click="leaveSettings">← 返回工作台</el-button>
       </aside>
     </div>
 

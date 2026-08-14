@@ -121,6 +121,7 @@ onBeforeUnmount(stopTimer)
     class="hitl-dialog"
   >
     <div v-if="current" class="hitl-body">
+      <p class="hitl-hint-top">Agent 已暂停等待你的回复；点选后才会继续执行。超时将自动跳过。</p>
       <p class="hitl-text">{{ current.body }}</p>
 
       <img v-if="current.screenshot_url" :src="current.screenshot_url" class="hitl-shot" alt="screen" />
@@ -178,6 +179,16 @@ onBeforeUnmount(stopTimer)
 
 <style scoped>
 .hitl-body { padding: 0 2px; }
+.hitl-hint-top {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #a16207;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
 .hitl-text { margin: 0 0 14px; font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-wrap; }
 .hitl-shot { max-width: 100%; max-height: 240px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #e5e7eb; }
 .hitl-choices { display: flex; flex-direction: column; gap: 8px; }

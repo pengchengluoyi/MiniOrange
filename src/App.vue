@@ -1,9 +1,9 @@
 <template>
   <div class="app-root">
     <!-- 🔥 Global TitleBar -->
-    <TitleBar v-if="!isSettingsRoute && !isDialogueRoute" />
+    <TitleBar v-if="!isSettingsRoute && !isWorkShellRoute" />
     
-    <div class="content-area" :class="{ 'is-settings': isSettingsRoute || isDialogueRoute }">
+    <div class="content-area" :class="{ 'is-settings': isSettingsRoute || isWorkShellRoute }">
       <router-view />
     </div>
 
@@ -36,10 +36,17 @@ import { startGlobalLanDiscovery, stopGlobalLanDiscovery } from '@/utils/globalL
 const route = useRoute()
 const commandPaletteRef = ref(null)
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
-const isDialogueRoute = computed(() => route.name === 'Dialogue')
+const isWorkShellRoute = computed(() => (
+  route.name === 'Dialogue' ||
+  route.meta?.workMode === 'agent' ||
+  route.meta?.workMode === 'testing' ||
+  route.path.startsWith('/testing')
+))
 const showCopilotWidget = computed(() => (
   route.name !== 'Dialogue' &&
   route.name !== 'Login' &&
+  !route.path.startsWith('/testing') &&
+  route.meta?.workMode !== 'testing' &&
   route.meta?.requiresAuth !== false &&
   !route.meta?.requiresGuest &&
   !reportOverlayOpen.value

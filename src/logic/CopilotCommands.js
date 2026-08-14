@@ -15,6 +15,12 @@ export const copilotCommands = [
     handler: (router) => router.push({ name: 'AgentHistory' }),
   },
   {
+    id: 'nav.testing',
+    title: '测试',
+    keywords: ['testing', '回归', '任务', '测试', 'app'],
+    handler: (router) => router.push({ name: 'TestingHome' }),
+  },
+  {
     id: 'nav.schedule',
     title: '定时任务',
     keywords: ['schedule', '定时'],
@@ -28,15 +34,15 @@ export const copilotCommands = [
   },
   {
     id: 'nav.settings.env',
-    title: '设置 · 项目环境',
-    keywords: ['env', '环境', '包名'],
-    handler: (router) => router.push({ name: 'SettingsHub' }),
+    title: '测试 · 应用列表',
+    keywords: ['env', '环境', '包名', '应用'],
+    handler: (router) => router.push({ name: 'TestingHome' }),
   },
   {
     id: 'nav.settings.apps',
-    title: '设置 · 应用配置',
+    title: '测试 · 应用列表',
     keywords: ['app config', '应用配置', 'skills'],
-    handler: (router) => router.push({ name: 'SettingsHub' }),
+    handler: (router) => router.push({ name: 'TestingHome' }),
   },
   {
     id: 'exec.open_app',

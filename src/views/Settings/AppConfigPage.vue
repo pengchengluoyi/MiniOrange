@@ -27,23 +27,47 @@ import ProjectEnvEditor from './ProjectEnvEditor.vue'
 import KnowledgePanel from './KnowledgePanel.vue'
 import { getFigmaSettings } from '@/api/settings'
 
+const props = defineProps({
+  embedded: { type: Boolean, default: false },
+  embedAppId: { type: String, default: '' },
+  embedAppName: { type: String, default: '' },
+  embedProjectId: { type: String, default: '' },
+  embedProjectName: { type: String, default: '' },
+  embedSection: { type: String, default: 'env' },
+})
+const emit = defineEmits(['update:embedSection'])
+
 const route = useRoute()
 const router = useRouter()
-const appId = computed(() => route.params.appId)
-const section = computed(() => route.params.section || 'env')
-const appName = computed(() => route.query.appName || '应用')
-const projectName = computed(() => route.query.projectName || '')
-const projectId = computed(() => String(route.query.projectId || ''))
+const appId = computed(() => (props.embedded ? props.embedAppId : route.params.appId))
+const section = computed(() => {
+  if (props.embedded) return props.embedSection || 'env'
+  return route.params.section || 'env'
+})
+const appName = computed(() => (props.embedded ? props.embedAppName : route.query.appName) || '应用')
+const projectName = computed(() => (props.embedded ? props.embedProjectName : route.query.projectName) || '')
+const projectId = computed(() => String((props.embedded ? props.embedProjectId : route.query.projectId) || ''))
 const envEditorRef = ref(null)
 
-const tabs = [
-  { key: 'env', label: '执行环境' },
-  { key: 'icons', label: '无字图标' },
-  { key: 'logic', label: '应用逻辑' },
-  { key: 'regression', label: '回归' },
-  { key: 'feishu-legacy', label: '飞书回归(旧)' },
-  { key: 'figma', label: '设计稿' },
-]
+const tabs = computed(() => {
+  if (props.embedded) {
+    return [
+      { key: 'env', label: '执行环境' },
+      { key: 'icons', label: '无字图标' },
+      { key: 'logic', label: '应用逻辑' },
+      { key: 'cases', label: '用例来源' },
+      { key: 'figma', label: '设计稿' },
+    ]
+  }
+  return [
+    { key: 'env', label: '执行环境' },
+    { key: 'icons', label: '无字图标' },
+    { key: 'logic', label: '应用逻辑' },
+    { key: 'regression', label: '回归' },
+    { key: 'feishu-legacy', label: '飞书回归(旧)' },
+    { key: 'figma', label: '设计稿' },
+  ]
+})
 
 const figmaForm = ref({ file_url: '', file_key: '', last_sync_at: '', pages_summary: [], logic_applied_at: '' })
 const figmaTokenConfigured = ref(false)
@@ -109,6 +133,10 @@ const postLines = computed({
 })
 
 const switchTab = (key) => {
+  if (props.embedded) {
+    emit('update:embedSection', key)
+    return
+  }
   router.replace({
     name: 'SettingsAppConfig',
     params: { appId: appId.value, section: key },
@@ -372,7 +400,26 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="settings-panel app-config-panel" :class="{ 'wide-panel': section === 'regression' || section === 'feishu-legacy' }" v-loading="loading">
+  <div
+    class="settings-panel app-config-panel"
+    :class="{
+      'wide-panel': section === 'regression' || section === 'feishu-legacy' || section === 'cases',
+      embedded: embedded,
+    }"
+    v-loading="loading"
+  >
+    <div v-if="embedded" class="settings-tabbar embed-tabs">
+      <button
+        v-for="t in tabs"
+        :key="t.key"
+        type="button"
+        class="settings-tab"
+        :class="{ active: section === t.key }"
+        @click="switchTab(t.key)"
+      >
+        <strong>{{ t.label }}</strong>
+      </button>
+    </div>
     <div v-show="section === 'env'" class="tab-body">
       <div class="settings-toolbar">
         <el-button type="primary" size="small" :loading="saving || envEditorRef?.saving" @click="saveEnvTab">保存</el-button>
@@ -405,7 +452,7 @@ onMounted(async () => {
         <ProjectEnvEditor ref="envEditorRef" :project-id="projectId" @saved="load" />
       </el-card>
       <el-alert v-else type="info" show-icon :closable="false" class="env-missing">
-        未关联项目 ID，请从「应用与环境 → 项目与应用」进入应用配置以编辑环境。
+        未关联项目 ID，请从测试工作台进入该应用后再编辑环境。
       </el-alert>
     </div>
 
@@ -487,7 +534,7 @@ onMounted(async () => {
       <CaseRunnerPanel :app-id="appId" :app-name="appName" embedded />
     </div>
 
-    <div v-show="section === 'feishu-legacy'" class="tab-body">
+    <div v-show="section === 'feishu-legacy' || section === 'cases'" class="tab-body">
       <FeishuRegressionPanel :app-id="appId" :app-name="appName" embedded />
     </div>
 
@@ -556,6 +603,20 @@ onMounted(async () => {
 
 <style scoped>
 .app-config-panel { padding-top: 0; }
+.app-config-panel.embedded {
+  padding: 0;
+  max-width: none;
+  height: 100%;
+  overflow: auto;
+  background: transparent;
+}
+.embed-tabs {
+  margin-bottom: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}
 .config-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
 .tab-body { margin-top: 8px; }
 .env-config-card { margin-top: 0; }

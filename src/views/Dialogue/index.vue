@@ -2,10 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElIcon, ElButton, ElInput, ElMessage, ElMessageBox } from 'element-plus'
-import {
-  Promotion, MagicStick, User, ChatDotRound, Setting, SwitchButton, Plus, Fold, Expand,
-  Minus, FullScreen, Close,
-} from '@element-plus/icons-vue'
+import { Promotion, MagicStick, User, Setting, SwitchButton, Plus, Fold, Expand, Minus, FullScreen, Close } from '@element-plus/icons-vue'
 import { useDialogueAside } from '@/composables/useDialogueAside'
 import { copilotChat, copilotExecute } from '@/api/copilot'
 import { initWebSocket } from '@/api/mWebSocket'
@@ -17,6 +14,7 @@ import { copilotCommands } from '@/logic/CopilotCommands'
 import { createAgentSession, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
 import { getBaseUrl } from '@/utils/config'
 import { selectableExecutionDevices, pickDefaultDeviceSn, applyOnlineStatusGrace, dedupeDevicesForUi } from '@/utils/devices'
+import { lastTestingPath, openSettingsRemembering, rememberAgentPath } from '@/utils/workMode'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res
@@ -54,10 +52,6 @@ const deviceMenuOpen = ref(false)
 const showScrollToBottom = ref(false)
 const sendInFlight = ref(false)
 const modelResponseRun = ref(null)
-
-const navItems = [
-  { name: 'Dialogue', label: 'Agent', icon: ChatDotRound, path: '/dialogue' },
-]
 
 const currentSession = computed(() => ({
   id: currentSessionId.value,
@@ -194,8 +188,12 @@ const handleInput = (val) => {
 }
 
 const openSettings = () => {
-  accountMenuOpen.value = false
-  router.push({ name: 'SettingsRuntime' })
+  openSettingsRemembering(router, route.fullPath)
+}
+
+const goTesting = () => {
+  rememberAgentPath(route.fullPath)
+  router.push(lastTestingPath().startsWith('/testing') ? lastTestingPath() : '/testing')
 }
 
 const scrollBottom = () => {
@@ -637,6 +635,7 @@ const handleKeydown = (e) => {
 onMounted(async () => {
   isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
   document.addEventListener('click', closeFloatingMenus)
+  rememberAgentPath(route.fullPath)
   await loadAIProviders()
   await loadDevices()
   restoreSession()
@@ -674,18 +673,9 @@ const handleClose = () => window.electronAPI?.close()
         <el-icon><Plus /></el-icon>
         <span>New Agent</span>
       </button>
-      <div class="primary-nav">
-        <button
-          v-for="item in navItems"
-          :key="item.name"
-          type="button"
-          class="nav-btn"
-          :class="{ active: $route.name === item.name }"
-          @click="router.push({ name: item.name })"
-        >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-        </button>
+      <div class="mode-switch" role="tablist" aria-label="工作面">
+        <button type="button" class="on" aria-selected="true">Agent</button>
+        <button type="button" @click="goTesting">测试</button>
       </div>
       <section class="agent-records">
         <div class="records-label">对话记录</div>
@@ -705,7 +695,6 @@ const handleClose = () => window.electronAPI?.close()
         </button>
         <div v-if="!recentAgentSessions.length" class="record-empty">暂无对话记录</div>
       </section>
-      <div class="nav-spacer" />
       <div class="side-footer-wrap">
         <div v-if="accountMenuOpen" class="account-popover">
           <button type="button" class="settings-menu-item danger" @click="handleLogout">
@@ -1125,8 +1114,8 @@ const handleClose = () => window.electronAPI?.close()
 .dialogue-aside {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  padding: 16px 10px 20px;
+  overflow: hidden;
+  padding: 16px 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1223,11 +1212,43 @@ const handleClose = () => window.electronAPI?.close()
   gap: 4px;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 4px 12px;
+  padding: 4px;
+  border-radius: 12px;
+  background: #eef2ff;
+}
+
+.mode-switch button {
+  border: none;
+  border-radius: 9px;
+  padding: 9px 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-switch button.on {
+  background: #fff;
+  color: #4f46e5;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
 .agent-records {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
-  margin-top: 12px;
+  margin-top: 4px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.nav-spacer {
+  display: none;
 }
 
 .records-label {
@@ -1298,6 +1319,8 @@ const handleClose = () => window.electronAPI?.close()
 
 .side-footer-wrap {
   position: relative;
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 .account-popover {
