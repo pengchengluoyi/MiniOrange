@@ -506,7 +506,7 @@ watch(selectedTaskId, (id) => {
               :disabled="Boolean(d.busy_task_id)"
             />
           </el-select>
-          <div v-if="!devices.length" class="hint warn">暂无在线 adb / ios（USB 或 Wi‑Fi）/ clawnode 设备，请到运行状态确认连接。</div>
+          <div v-if="!devices.length" class="hint warn">暂无在线 adb / ios（USB、Wi‑Fi 或模拟器）/ clawnode 设备，请到运行状态确认连接。模拟器需先在本机启动。</div>
           <div v-else-if="selectedDevice?.busy_task_id" class="hint warn">
             该设备占用中（任务 {{ shortTaskId(selectedDevice.busy_task_id) }}），请等当前任务结束或打开该任务。
           </div>

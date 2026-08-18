@@ -1,9 +1,14 @@
 /** 新建执行：只保留在线且有可用通道的设备 */
 
 const ONLINE = new Set(['connected', 'online', 'available'])
+const RFC4122 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function isChannelOnline(state) {
   return ONLINE.has(String(state || '').toLowerCase())
+}
+
+function iosTransportOf(device) {
+  return String(device?.channels?.ios_transport || '').toLowerCase()
 }
 
 /**
@@ -14,10 +19,16 @@ export function deviceExecChannel(device) {
   const ch = device?.channels || {}
   const type = String(device?.device_type || device?.type || '').toLowerCase()
   const status = String(device?.status || '').toLowerCase()
-  const iosTransport = String(ch.ios_transport || '').toLowerCase()
+  const iosTransport = iosTransportOf(device)
 
   if (isChannelOnline(ch.ios_state) || (status === 'online' && (type.includes('ios') || type.includes('iphone') || type.includes('ipad')))) {
-    const via = iosTransport === 'wifi' ? 'ios/wifi' : (iosTransport === 'usb' ? 'ios/usb' : 'ios')
+    const via = iosTransport === 'wifi'
+      ? 'ios/wifi'
+      : iosTransport === 'usb'
+        ? 'ios/usb'
+        : iosTransport === 'simulator'
+          ? 'ios/simulator'
+          : 'ios'
     return { ok: true, channel: 'ios', label: via }
   }
   if (isChannelOnline(ch.adb_state)) {
@@ -30,11 +41,12 @@ export function deviceExecChannel(device) {
 }
 
 export function filterExecutableDevices(devices = []) {
-  const rfc4122 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   return (devices || [])
     .map((d) => {
       const sn = String(d.sn || '')
-      if (rfc4122.test(sn) || rfc4122.test(sn.replace(/^ios-wifi-/i, ''))) return null
+      const isSimulator = iosTransportOf(d) === 'simulator'
+      // CoreDevice _remotepairing 也是 UUID，只放过 simctl 注册的模拟器
+      if (RFC4122.test(sn.replace(/^ios-wifi-/i, '')) && !isSimulator) return null
       const meta = deviceExecChannel(d)
       return meta.ok ? { ...d, execChannel: meta.label } : null
     })

@@ -64,6 +64,13 @@ const canSubmit = computed(() => {
   return true
 })
 
+const inputPlaceholder = computed(() => {
+  const field = current.value?.constraints?.field
+  if (field === 'phone') return '请输入11位手机号'
+  if (field === 'sms_code') return '请输入短信验证码'
+  return '请输入…'
+})
+
 const submit = async (forced) => {
   const cur = current.value
   if (!cur) return
@@ -131,7 +138,7 @@ onBeforeUnmount(stopTimer)
         v-if="current.kind === 'input_text'"
         v-model="answer" type="textarea" :rows="3"
         :maxlength="current.constraints?.max_len || 1024" show-word-limit
-        placeholder="请输入…"
+        :placeholder="inputPlaceholder"
       />
 
       <!-- choice_single -->
