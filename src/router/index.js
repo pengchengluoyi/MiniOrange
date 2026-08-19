@@ -20,6 +20,7 @@ const TestingHome = () => import('../views/Testing/AppList.vue')
 const TestingApp = () => import('../views/Testing/AppShell.vue')
 const SettingsLayout = () => import('../views/Settings/index.vue')
 const SettingsSkills = () => import('../views/Settings/SkillsPage.vue')
+const SettingsPacks = () => import('../views/Settings/PacksPage.vue')
 const SettingsKeys = () => import('../views/Settings/KeysPage.vue')
 const SettingsRuntime = () => import('../views/Settings/RuntimeStatusPage.vue')
 const SettingsDeviceDetail = () => import('../views/Settings/DeviceDetailPage.vue')
@@ -48,6 +49,7 @@ const routes = [
             { path: 'runtime/device/:sn', name: 'SettingsDeviceDetail', component: SettingsDeviceDetail, meta: { title: '设备详情' } },
             { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
             { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
+            { path: 'packs', name: 'SettingsPacks', component: SettingsPacks, meta: { title: '扩展' } },
             { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },
             { path: 'system', name: 'SettingsSystem', component: SettingsSystem, meta: { title: '系统设置' } },
             { path: 'ai', redirect: { name: 'SettingsKeys', query: { tab: 'model-keys' } } },

@@ -34,7 +34,8 @@ const props = defineProps({
   embedAppName: { type: String, default: '' },
   embedProjectId: { type: String, default: '' },
   embedProjectName: { type: String, default: '' },
-  embedSection: { type: String, default: 'env' },
+  embedSection: { type: String, default: 'cases' },
+  hideSections: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['update:embedSection'])
 
@@ -42,7 +43,7 @@ const route = useRoute()
 const router = useRouter()
 const appId = computed(() => (props.embedded ? props.embedAppId : route.params.appId))
 const section = computed(() => {
-  if (props.embedded) return props.embedSection || 'env'
+  if (props.embedded) return props.embedSection || 'cases'
   return route.params.section || 'env'
 })
 const appName = computed(() => (props.embedded ? props.embedAppName : route.query.appName) || '应用')
@@ -51,14 +52,15 @@ const projectId = computed(() => String((props.embedded ? props.embedProjectId :
 const envEditorRef = ref(null)
 
 const tabs = computed(() => {
+  const hidden = props.hideSections || []
   if (props.embedded) {
     return [
+      { key: 'cases', label: '用例来源' },
       { key: 'env', label: '执行环境' },
       { key: 'icons', label: '无字图标' },
       { key: 'logic', label: '应用逻辑' },
-      { key: 'cases', label: '用例来源' },
       { key: 'figma', label: '设计稿' },
-    ]
+    ].filter((t) => !hidden.includes(t.key))
   }
   return [
     { key: 'env', label: '执行环境' },
@@ -67,7 +69,7 @@ const tabs = computed(() => {
     { key: 'regression', label: '回归' },
     { key: 'feishu-legacy', label: '飞书回归(旧)' },
     { key: 'figma', label: '设计稿' },
-  ]
+  ].filter((t) => !hidden.includes(t.key))
 })
 
 const figmaForm = ref({ file_url: '', file_key: '', last_sync_at: '', pages_summary: [], logic_applied_at: '' })
@@ -75,6 +77,8 @@ const figmaTokenConfigured = ref(false)
 
 const loading = ref(false)
 const saving = ref(false)
+const envReady = ref(false)
+const envDirty = ref(false)
 const figmaApplying = ref(false)
 const figmaSyncing = ref(false)
 const packageName = ref('')
@@ -177,6 +181,8 @@ const load = async () => {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
   } finally {
     loading.value = false
+    envDirty.value = false
+    envReady.value = true
   }
 }
 
@@ -305,6 +311,7 @@ const saveAutomation = async () => {
       skills: { default: skillsDefault.value, devices: skillsDevices.value },
     })
     ElMessage.success('已保存')
+    envDirty.value = false
     await load()
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
@@ -372,12 +379,16 @@ const onGraphRowClick = async (row) => {
 }
 
 const saveEnvTab = async () => {
-  await saveAutomation()
   if (projectId.value && envEditorRef.value) {
-    const ok = await envEditorRef.value.save()
-    if (ok) await load()
+    const ok = await envEditorRef.value.save({ quiet: true })
+    if (!ok) return
   }
+  await saveAutomation()
 }
+
+watch([executionEnvMode, envProfile], () => {
+  if (envReady.value) envDirty.value = true
+})
 
 watch(section, (s) => {
   if (s === 'skills') {
@@ -422,7 +433,9 @@ onMounted(async () => {
       </button>
     </div>
     <div v-show="section === 'env'" class="tab-body">
-      <div class="settings-toolbar">
+      <div class="settings-toolbar env-sticky" :class="{ dirty: envDirty || envEditorRef?.dirty }">
+        <span v-if="envDirty || envEditorRef?.dirty" class="unsaved">有未保存的更改</span>
+        <span v-else class="saved-hint">与服务器同步</span>
         <el-button type="primary" size="small" :loading="saving || envEditorRef?.saving" @click="saveEnvTab">保存</el-button>
       </div>
       <el-card shadow="never" class="card">
@@ -536,7 +549,13 @@ onMounted(async () => {
     </div>
 
     <div v-show="section === 'feishu-legacy' || section === 'cases'" class="tab-body">
-      <FeishuRegressionPanel :app-id="appId" :app-name="appName" embedded />
+      <FeishuRegressionPanel
+        :app-id="appId"
+        :app-name="appName"
+        :project-id="projectId"
+        :project-name="projectName"
+        embedded
+      />
     </div>
 
     <div v-show="section === 'figma'" class="tab-body">
@@ -622,6 +641,21 @@ onMounted(async () => {
 }
 .config-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
 .tab-body { margin-top: 8px; width: 100%; }
+.env-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: -4px 0 12px;
+  padding: 8px 0;
+  background: #fff;
+}
+.env-sticky.dirty { background: #fffbeb; margin-left: -8px; margin-right: -8px; padding: 8px 12px; border-radius: 10px; }
+.unsaved { font-size: 12px; font-weight: 650; color: #b45309; margin-right: auto; }
+.saved-hint { font-size: 12px; color: #94a3b8; margin-right: auto; }
 .env-config-card { margin-top: 0; }
 .env-missing { margin-top: 12px; }
 .card { border: 1px solid #e5e7eb; margin-bottom: 16px; width: 100%; box-sizing: border-box; }

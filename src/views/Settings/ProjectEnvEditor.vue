@@ -34,14 +34,17 @@
         <div v-for="f in PROFILE_FIELDS" :key="f.varKey" class="field-row">
           <div class="field-label">
             <span class="field-name">{{ f.label }}</span>
-            <button type="button" class="var-chip" @click="copyKey(f.varKey)">{{ wrapVar(f.varKey) }}</button>
+            <button type="button" class="var-chip" :title="'复制变量名'" @click="copyKey(f.varKey)">变量名</button>
           </div>
-          <el-input
-            v-model="profiles[activeTab][f.modelPath[0]][f.modelPath[1]]"
-            :placeholder="f.placeholder"
-            clearable
-            spellcheck="false"
-          />
+          <div class="field-control">
+            <el-input
+              v-model="profiles[activeTab][f.modelPath[0]][f.modelPath[1]]"
+              :placeholder="f.placeholder"
+              clearable
+              spellcheck="false"
+            />
+            <p v-if="fieldWarn(f)" class="field-warn">{{ fieldWarn(f) }}</p>
+          </div>
         </div>
       </div>
 
@@ -54,7 +57,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, computed } from 'vue'
+import { ref, reactive, watch, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getProjectEnv, updateProjectEnv } from '@/api/workReport'
 import { ENV_PROFILES, emptyPlatformEnv } from '@/constants/envProfiles'
@@ -73,6 +76,7 @@ const emit = defineEmits(['saved'])
 
 const loading = ref(false)
 const saving = ref(false)
+const dirty = ref(false)
 const loadedProjectName = ref('')
 const defaultProfile = ref('test')
 const activeTab = ref('test')
@@ -85,13 +89,37 @@ const activeProfileLabel = computed(
 
 const wrapVar = (key) => `{{${key}}}`
 
+const fieldWarn = (f) => {
+  if (f.modelPath[0] !== 'ios') return ''
+  const bundle = String(profiles[activeTab.value]?.ios?.bundle || '').trim()
+  const pkg = String(profiles[activeTab.value]?.android?.package || '').trim()
+  if (bundle && pkg && bundle === pkg) return 'iOS Bundle 与 Android 包名相同，真机启动会失败'
+  return ''
+}
+
+const validateProfiles = () => {
+  for (const p of ENV_PROFILES) {
+    const pkg = String(profiles[p.key]?.android?.package || '').trim()
+    const bundle = String(profiles[p.key]?.ios?.bundle || '').trim()
+    if (pkg && bundle && pkg === bundle) {
+      ElMessage.error(`「${p.label}」的 iOS Bundle 不能与 Android 包名相同`)
+      activeTab.value = p.key
+      return false
+    }
+  }
+  return true
+}
+
 const profileFilled = (key) => {
   const snap = profiles[key]
   if (!snap) return false
   return Boolean(snap.android?.package?.trim() || snap.ios?.bundle?.trim() || snap.web?.base_url?.trim())
 }
 
+let hydrating = false
+
 const fillProfiles = (doc) => {
+  hydrating = true
   const env = doc?.env || doc || {}
   defaultProfile.value = env.default_profile || 'test'
   activeTab.value = defaultProfile.value
@@ -102,6 +130,11 @@ const fillProfiles = (doc) => {
     profiles[p.key].ios.bundle = snap.ios?.bundle || ''
     profiles[p.key].web.base_url = snap.web?.base_url || ''
   }
+  dirty.value = false
+  nextTick(() => {
+    hydrating = false
+    dirty.value = false
+  })
 }
 
 const buildPayload = () => {
@@ -131,13 +164,15 @@ const loadProject = async () => {
   }
 }
 
-const save = async () => {
+const save = async ({ quiet = false } = {}) => {
   if (!props.projectId) return false
+  if (!validateProfiles()) return false
   saving.value = true
   try {
     const payload = buildPayload()
     await updateProjectEnv(props.projectId, payload)
-    ElMessage.success('环境配置已保存')
+    if (!quiet) ElMessage.success('环境配置已保存')
+    dirty.value = false
     emit('saved', payload)
     return true
   } catch {
@@ -159,8 +194,10 @@ const copyKey = async (key) => {
 }
 
 watch(() => props.projectId, loadProject, { immediate: true })
+watch(profiles, () => { if (!hydrating) dirty.value = true }, { deep: true })
+watch(defaultProfile, () => { if (!hydrating) dirty.value = true })
 
-defineExpose({ save, saving, loadedProjectName, loadProject })
+defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
 </script>
 
 <style scoped>
@@ -243,6 +280,12 @@ defineExpose({ save, saving, loadedProjectName, loadProject })
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.field-control { min-width: 0; }
+.field-warn {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #b45309;
 }
 .field-row {
   display: grid;

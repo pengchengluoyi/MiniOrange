@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listRobotIntegrations } from '@/api/settings'
 import {
@@ -8,33 +8,32 @@ import {
   updateFeishuConfig,
   fetchFeishuCases,
   getFeishuCasesCached,
-  runFeishuRegression,
-  getFeishuRun,
-  listFeishuRuns,
 } from '@/api/feishuRegression'
-import { getDeviceList } from '@/api/device'
-import { wsGetDeviceList } from '@/api/wsAppGraph'
-import { initWebSocket } from '@/api/mWebSocket'
-import { dedupeDevicesForUi } from '@/utils/devices'
-import { displayDeviceSn, formatDeviceType } from '@/utils/deviceDisplay'
-import ExecutionReplayer from '@/components/ExecutionReplayer.vue'
-import RunSummaryPanel from '@/components/RunSummaryPanel.vue'
+import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
-import { reportOverlayOpen } from '@/composables/useOverlayState'
+import {
+  filterCasesByModule,
+  formatSyncedAt,
+  groupCasesByModule,
+  suiteCaseIds,
+} from '@/utils/caseLibrary'
 
 const props = defineProps({
   appId: { type: String, required: true },
   appName: { type: String, default: '应用' },
+  projectId: { type: String, default: '' },
+  projectName: { type: String, default: '' },
   embedded: { type: Boolean, default: true },
 })
 
 const router = useRouter()
+const route = useRoute()
 const activeTab = ref('cases')
 const credConfigured = ref(false)
 const loading = ref(false)
 const fetching = ref(false)
-const running = ref(false)
+const suiteSaving = ref(false)
 
 const envProfiles = ['dev', 'test', 'pre', 'prod']
 const configForm = ref({
@@ -50,48 +49,32 @@ const configForm = ref({
 const feishuBots = ref([])
 const cases = ref([])
 const casesSyncedAt = ref('')
-const sheetMeta = ref({ total: 0 })
 const selectedCaseIds = ref([])
-const devices = ref([])
-const devicePickerVisible = ref(false)
-const devicePickerSn = ref('')
-let devicePickerResolve = null
+const suites = ref([])
+const moduleKey = ref('')
+const libraryQuery = ref('')
+const caseTableRef = ref(null)
 
-const lastRun = ref(null)
-const runHistory = ref([])
-const selectedCaseForLog = ref(null)
-const expandedRunId = ref('')
-const activeRunId = ref('')
-/** list: 执行历史 | cases: 已执行用例 | playback: 回放 */
-const resultView = ref('list')
-let runPollTimer = null
+const moduleGroups = computed(() => groupCasesByModule(cases.value))
 
-function normalizeDevices(res) {
-  const list = Array.isArray(res) ? res : res?.data || res?.devices || []
-  return dedupeDevicesForUi(list)
-}
+const visibleCases = computed(() => {
+  let list = filterCasesByModule(cases.value, moduleKey.value)
+  const q = libraryQuery.value.trim().toLowerCase()
+  if (!q) return list
+  return list.filter((c) => {
+    const blob = `${c.case_id || ''} ${c.name || ''} ${c.platform || ''} ${c.module || ''}`
+    return blob.toLowerCase().includes(q)
+  })
+})
 
-const deviceLabel = (device) => {
-  const model = device?.model || device?.name
-  const sn = displayDeviceSn(device)
-  const type = formatDeviceType(device)
-  const status = device?.status === 'online' ? '在线' : '离线'
-  return model ? `${model} · ${type} · ${status}` : `${sn} · ${type} · ${status}`
-}
+const syncLabel = computed(() => formatSyncedAt(casesSyncedAt.value))
 
-const inferPlatform = (device) => {
-  const type = String(device?.type || '').toLowerCase()
-  return type.includes('ios') ? 'ios' : 'android'
-}
-
-const pickableDevices = computed(() =>
-  devices.value.filter((d) => String(d.type || '').toLowerCase() !== 'pc'),
+const iosOnlyCaseCount = computed(() =>
+  cases.value.filter((c) => {
+    const p = String(c.platform || '').toLowerCase()
+    return p && !p.includes('双端') && (p.includes('ios') || p.includes('苹果'))
+  }).length,
 )
-
-const defaultPickerSn = () =>
-  pickableDevices.value.find((d) => d.status === 'online')?.sn
-  || pickableDevices.value[0]?.sn
-  || ''
 
 const loadConfig = async () => {
   const res = await getFeishuConfig(props.appId)
@@ -113,63 +96,34 @@ const loadCachedCases = async () => {
     const data = res?.data || {}
     if (data.cases?.length) {
       cases.value = data.cases
-      casesSyncedAt.value = data.synced_at || ''
-      sheetMeta.value = { total: data.total, fromCache: data.from_cache }
-      selectedCaseIds.value = cases.value.map((c) => c.case_id)
+      casesSyncedAt.value = data.synced_at || data.cached_at || ''
     }
   } catch {
     /* ignore */
   }
 }
 
-const loadRunHistory = async () => {
+const loadSuites = async () => {
   try {
-    const res = await listFeishuRuns(props.appId)
-    runHistory.value = res?.data?.runs || []
+    const res = await getAppAutomationConfig(props.appId)
+    suites.value = res?.data?.automation?.suites || []
   } catch {
-    runHistory.value = []
+    suites.value = []
   }
 }
 
-const loadDevices = async () => {
+const persistSuites = async (next) => {
+  suiteSaving.value = true
   try {
-    let list = []
-    try {
-      list = normalizeDevices(await wsGetDeviceList())
-    } catch {
-      initWebSocket()
-      list = normalizeDevices(await getDeviceList())
-    }
-    devices.value = list
-  } catch {
-    devices.value = []
+    await updateAppAutomationConfig(props.appId, { suites: next })
+    suites.value = next
+    return true
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '套件保存失败')
+    return false
+  } finally {
+    suiteSaving.value = false
   }
-}
-
-const openDevicePicker = async () => {
-  await loadDevices()
-  if (!pickableDevices.value.some((d) => d.status === 'online')) {
-    ElMessage.warning('暂无在线设备，请先在运行状态页确认设备已连接')
-    return null
-  }
-  devicePickerSn.value = defaultPickerSn()
-  devicePickerVisible.value = true
-  return new Promise((resolve) => {
-    devicePickerResolve = resolve
-  })
-}
-
-const cancelDevicePicker = () => {
-  devicePickerVisible.value = false
-  devicePickerResolve?.(null)
-  devicePickerResolve = null
-}
-
-const confirmDevicePicker = () => {
-  const sn = devicePickerSn.value
-  devicePickerVisible.value = false
-  devicePickerResolve?.(sn || null)
-  devicePickerResolve = null
 }
 
 const saveConfig = async () => {
@@ -197,8 +151,6 @@ const loadCases = async (refresh = true) => {
     const data = res?.data || {}
     cases.value = data.cases || []
     casesSyncedAt.value = data.cached_at || data.synced_at || new Date().toISOString()
-    sheetMeta.value = { total: data.total || cases.value.length, note: data.resolve_note || '' }
-    selectedCaseIds.value = cases.value.map((c) => c.case_id)
     ElMessage.success(`已同步 ${cases.value.length} 条用例`)
     activeTab.value = 'cases'
   } catch (e) {
@@ -207,165 +159,6 @@ const loadCases = async (refresh = true) => {
     fetching.value = false
   }
 }
-
-const stopRunPoll = () => {
-  if (runPollTimer) clearTimeout(runPollTimer)
-  runPollTimer = null
-}
-
-const runProgressText = computed(() => {
-  const doc = lastRun.value
-  if (!doc) return ''
-  const done = Number(doc.passed || 0) + Number(doc.failed || 0) + Number(doc.skipped || 0)
-  return `${done}/${doc.total || 0}`
-})
-
-const finishRunUi = (doc) => {
-  if (!doc) return
-  resultView.value = doc.cases?.length ? 'cases' : 'list'
-  if (doc.status === 'awaiting_clarification') {
-    ElMessage.warning('需要人工确认登录图标位置')
-    return
-  }
-  if (doc.failed > 0) {
-    ElMessage.warning(`完成：通过 ${doc.passed}，失败 ${doc.failed}`)
-  } else if (doc.status !== 'running') {
-    ElMessage.success(`全部通过（${doc.passed || 0} 条）`)
-  }
-}
-
-const pollActiveRun = (runId) => {
-  stopRunPoll()
-  activeRunId.value = runId
-  const tick = async () => {
-    try {
-      const res = await getFeishuRun(runId)
-      lastRun.value = res?.data || lastRun.value
-      expandedRunId.value = runId
-      await loadRunHistory()
-      if (['running', 'awaiting_clarification'].includes(lastRun.value?.status)) {
-        runPollTimer = setTimeout(tick, 2500)
-        return
-      }
-      running.value = false
-      activeRunId.value = ''
-      finishRunUi(lastRun.value)
-    } catch {
-      runPollTimer = setTimeout(tick, 4000)
-    }
-  }
-  tick()
-}
-
-const runRegression = async (onlySelected = false) => {
-  if (!cases.value.length) return ElMessage.warning('请先同步飞书用例')
-  const ids = onlySelected ? selectedCaseIds.value : null
-  if (onlySelected && !ids?.length) return ElMessage.warning('请勾选要执行的用例')
-
-  const sn = await openDevicePicker()
-  if (!sn) return
-
-  const device = devices.value.find((d) => d.sn === sn)
-  if (!device || device.status !== 'online') {
-    ElMessage.warning('所选设备不可用，请重新选择')
-    return
-  }
-
-  try {
-    await ElMessageBox.confirm(
-      `将在 ${deviceLabel(device)} 上按顺序执行 ${ids ? ids.length : cases.value.length} 条用例。是否继续？`,
-      '飞书回归',
-      { type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  stopRunPoll()
-  running.value = true
-  lastRun.value = null
-  selectedCaseForLog.value = null
-  activeTab.value = 'result'
-  resultView.value = 'cases'
-  try {
-    const res = await runFeishuRegression({
-      app_id: props.appId,
-      sn,
-      platform: inferPlatform(device),
-      case_ids: ids || undefined,
-    })
-    const doc = res?.data || null
-    lastRun.value = doc
-    expandedRunId.value = doc?.run_id || ''
-    await loadRunHistory()
-    if (doc?.status === 'running' && doc?.run_id) {
-      ElMessage.info('回归任务已在后台执行，可在此查看进度')
-      pollActiveRun(doc.run_id)
-      return
-    }
-    running.value = false
-    finishRunUi(doc)
-  } catch (e) {
-    running.value = false
-    activeRunId.value = ''
-    ElMessage.error(e?.response?.data?.detail || e?.message || '执行失败')
-  }
-}
-
-const openHistoryRun = async (runId) => {
-  try {
-    const res = await getFeishuRun(runId)
-    lastRun.value = res?.data || null
-    expandedRunId.value = runId
-    selectedCaseForLog.value = null
-    resultView.value = 'cases'
-    activeTab.value = 'result'
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '加载失败')
-  }
-}
-
-const selectCaseLog = (row) => {
-  selectedCaseForLog.value = row
-  resultView.value = 'playback'
-}
-
-const goBackInReport = () => {
-  if (resultView.value === 'playback') {
-    resultView.value = 'cases'
-    selectedCaseForLog.value = null
-    return
-  }
-  if (resultView.value === 'cases') {
-    resultView.value = 'list'
-    selectedCaseForLog.value = null
-  }
-}
-
-const backLabel = computed(() => {
-  if (resultView.value === 'playback') return '← 返回用例列表'
-  if (resultView.value === 'cases') return '← 返回执行历史'
-  return '← 返回'
-})
-
-const formatDuration = (ms) => {
-  const n = Number(ms)
-  if (!Number.isFinite(n) || n < 0) return ''
-  if (n < 1000) return `${Math.round(n)}ms`
-  const sec = n / 1000
-  return sec >= 60 ? `${Math.floor(sec / 60)}m${Math.round(sec % 60)}s` : `${sec.toFixed(1)}s`
-}
-
-const statusTag = (status) => {
-  const map = { pass: 'success', fail: 'danger', skip: 'info', running: 'warning' }
-  return map[status] || 'info'
-}
-
-const iosOnlyCaseCount = computed(() =>
-  cases.value.filter((c) => {
-    const p = String(c.platform || '').toLowerCase()
-    return p && !p.includes('双端') && (p.includes('ios') || p.includes('苹果'))
-  }).length,
-)
 
 const loadBots = async () => {
   try {
@@ -381,52 +174,124 @@ const loadBots = async () => {
   }
 }
 
+const goTestingRun = (ids = [], suiteId = '') => {
+  const query = {
+    appName: props.appName || route.query.appName,
+    projectName: props.projectName || route.query.projectName,
+    projectId: props.projectId || route.query.projectId,
+    tab: 'tasks',
+    openRun: '1',
+  }
+  if (ids.length) query.caseIds = ids.join(',')
+  if (suiteId) query.suite = suiteId
+  Object.keys(query).forEach((k) => {
+    if (query[k] === undefined || query[k] === '') delete query[k]
+  })
+  router.push({ name: 'TestingApp', params: { appId: props.appId }, query })
+}
+
+const openNewRun = () => {
+  if (!cases.value.length) {
+    ElMessage.warning('没有可执行的用例，请先同步')
+    return
+  }
+  goTestingRun(selectedCaseIds.value)
+}
+
+const applySuite = async (suite) => {
+  moduleKey.value = ''
+  libraryQuery.value = ''
+  selectedCaseIds.value = suiteCaseIds(suite, cases.value)
+  if (suite?.case_ids?.length && !selectedCaseIds.value.length) {
+    ElMessage.warning('该套件里的用例已不在当前表中，请重新保存套件')
+    return
+  }
+  await nextTick()
+  const table = caseTableRef.value
+  if (!table) return
+  table.clearSelection()
+  const want = new Set(selectedCaseIds.value)
+  for (const row of visibleCases.value) {
+    if (want.has(row.case_id)) table.toggleRowSelection(row, true)
+  }
+}
+
+const saveSuiteFromSelection = async () => {
+  if (!selectedCaseIds.value.length) return ElMessage.warning('请先勾选用例')
+  try {
+    const { value } = await ElMessageBox.prompt('套件名称', '存为套件', {
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValue: moduleKey.value && moduleKey.value !== '未分类' ? `${moduleKey.value}回归` : '冒烟',
+      inputPattern: /\S/,
+      inputErrorMessage: '请填写名称',
+    })
+    const name = String(value || '').trim()
+    const next = [...suites.value]
+    const hit = next.findIndex((s) => s.name === name)
+    const row = {
+      id: hit >= 0 ? next[hit].id : '',
+      name,
+      case_ids: [...selectedCaseIds.value],
+      updated_at: new Date().toISOString(),
+    }
+    if (hit >= 0) next[hit] = { ...next[hit], ...row }
+    else next.push(row)
+    if (await persistSuites(next)) ElMessage.success('套件已保存')
+  } catch {
+    /* cancel */
+  }
+}
+
+const renameSuite = async (suite) => {
+  try {
+    const { value } = await ElMessageBox.prompt('套件名称', '重命名套件', {
+      inputValue: suite.name,
+      inputPattern: /\S/,
+    })
+    const name = String(value || '').trim()
+    const next = suites.value.map((s) => (s.id === suite.id ? { ...s, name } : s))
+    if (await persistSuites(next)) ElMessage.success('已重命名')
+  } catch {
+    /* cancel */
+  }
+}
+
+const deleteSuite = async (suite) => {
+  try {
+    await ElMessageBox.confirm(`删除套件「${suite.name}」？用例本身不会删除。`, '删除套件', { type: 'warning' })
+  } catch {
+    return
+  }
+  const next = suites.value.filter((s) => s.id !== suite.id)
+  if (await persistSuites(next)) ElMessage.success('已删除')
+}
+
 const init = async () => {
-  await Promise.all([loadConfig(), loadDevices(), loadBots(), loadCachedCases(), loadRunHistory()])
+  await Promise.all([loadConfig(), loadBots(), loadCachedCases(), loadSuites()])
 }
 
 watch(() => props.appId, init)
-
-watch(resultView, (view) => {
-  const open = view !== 'list'
-  reportOverlayOpen.value = open
-  document.body.style.overflow = open ? 'hidden' : ''
-}, { immediate: true })
-
-watch(activeTab, (tab) => {
-  if (tab !== 'result' && !running.value) resultView.value = 'list'
-})
-
 onMounted(init)
-const clearRunState = () => {
-  stopRunPoll()
-  running.value = false
-  activeRunId.value = ''
-  lastRun.value = null
-  selectedCaseForLog.value = null
-  expandedRunId.value = ''
-  resultView.value = 'list'
-}
-
-onUnmounted(() => {
-  clearRunState()
-  document.body.style.overflow = ''
-  reportOverlayOpen.value = false
-})
 </script>
 
 <template>
   <div class="feishu-panel">
-    <div class="toolbar">
-      <el-button size="small" :loading="fetching" @click="loadCases(true)">同步用例</el-button>
-      <el-button size="small" type="primary" :loading="running" @click="runRegression(false)">执行全部</el-button>
-      <el-button size="small" type="warning" :loading="running" :disabled="!selectedCaseIds.length" @click="runRegression(true)">
-        执行选中
-      </el-button>
-      <span v-if="running" class="run-progress-hint">
-        执行中 {{ runProgressText }}
-        <el-button link type="primary" size="small" @click="activeTab = 'result'">查看报告</el-button>
-      </span>
+    <div class="settings-toolbar">
+      <div class="toolbar-copy">
+        <p v-if="syncLabel" class="sync-meta">{{ syncLabel }} · {{ cases.length }} 条</p>
+        <p v-else class="sync-meta">尚未同步飞书表格</p>
+        <p v-if="iosOnlyCaseCount" class="sync-meta ios-hint">
+          含 {{ iosOnlyCaseCount }} 条 iOS 专用用例；选 Android 设备启动时会按前置条件跳过。
+        </p>
+      </div>
+      <div class="toolbar-actions">
+        <el-button size="small" :loading="fetching" @click="loadCases(true)">同步用例</el-button>
+        <el-button size="small" :disabled="!selectedCaseIds.length" :loading="suiteSaving" @click="saveSuiteFromSelection">
+          存为套件
+        </el-button>
+        <el-button type="primary" size="small" :disabled="!cases.length" @click="openNewRun">去新建执行</el-button>
+      </div>
     </div>
 
     <el-alert v-if="!credConfigured" type="warning" show-icon :closable="false" class="cred-alert">
@@ -438,8 +303,8 @@ onUnmounted(() => {
     </el-alert>
 
     <el-tabs v-model="activeTab" class="inner-tabs">
-      <el-tab-pane label="飞书配置" name="config">
-        <el-form label-width="120px" style="max-width: 720px">
+      <el-tab-pane label="同步源" name="config">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="飞书机器人" required>
             <el-select v-model="configForm.bot_id" placeholder="选择机器人" style="width: 100%">
               <el-option v-for="b in feishuBots" :key="b.id" :label="b.name" :value="b.id" />
@@ -462,322 +327,176 @@ onUnmounted(() => {
         </el-form>
       </el-tab-pane>
 
-      <el-tab-pane :label="`用例 (${cases.length})`" name="cases">
-        <p v-if="casesSyncedAt" class="sync-meta">缓存于 {{ casesSyncedAt }}</p>
-        <p v-if="iosOnlyCaseCount" class="sync-meta ios-hint">
-          含 {{ iosOnlyCaseCount }} 条 iOS 专用用例；当前设备为 Android 时执行将按前置条件标记为 skip。
-        </p>
-        <el-table
-          :data="cases"
-          border
-          stripe
-          max-height="400"
-          @selection-change="(rows) => (selectedCaseIds = rows.map((r) => r.case_id))"
-        >
-          <el-table-column type="selection" width="48" />
-          <el-table-column prop="case_id" label="编号" width="88" />
-          <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
-          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-          <el-table-column label="前置条件" min-width="160" class-name="col-multiline">
-            <template #default="{ row }">
-              <CaseMultilineCell :row="row" raw-key="precondition" />
-            </template>
-          </el-table-column>
-          <el-table-column label="测试步骤" min-width="200" class-name="col-multiline">
-            <template #default="{ row }">
-              <CaseAlignedFieldCell :row="row" field="step" />
-            </template>
-          </el-table-column>
-          <el-table-column label="预期效果" min-width="180" class-name="col-multiline">
-            <template #default="{ row }">
-              <CaseAlignedFieldCell :row="row" field="expected" />
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="执行回放" name="result">
-        <div v-show="resultView === 'list'" class="result-list-view">
-          <p class="list-hint">点击某次执行记录，进入已执行用例列表，再选择用例查看回放。</p>
-          <el-table
-            v-if="runHistory.length"
-            :data="runHistory"
-            border
-            stripe
-            size="small"
-            class="full-table"
-            highlight-current-row
-            :row-class-name="({ row }) => (expandedRunId === row.run_id ? 'is-current-run' : '')"
-            @row-click="(row) => openHistoryRun(row.run_id)"
+      <el-tab-pane :label="`用例库 (${cases.length})`" name="cases">
+        <div v-if="suites.length" class="suite-row">
+          <span class="suite-kicker">套件</span>
+          <button
+            v-for="s in suites"
+            :key="s.id"
+            type="button"
+            class="suite-chip"
+            @click="applySuite(s)"
           >
-            <el-table-column prop="started_at" label="执行时间" min-width="168">
-              <template #default="{ row }">
-                {{ row.started_at?.slice(0, 19).replace('T', ' ') }}
-              </template>
-            </el-table-column>
-            <el-table-column label="通过/总数" width="108">
-              <template #default="{ row }">
-                <el-tag :type="row.failed ? 'danger' : 'success'" size="small">
-                  {{ row.passed }}/{{ row.total }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="sn" label="设备" min-width="140" show-overflow-tooltip />
-            <el-table-column prop="platform" label="平台" width="88" />
-            <el-table-column label="状态" width="88">
-              <template #default="{ row }">
-                <el-tag
-                  :type="row.status === 'running' ? 'warning' : row.failed ? 'danger' : 'success'"
-                  size="small"
-                >
-                  {{ row.status === 'running' ? '执行中' : row.failed ? '有失败' : '全通过' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="" width="88" fixed="right">
-              <template #default>
-                <el-button link type="primary" size="small">查看</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-else description="执行后将在此展示历史记录" />
+            {{ s.name }}
+            <small>{{ suiteCaseIds(s, cases).length }}</small>
+          </button>
+        </div>
+        <p v-else class="suite-empty">勾选用例后点「存为套件」，下次新建执行可直接选用。</p>
+
+        <div class="library">
+          <aside class="module-tree" aria-label="模块">
+            <button
+              type="button"
+              class="mod-item"
+              :class="{ on: !moduleKey }"
+              @click="moduleKey = ''"
+            >
+              <strong>全部模块</strong>
+              <span>{{ cases.length }}</span>
+            </button>
+            <button
+              v-for="[name, list] in moduleGroups"
+              :key="name"
+              type="button"
+              class="mod-item"
+              :class="{ on: moduleKey === name }"
+              @click="moduleKey = name"
+            >
+              <strong>{{ name }}</strong>
+              <span>{{ list.length }}</span>
+            </button>
+          </aside>
+
+          <div class="library-main">
+            <el-input
+              v-model="libraryQuery"
+              size="small"
+              clearable
+              placeholder="搜索编号、名称、端"
+              class="lib-search"
+            />
+            <el-table
+              ref="caseTableRef"
+              :data="visibleCases"
+              row-key="case_id"
+              border
+              stripe
+              max-height="440"
+              @selection-change="(rows) => (selectedCaseIds = rows.map((r) => r.case_id))"
+            >
+              <el-table-column type="selection" width="48" reserve-selection />
+              <el-table-column prop="case_id" label="编号" width="108" />
+              <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
+              <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+              <el-table-column label="前置条件" min-width="140" class-name="col-multiline">
+                <template #default="{ row }">
+                  <CaseMultilineCell :row="row" raw-key="precondition" />
+                </template>
+              </el-table-column>
+              <el-table-column label="测试步骤" min-width="180" class-name="col-multiline">
+                <template #default="{ row }">
+                  <CaseAlignedFieldCell :row="row" field="step" />
+                </template>
+              </el-table-column>
+              <el-table-column label="预期效果" min-width="160" class-name="col-multiline">
+                <template #default="{ row }">
+                  <CaseAlignedFieldCell :row="row" field="expected" />
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
         </div>
 
-        <Teleport to="body">
-          <div v-if="resultView !== 'list'" class="report-fullpage">
-            <header class="report-fullpage-header">
-              <el-button text class="portal-back-btn" @click="goBackInReport">{{ backLabel }}</el-button>
-              <div class="portal-title-block">
-                <template v-if="resultView === 'playback' && selectedCaseForLog">
-                  <span class="portal-title">{{ selectedCaseForLog.name }}</span>
-                  <span class="portal-meta">
-                    {{ selectedCaseForLog.case_id }} · {{ lastRun?.sn }} ·
-                    {{ formatDuration(selectedCaseForLog.duration_ms) || lastRun?.finished_at?.slice(0, 16) }}
-                  </span>
-                </template>
-                <template v-else-if="lastRun">
-                  <span class="portal-title">已执行用例</span>
-                  <span class="portal-meta">
-                    {{ lastRun.started_at?.slice(0, 19).replace('T', ' ') }} · {{ lastRun.sn }} ·
-                    总计 {{ formatDuration(lastRun.duration_ms) || '—' }} ·
-                    已执行 {{ lastRun.executed ?? lastRun.cases?.length ?? 0 }}/{{ lastRun.total }} ·
-                    通过 {{ lastRun.passed }}/{{ lastRun.total }}
-                    <template v-if="lastRun.skipped"> · 跳过 {{ lastRun.skipped }}</template>
-                  </span>
-                </template>
-              </div>
-              <el-tag
-                v-if="resultView === 'playback' && selectedCaseForLog"
-                :type="statusTag(selectedCaseForLog.status)"
-                size="small"
-                class="portal-status"
-              >
-                {{ selectedCaseForLog.status }}
-              </el-tag>
-            </header>
-            <div v-if="resultView === 'cases'" class="report-body report-body--cases">
-              <RunSummaryPanel v-if="lastRun && !running" :run="lastRun" />
-              <el-alert
-                v-if="running"
-                type="info"
-                :closable="false"
-                show-icon
-                class="run-live-alert"
-                :title="`正在执行回归测试 ${runProgressText}`"
-                description="用例完成后会实时出现在下表；可点击左侧用例查看已完成的回放。"
-              />
-              <el-table
-                v-if="lastRun?.cases?.length"
-                :data="lastRun.cases"
-                border
-                stripe
-                class="full-table case-table"
-                @row-click="selectCaseLog"
-              >
-                <el-table-column prop="case_id" label="编号" width="96" />
-                <el-table-column prop="name" label="用例" min-width="160" show-overflow-tooltip />
-                <el-table-column label="测试步骤" min-width="220" class-name="col-multiline">
-                  <template #default="{ row }">
-                    <CaseAlignedFieldCell :row="row" field="step" />
-                  </template>
-                </el-table-column>
-                <el-table-column label="预期效果" min-width="180" class-name="col-multiline">
-                  <template #default="{ row }">
-                    <CaseAlignedFieldCell :row="row" field="expected" />
-                  </template>
-                </el-table-column>
-                <el-table-column label="结果" width="96">
-                  <template #default="{ row }">
-                    <el-tag :type="statusTag(row.status)" size="small">{{ row.status }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="耗时" width="88">
-                  <template #default="{ row }">
-                    {{ formatDuration(row.duration_ms) || '—' }}
-                  </template>
-                </el-table-column>
-                <el-table-column label="" width="88" fixed="right">
-                  <template #default>
-                    <el-button link type="primary" size="small">回放</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
-              <el-empty v-else description="该次执行没有用例记录" />
-            </div>
-
-            <div v-else-if="resultView === 'playback' && selectedCaseForLog" class="report-body">
-              <ExecutionReplayer
-                fullscreen
-                :app-id="appId"
-                :app-name="appName"
-                show-back
-                back-label="返回用例列表"
-                @back="goBackInReport"
-                :trace="selectedCaseForLog.execution_trace || []"
-                :step-results="selectedCaseForLog.step_results || []"
-                :case-name="selectedCaseForLog.name"
-                :command="selectedCaseForLog.command"
-                :steps-raw="selectedCaseForLog.steps_raw"
-                :expected-raw="selectedCaseForLog.expected_raw"
-                :step-lines="selectedCaseForLog.step_lines || []"
-                :expected-lines="selectedCaseForLog.expected_lines || []"
-                :precondition-raw="selectedCaseForLog.precondition_raw || ''"
-                :case-duration-ms="selectedCaseForLog.duration_ms"
-                :run-duration-ms="lastRun?.duration_ms"
-              />
-            </div>
-          </div>
-        </Teleport>
+        <div v-if="suites.length" class="suite-manage">
+          <span class="suite-kicker">管理套件</span>
+          <span v-for="s in suites" :key="`m-${s.id}`" class="suite-manage-item">
+            {{ s.name }}
+            <el-button link type="primary" size="small" @click="renameSuite(s)">重命名</el-button>
+            <el-button link type="danger" size="small" @click="deleteSuite(s)">删除</el-button>
+          </span>
+        </div>
       </el-tab-pane>
     </el-tabs>
-
-    <el-dialog v-model="devicePickerVisible" title="选择执行设备" width="520px" destroy-on-close @close="cancelDevicePicker">
-      <p class="picker-hint">从运行状态设备列表中选择在线设备（含 ClawNode / USB Hub 等）。</p>
-      <el-radio-group v-model="devicePickerSn" class="device-picker-list">
-        <el-radio v-for="d in pickableDevices" :key="d.sn" :value="d.sn" :disabled="d.status !== 'online'" class="device-picker-item">
-          {{ deviceLabel(d) }}
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="cancelDevicePicker">取消</el-button>
-        <el-button type="primary" :disabled="!devicePickerSn" @click="confirmDevicePicker">确认</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .feishu-panel { margin-top: 8px; width: 100%; }
-.run-progress-hint {
-  font-size: 12px;
-  color: #b45309;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.run-live-alert { margin-bottom: 10px; }
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-.picker-hint { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
-.device-picker-list { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; width: 100%; }
-.device-picker-item { width: 100%; margin-right: 0; white-space: normal; height: auto; }
+.toolbar-copy { min-width: 0; flex: 1; }
+.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cred-alert { margin-bottom: 12px; }
-.sync-meta { font-size: 12px; color: #9ca3af; margin-bottom: 8px; }
+.sync-meta { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
 .ios-hint { color: #b45309; }
-.result-list-view { width: 100%; }
-.list-hint { margin: 0 0 12px; font-size: 13px; color: #6b7280; }
-.full-table { width: 100%; }
-.full-table :deep(.el-table__row) { cursor: pointer; }
-.full-table :deep(.is-current-run) { background: #eff6ff !important; }
-.case-table { width: 100%; }
+.config-form { max-width: 720px; }
+.suite-row, .suite-manage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.suite-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+}
+.suite-empty { font-size: 12px; color: #94a3b8; margin: 0 0 12px; }
+.suite-chip {
+  border: 1px solid #e3e8f0;
+  background: #fff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #374151;
+}
+.suite-chip small { margin-left: 6px; color: #94a3b8; }
+.suite-chip:hover { border-color: #c7d2fe; background: #eef2ff; }
+.suite-manage { margin-top: 12px; }
+.suite-manage-item { font-size: 12px; color: #6b7280; }
+.library {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 280px;
+}
+.module-tree {
+  border: 1px solid #e3e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+.mod-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: #374151;
+}
+.mod-item strong { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-item span { font-size: 11px; color: #94a3b8; flex-shrink: 0; }
+.mod-item:hover { background: #fff; }
+.mod-item.on { background: #eef2ff; color: #4f46e5; }
+.mod-item.on span { color: #6366f1; }
+.library-main { min-width: 0; }
+.lib-search { margin-bottom: 8px; max-width: 280px; }
+@media (max-width: 860px) {
+  .library { grid-template-columns: 1fr; }
+}
 </style>
 
 <style>
-.report-fullpage-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.report-fullpage-header .portal-back-btn {
-  flex-shrink: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
-  padding: 4px 8px;
-}
-.report-fullpage-header .portal-title-block {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  line-height: 1.3;
-  overflow: hidden;
-}
-.report-fullpage-header .portal-title {
-  flex-shrink: 0;
-  font-size: 14px;
-  font-weight: 700;
-  color: #111827;
-  white-space: nowrap;
-}
-.report-fullpage-header .portal-meta {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: #9ca3af;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.report-fullpage-header .portal-status {
-  flex-shrink: 0;
-  margin-left: auto;
-}
-.report-fullpage {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  display: flex;
-  flex-direction: column;
-  background: #f3f4f6;
-}
-.report-fullpage-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  padding: 0 12px 0 6px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
-  box-sizing: border-box;
-  position: relative;
-  z-index: 100;
-}
-.report-body {
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  padding: 8px 12px 10px;
-  overflow: hidden;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-}
-.report-body--cases {
-  overflow: auto;
-  padding: 10px 16px 16px;
-}
-.report-body .replayer {
-  flex: 1;
-  height: 100%;
-  min-height: 0;
-  border: none;
-  padding: 8px;
-}
-:deep(.el-table .col-multiline .cell) {
+.feishu-panel :deep(.el-table .col-multiline .cell) {
   white-space: normal;
   line-height: 1.5;
   align-items: flex-start;

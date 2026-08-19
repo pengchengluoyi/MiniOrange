@@ -18,6 +18,7 @@ const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
   { id: 'schedule', label: '定时任务', icon: Calendar, to: '/settings/schedule' },
   { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
+  { id: 'packs', label: '扩展', icon: Cpu, to: '/settings/packs' },
   { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
   { id: 'system', label: '系统设置', icon: Setting, to: '/settings/system' },
 ]

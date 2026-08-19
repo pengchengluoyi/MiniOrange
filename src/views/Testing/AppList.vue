@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getProjects } from '@/api/workReport'
 import { formatPlatformTags } from '@/constants/appPlatforms'
 import { listCaseRunnerRuns, listTestingTaskSummary } from '@/api/caseRunner'
-import { isMissingTaskEndpoint, normalizeTask, statusLabel, statusTagType } from '@/utils/testingTasks'
+import { isMissingTaskEndpoint, normalizeTask, statusLabel, statusTagType, taskCountLabel } from '@/utils/testingTasks'
 import WorkShell from '@/layouts/WorkShell.vue'
 
 const route = useRoute()
@@ -160,8 +160,8 @@ watch(() => route.fullPath, () => {
               <el-tag size="small" type="primary">运行中 {{ runningCountByApp[app.id] }}</el-tag>
             </span>
             <span class="recent" v-else-if="liveByApp[app.id]">
-              <el-tag size="small" :type="statusTagType(liveByApp[app.id].status)">{{ statusLabel(liveByApp[app.id].status) }}</el-tag>
-              {{ liveByApp[app.id].completed }}/{{ liveByApp[app.id].total }}
+              <el-tag size="small" :type="statusTagType(liveByApp[app.id].status, liveByApp[app.id])">{{ statusLabel(liveByApp[app.id].status, liveByApp[app.id]) }}</el-tag>
+              {{ taskCountLabel(liveByApp[app.id]) }}
             </span>
             <span class="recent muted" v-else>暂无最近任务</span>
           </button>

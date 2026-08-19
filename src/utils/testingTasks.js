@@ -22,6 +22,165 @@ export function shortTaskId(taskId = '') {
   return bare.length > 8 ? bare.slice(0, 8) : bare
 }
 
+export function shortDeviceLabel(sn = '') {
+  const s = String(sn || '').trim()
+  if (!s) return ''
+  if (s.startsWith('claw-')) return s.length > 14 ? `${s.slice(0, 14)}…` : s
+  if (s.length > 10) return s.slice(0, 8)
+  return s
+}
+
+export function formatElapsed(ms) {
+  const n = Number(ms) || 0
+  if (n <= 0) return ''
+  if (n < 1000) return `${n} 毫秒`
+  const sec = Math.round(n / 1000)
+  if (sec < 60) return `${sec} 秒`
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  if (m < 60) return s ? `${m} 分 ${s} 秒` : `${m} 分钟`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  return rm ? `${h} 小时 ${rm} 分` : `${h} 小时`
+}
+
+/** 已有结论的用例数（不含取消 / 跳过 / 未跑） */
+export function taskJudgedCount(task) {
+  const cases = task?.cases || []
+  if (cases.length) {
+    return cases.filter((c) => !['pending', 'queued', 'cancelled', 'skipped'].includes(c.status)).length
+  }
+  return (
+    Number(task?.passed || 0)
+    + Number(task?.failed || 0)
+    + Number(task?.blocked || 0)
+    + Number(task?.declined || 0)
+  )
+}
+
+/** 列表展示用终态：已完成不再和失败抢红色 */
+export function displayTaskStatus(task) {
+  const s = String(task?.status || '')
+  const failed = Number(task?.failed || 0)
+  const passed = Number(task?.passed || 0)
+  if (s === 'running' || s === 'queued') return s
+  if (s === 'cancelled') return 'cancelled'
+  if (failed > 0 && passed > 0) return 'partial_fail'
+  if (s === 'failed' || s === 'fail') return 'failed'
+  if ((s === 'done' || s === 'pass' || s === 'success') && failed > 0) {
+    return 'partial_fail'
+  }
+  if (s === 'done' || s === 'pass' || s === 'success') return 'done'
+  return s || 'unknown'
+}
+
+export function taskProgressPct(task) {
+  const total = Number(task?.total || 0)
+  const vis = displayTaskStatus(task)
+  if (vis === 'running' || vis === 'queued') {
+    if (task?.progress != null) return Number(task.progress)
+    return total > 0 ? Math.round((Number(task.completed || 0) / total) * 100) : 0
+  }
+  if (vis === 'cancelled') {
+    if (!total) return 0
+    return Math.round((taskJudgedCount(task) / total) * 100)
+  }
+  if (!total) return vis === 'done' ? 100 : 0
+  const done = Number(task?.completed || 0)
+  return Math.min(100, Math.round((done / total) * 100))
+}
+
+export function taskPassRate(task) {
+  const judged = taskJudgedCount(task)
+  if (!judged) return null
+  return Math.round((Number(task?.passed || 0) / judged) * 100)
+}
+
+export function taskCountLabel(task) {
+  const total = Number(task?.total || 0)
+  const vis = displayTaskStatus(task)
+  const failed = Number(task?.failed || 0)
+  if (vis === 'cancelled') {
+    const judged = taskJudgedCount(task)
+    return judged ? `${judged}/${total || judged} 已执行` : `0/${total || 0}`
+  }
+  const completed = Number(task?.completed || 0)
+  const base = total ? `${completed}/${total}` : `${completed}`
+  if (failed > 0) return `${base} · ${failed} 失败`
+  return base
+}
+
+export function taskTitle(task) {
+  const device = shortDeviceLabel(task?.sn) || '未选设备'
+  const cases = task?.cases || []
+  const total = Number(task?.total || 0) || cases.length
+  if (cases.length === 1) {
+    const name = cases[0].name || cases[0].case_id
+    return name ? `${device} · ${name}` : `${device} · 1 条用例`
+  }
+  if (task?.currentCaseId && (task.status === 'running' || task.status === 'queued')) {
+    return `${device} · ${task.currentCaseId}`
+  }
+  if (total) return `${device} · ${total} 条用例`
+  return `${device} · 任务`
+}
+
+export function sortTasksForList(tasks = []) {
+  const rank = (t) => {
+    const s = displayTaskStatus(t)
+    if (s === 'running' || s === 'queued') return 0
+    return 1
+  }
+  return [...tasks].sort((a, b) => {
+    const d = rank(a) - rank(b)
+    if (d) return d
+    return String(b.startedAt || '').localeCompare(String(a.startedAt || ''))
+  })
+}
+
+export function filterTasks(tasks = [], { status = 'all', sn = '', when = 'all' } = {}) {
+  const now = Date.now()
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  const todayTs = startOfToday.getTime()
+  const weekTs = todayTs - 6 * 24 * 60 * 60 * 1000
+  return tasks.filter((t) => {
+    const vis = displayTaskStatus(t)
+    if (status && status !== 'all') {
+      if (status === 'running' && vis !== 'running' && vis !== 'queued') return false
+      if (status === 'failed' && vis !== 'failed') return false
+      if (status === 'partial_fail' && vis !== 'partial_fail') return false
+      if (status === 'cancelled' && vis !== 'cancelled') return false
+      if (status === 'done' && vis !== 'done') return false
+    }
+    if (sn && String(t.sn || '') !== sn) return false
+    if (when === 'today' || when === 'week') {
+      const ts = Date.parse(t.startedAt || '') || 0
+      if (!ts) return false
+      if (when === 'today' && ts < todayTs) return false
+      if (when === 'week' && ts < weekTs) return false
+      if (ts > now + 60_000) return false
+    }
+    return true
+  })
+}
+
+export function casePlatformKind(c) {
+  const p = String(c?.platform || c?.client || c?.terminal || '').toLowerCase()
+  const ios = p.includes('ios') || p.includes('苹果') || p.includes('iphone') || p.includes('ipad')
+  const android = p.includes('android') || p.includes('安卓')
+  if (p.includes('双') || p.includes('both') || (ios && android)) return 'any'
+  if (ios) return 'ios'
+  if (android) return 'android'
+  return 'any'
+}
+
+export function devicePlatformKind(device) {
+  const ch = String(device?.execChannel || device?.device_type || '').toLowerCase()
+  if (ch.includes('ios') || ch.includes('iphone') || ch.includes('ipad')) return 'ios'
+  return 'android'
+}
+
 export function normalizeTaskStatus(s) {
   const v = String(s || '').toLowerCase()
   if (v === 'fail') return 'failed'
@@ -59,6 +218,8 @@ export function normalizeCase(raw = {}, taskId = '') {
     expected_raw: raw.expected_raw || '',
     failure_category: raw.failure_category || '',
     failure_label: raw.failure_label || '',
+    knowledge_ids: Array.isArray(raw.knowledge_ids) ? raw.knowledge_ids : [],
+    knowledge_proposals: Array.isArray(raw.knowledge_proposals) ? raw.knowledge_proposals : [],
   }
 }
 
@@ -106,6 +267,8 @@ export function normalizeTask(raw, { source = '' } = {}) {
     busy: Boolean(raw.busy),
     cases,
     source: source || raw.source || 'tasks-api',
+    knowledge_ids: Array.isArray(raw.knowledge_ids) ? raw.knowledge_ids : [],
+    knowledge_proposals: Array.isArray(raw.knowledge_proposals) ? raw.knowledge_proposals : [],
   }
 }
 
@@ -166,6 +329,7 @@ export function groupTracesIntoTasks(traces = [], { appId = '' } = {}) {
   return [...map.values()].map((raw) => {
     const task = normalizeTask(raw, { source: 'traces' })
     if (task.cases.some((c) => c.status === 'running')) task.status = 'running'
+    else if (task.failed > 0 && task.passed > 0) task.status = 'done'
     else if (task.failed > 0) task.status = 'failed'
     else task.status = 'done'
     task.progress = task.total > 0 ? Math.round((task.completed / task.total) * 100) : 0
@@ -196,6 +360,8 @@ export function applyTestingTaskEvent(task, data) {
   if (data.progress != null) next.progress = Number(data.progress)
   if (data.current_case_id) next.currentCaseId = data.current_case_id
   if (data.error != null) next.error = data.error
+  if (Array.isArray(data.knowledge_proposals)) next.knowledge_proposals = data.knowledge_proposals
+  if (Array.isArray(data.knowledge_ids)) next.knowledge_ids = data.knowledge_ids
   if (data.event === 'task_finished' && !data.status) {
     next.status = next.failed > 0 ? 'failed' : 'done'
   }
@@ -227,26 +393,30 @@ export function isStepLimitCase(row = {}) {
 
 export function statusTagType(s, row = null) {
   if (row && isStepLimitCase(row)) return 'warning'
-  if (['pass', 'done', 'success'].includes(s)) return 'success'
-  if (['fail', 'failed'].includes(s)) return 'danger'
-  if (['blocked', 'partial', 'cancelled'].includes(s)) return 'warning'
-  if (s === 'running') return 'primary'
-  if (s === 'pending' || s === 'queued' || s === 'skipped') return 'info'
+  const vis = row && (row.taskId || row.total != null) ? displayTaskStatus(row) : s
+  if (['pass', 'done', 'success'].includes(vis)) return 'success'
+  if (['fail', 'failed'].includes(vis)) return 'danger'
+  if (vis === 'partial_fail') return 'warning'
+  if (['blocked', 'partial', 'cancelled'].includes(vis)) return 'warning'
+  if (vis === 'running') return 'primary'
+  if (vis === 'pending' || vis === 'queued' || vis === 'skipped') return 'info'
   return 'info'
 }
 
 export function statusLabel(s, row = null) {
   if (row && isStepLimitCase(row)) return '步数耗尽'
+  const vis = row && (row.taskId || row.total != null) ? displayTaskStatus(row) : s
   return ({
     queued: '排队',
     running: '进行中',
     pending: '待执行',
-    done: '已完成',
+    done: '已通过',
     failed: '失败',
     fail: '失败',
     pass: '通过',
     blocked: '等人',
     partial: '步数耗尽',
+    partial_fail: '部分失败',
     declined: '拒绝',
     cancelled: '已取消',
     skipped: '跳过',
@@ -254,7 +424,7 @@ export function statusLabel(s, row = null) {
     feishu: '飞书',
     schedule: '定时',
     budget_exhausted: '步数耗尽',
-  })[s] || s || '未知'
+  })[vis] || vis || '未知'
 }
 
 export function runTypeLabel(t) {
@@ -278,10 +448,11 @@ export function sortCasesForRail(cases = []) {
 
 export function progressStatus(task) {
   if (!task) return undefined
-  if (task.status === 'running' || task.status === 'queued') return undefined
-  if (task.status === 'cancelled') return 'warning'
-  if (task.status === 'failed' || task.failed > 0) return 'exception'
-  if (task.progress === 100 || task.status === 'done') return 'success'
+  const vis = displayTaskStatus(task)
+  if (vis === 'running' || vis === 'queued') return undefined
+  if (vis === 'cancelled' || vis === 'partial_fail') return 'warning'
+  if (vis === 'failed') return 'exception'
+  if (vis === 'done') return 'success'
   return undefined
 }
 

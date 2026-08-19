@@ -34,6 +34,17 @@ export const getTestingKnowledge = () =>
 export const saveTestingKnowledge = (items) =>
   request({ url: '/settings/knowledge', method: 'put', data: { items } })
 
+export const upsertKnowledgeItem = (item) => {
+  const id = item.id || ''
+  return request({ url: `/settings/knowledge/${id || 'new'}`, method: 'put', data: item })
+}
+
+export const deleteKnowledgeItem = (id) =>
+  request({ url: `/settings/knowledge/${encodeURIComponent(id)}`, method: 'delete' })
+
+export const reviewKnowledgeItem = (id, data) =>
+  request({ url: `/settings/knowledge/${encodeURIComponent(id)}/review`, method: 'post', data })
+
 export const analyzeFailureKnowledge = (data) =>
   request({ url: '/settings/knowledge/analyze-failure', method: 'post', data })
 

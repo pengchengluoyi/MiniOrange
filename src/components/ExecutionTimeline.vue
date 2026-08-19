@@ -7,8 +7,16 @@ import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { normalizeCaseRow } from '@/utils/caseText'
+import { formatElapsed } from '@/utils/testingTasks'
+import {
+  mergeCheckpointCatalog,
+  parseCheckpointCatalog,
+  parseCheckpointsFromLlmInput,
+  replaceCheckpointIds,
+} from '@/utils/checkpoints'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
+import ExecutionStepDetailDrawer from '@/components/ExecutionStepDetailDrawer.vue'
 
 const props = defineProps({
   runId: { type: String, default: '' },
@@ -57,15 +65,40 @@ function normalizeThumb(t) {
   return isValidThumb(t) ? t.trim() : undefined
 }
 
+function isBlankLoadedImage(img) {
+  if (!img || !img.naturalWidth) return true
+  try {
+    const c = document.createElement('canvas')
+    c.width = 24
+    c.height = 24
+    const ctx = c.getContext('2d', { willReadFrequently: true })
+    ctx.drawImage(img, 0, 0, 24, 24)
+    const d = ctx.getImageData(0, 0, 24, 24).data
+    let dark = 0
+    let light = 0
+    const n = 24 * 24
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+      if (y < 18) dark += 1
+      else if (y > 237) light += 1
+    }
+    return dark / n > 0.9 || light / n > 0.9
+  } catch {
+    return false
+  }
+}
+
 function fmtDuration(ms) {
-  const n = Number(ms) || 0
-  if (n <= 0) return '0ms'
-  if (n < 1000) return `${n}ms`
-  if (n < 60000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}s`
-  return `${Math.round(n / 1000)}s`
+  return formatElapsed(ms) || ''
 }
 
 const failureCategory = ref('')
+
+function knowledgeFrom(d) {
+  if (Array.isArray(d?.knowledge)) return d.knowledge
+  if (Array.isArray(d?.vlm_meta?.knowledge)) return d.vlm_meta.knowledge
+  return null
+}
 
 function reset() {
   goal.value = ''; checkpoints.value = []; steps.value = []
@@ -74,6 +107,8 @@ function reset() {
   activeStep.value = null
   hoverStep.value = null
   lightboxSrc.value = ''
+  stepDrawerOpen.value = false
+  stepDrawerFocusUid.value = ''
 }
 
 function upsert(stepNo, patch) {
@@ -84,7 +119,14 @@ function upsert(stepNo, patch) {
 
 function applyAgentEvent(d) {
   if (!d) return
-  if (d.phase === 'start') { goal.value = d.goal || goal.value; checkpoints.value = d.checkpoints || checkpoints.value }
+  const knowledge = knowledgeFrom(d)
+  if (d.phase === 'start') {
+    goal.value = d.goal || goal.value
+    checkpoints.value = mergeCheckpointCatalog(
+      checkpoints.value,
+      parseCheckpointCatalog(d.checkpoints),
+    )
+  }
   else if (d.phase === 'step') {
     upsert(d.step, {
       thought: d.thought,
@@ -92,6 +134,16 @@ function applyAgentEvent(d) {
       action: d.action,
       thumb: normalizeThumb(d.thumb),
       cap: d.action?.capability_id,
+      ...(knowledge ? { knowledge } : {}),
+      ...(Array.isArray(d.checkpoint_ids) && d.checkpoint_ids.length ? { checkpoint_ids: d.checkpoint_ids } : {}),
+      ...(Array.isArray(d.checkpoints_hit) && d.checkpoints_hit.length ? { checkpoints_hit: d.checkpoints_hit } : {}),
+      ...(Array.isArray(d.remember) && d.remember.length ? { remember: d.remember } : {}),
+      ...(d.subflow ? { subflow: d.subflow } : {}),
+      ...(typeof d.confidence === 'number' ? { confidence: d.confidence } : {}),
+      ...(Array.isArray(d.parse_warnings) && d.parse_warnings.length ? { parse_warnings: d.parse_warnings } : {}),
+      ...(d.llm_input ? { llm_input: d.llm_input } : {}),
+      ...(d.llm_output ? { llm_output: d.llm_output } : {}),
+      ...(d.llm_meta ? { llm_meta: d.llm_meta } : {}),
     })
     activeStep.value = d.step
   }
@@ -102,6 +154,20 @@ function applyAgentEvent(d) {
       elapsed: d.elapsed_ms || d.elapsed,
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
       ...(d.capability_id ? { cap: d.capability_id } : {}),
+      ...(knowledge ? { knowledge } : {}),
+    })
+  }
+  else if (d.phase === 'recovery') {
+    // L0 系统层恢复：把「本步命中了哪些 pack」挂到该步上，供调试溯源
+    const ruleId = d.recovery?.rule_id
+    upsert(d.step, {
+      packs: d.packs || [],
+      recovery: d.recovery || null,
+      ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
+      ...(d.summary ? { recoverySummary: d.summary } : {}),
+      ...(ruleId ? { cap: `recovery_${ruleId}` } : {}),
+      ...(d.recovery?.recovered ? { result_status: 'pass', status: 'pass' } : {}),
+      ...(knowledge ? { knowledge } : {}),
     })
   }
   else if (d.phase === 'done') {
@@ -117,6 +183,10 @@ function applyPlanEvents(evs) {
   (evs || []).forEach((e, i) => {
     const thumb = normalizeThumb(e.thumb || e.screenshot_thumb || e.image_base64 || '')
     const elapsed = resolveElapsed(e)
+    const rec = e.vlm_meta?.recovery
+    const recId = rec?.rule_id || (String(e.capability_id || '').startsWith('recovery_')
+      ? String(e.capability_id).slice(9) : '')
+    const knowledge = knowledgeFrom(e)
     upsert(e.seq ?? i + 1, {
       cap: e.capability_id, executor: e.executor_used,
       result_status: e.status, status: e.status,
@@ -124,6 +194,19 @@ function applyPlanEvents(evs) {
       thought: e.ai_reasoning || '',
       thumb,
       action: e.plan_event ? { capability_id: e.capability_id, params: e.plan_event.params } : null,
+      ...(knowledge ? { knowledge } : {}),
+      ...(recId ? {
+        recoverySummary: e.summary || '',
+        recovery: rec || null,
+        packs: [{
+          uid: `builtin/recovery/${recId}`,
+          kind: 'recovery',
+          id: recId,
+          matched: true,
+          recovered: rec?.recovered === true || e.status === 'pass',
+          mode: rec?.mode || '',
+        }],
+      } : {}),
     })
   })
 }
@@ -191,6 +274,8 @@ async function backfill(runId) {
     const rp = d.report_payload && typeof d.report_payload === 'object' ? d.report_payload : {}
     const plan = d.plan_payload && typeof d.plan_payload === 'object' ? d.plan_payload : {}
     goal.value = goal.value || d.goal || rp.goal || plan.goal || d.case_name || props.caseGoal || ''
+    const fromPlan = parseCheckpointCatalog(plan.checkpoints || rp.checkpoints || d.checkpoints)
+    if (fromPlan.length) checkpoints.value = mergeCheckpointCatalog(checkpoints.value, fromPlan)
     overall.value = d.overall_status || overall.value || ''
     finished.value = true
     caseElapsed = Number(d.elapsed_ms) || 0
@@ -219,6 +304,11 @@ async function backfill(runId) {
         if (elapsed > 0 && !(Number(s.elapsed) > 0)) s.elapsed = elapsed
         if (e.capability_id && (!s.cap || s.cap === 'done')) s.cap = e.capability_id
         if (e.executor_used && !s.executor) s.executor = e.executor_used
+        const rec = e.vlm_meta?.recovery
+        if (rec && !s.recovery) s.recovery = rec
+        if (rec && !s.recoverySummary) s.recoverySummary = e.summary || s.recoverySummary
+        const k = knowledgeFrom(e)
+        if (k && !s.knowledge?.length) s.knowledge = k
       })
     }
     fillMissingElapsed(caseElapsed)
@@ -267,6 +357,7 @@ watch(() => props.runId, (id) => { reset(); backfill(id) })
 
 const onKeydown = (e) => {
   if (e.key === 'Escape' && lightboxSrc.value) closeLightbox()
+  else if (e.key === 'Escape' && stepDrawerOpen.value) closeStepDrawer()
 }
 
 onMounted(() => {
@@ -310,9 +401,25 @@ const statusClass = (s) => {
 const fmtAction = (a) => {
   if (!a || !a.capability_id) return ''
   const p = a.params || {}
-  const kv = Object.keys(p).map(k => `${k}=${p[k]}`).join(', ')
-  return `${a.capability_id}(${kv})`
+  const kv = Object.keys(p).map((k) => {
+    const v = p[k]
+    if (v && typeof v === 'object') {
+      try { return `${k}=${JSON.stringify(v)}` } catch { return `${k}=${String(v)}` }
+    }
+    return `${k}=${v}`
+  }).join(', ')
+  return kv ? `${a.capability_id}(${kv})` : a.capability_id
 }
+
+const usedKnowledge = (s) => (s?.knowledge || []).filter((k) => k && k.used !== false)
+
+const checkpointCatalog = computed(() => mergeCheckpointCatalog(
+  parseCheckpointCatalog(checkpoints.value),
+  ...steps.value.map((s) => parseCheckpointsFromLlmInput(s.llm_input)),
+  ...steps.value.map((s) => parseCheckpointCatalog(s.checkpoints_hit)),
+))
+
+const readableText = (text) => replaceCheckpointIds(text, checkpointCatalog.value)
 
 const BAR_PALETTE = [
   '#6366f1', '#06b6d4', '#a855f7', '#f59e0b', '#ec4899',
@@ -393,13 +500,82 @@ const verdictText = computed(() => {
 })
 const showVerdict = computed(() => finished.value || overall.value || verdictText.value)
 
+const failStepNo = computed(() => {
+  const bad = [...steps.value].reverse().find((s) => {
+    const st = String(s.result_status || s.status || '')
+    return ['fail', 'failed', 'give_up', 'declined'].includes(st)
+  })
+  return bad?.step || null
+})
+const lastFailThumb = computed(() => {
+  const hit = failStepNo.value
+    ? steps.value.find((x) => x.step === failStepNo.value)
+    : null
+  if (hit && isValidThumb(hit.thumb)) return hit.thumb
+  const any = [...steps.value].reverse().find((x) => isValidThumb(x.thumb))
+  return any?.thumb || ''
+})
+// 默认展开（允许用户再折叠）
+const stepsOpen = ref(true)
+
+// 统一：单条步骤详情页抽屉（包含系统预筛/恢复规则/知识命中）
+const stepDrawerOpen = ref(false)
+const stepDrawerStepNo = ref(null)
+const stepDrawerFocusUid = ref('')
+
+const drawerStep = computed(() => {
+  if (stepDrawerStepNo.value === null || stepDrawerStepNo.value === undefined) return null
+  return steps.value.find((s) => s.step === stepDrawerStepNo.value) || null
+})
+
+const drawerThumbSrc = computed(() => {
+  const t = drawerStep.value?.thumb
+  return t && isValidThumb(t) ? thumbSrc(t) : ''
+})
+
+const inspectReady = ref(false)
+let inspectProbeTok = 0
+watch(drawerThumbSrc, (src) => {
+  inspectReady.value = false
+  const tok = ++inspectProbeTok
+  if (!src) return
+  const img = new Image()
+  img.onload = () => {
+    if (tok !== inspectProbeTok) return
+    inspectReady.value = !isBlankLoadedImage(img)
+  }
+  img.onerror = () => {
+    if (tok !== inspectProbeTok) return
+    inspectReady.value = false
+  }
+  img.src = src
+}, { immediate: true })
+
 const selectStep = (stepNo) => {
   activeStep.value = stepNo
+  stepsOpen.value = true
   nextTick(() => {
     const el = scrollEl.value?.querySelector(`[data-step="${stepNo}"]`)
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     scrollFilmToActive()
   })
+}
+
+function closeStepDrawer() {
+  stepDrawerOpen.value = false
+  stepDrawerFocusUid.value = ''
+}
+
+function openStepDetailDrawer(stepNo, focusUid = '') {
+  selectStep(stepNo)
+  closeLightbox()
+  stepDrawerStepNo.value = stepNo
+  stepDrawerFocusUid.value = String(focusUid || '').trim()
+  stepDrawerOpen.value = true
+}
+
+const jumpToFail = () => {
+  if (failStepNo.value) openStepDetailDrawer(failStepNo.value)
 }
 
 const openLightbox = (thumb, meta = '') => {
@@ -416,19 +592,17 @@ const closeLightbox = () => {
 
 const onFilmClick = (f, e) => {
   e.stopPropagation()
-  selectStep(f.step)
+  openStepDetailDrawer(f.step)
 }
 
 const onNodeThumbClick = (f, e) => {
   e.stopPropagation()
-  selectStep(f.step)
-  if (f.hasThumb) openLightbox(f.thumb, `#${f.step} · ${f.cap} · ${fmtDuration(f.elapsed)}`)
+  openStepDetailDrawer(f.step)
 }
 
 const onStepThumbClick = (s, e) => {
   e.stopPropagation()
-  selectStep(s.step)
-  openLightbox(s.thumb, `#${s.step} · ${s.cap || ''} · ${fmtDuration(s.elapsed)}`)
+  openStepDetailDrawer(s.step)
 }
 
 defineExpose({ goal, overall, finished })
@@ -461,13 +635,26 @@ defineExpose({ goal, overall, finished })
       </table>
     </section>
 
+    <div v-if="checkpointCatalog.length" class="et-cps">
+      <span class="et-cps-label">检查点</span>
+      <ol>
+        <li v-for="cp in checkpointCatalog" :key="cp.id">{{ cp.description || cp.id }}</li>
+      </ol>
+    </div>
+
     <div v-if="showVerdict" class="et-verdict" :class="isLimit ? 'limit' : statusClass(overall)">
-      <div class="et-verdict-kicker">
-        <span class="et-verdict-tag">{{ statusText(overall) || (finished ? '已结束' : '执行中') }}</span>
-        <span v-if="isLimit" class="et-limit-pill">步数上限</span>
-        <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
+      <div v-if="lastFailThumb && statusClass(overall) === 'bad'" class="et-verdict-shot" @click="openStepDetailDrawer(failStepNo)">
+        <img :src="thumbSrc(lastFailThumb)" alt="" />
       </div>
-      <p class="et-verdict-body">{{ verdictText || '本用例已结束，详见下方时间线。' }}</p>
+      <div class="et-verdict-main">
+        <div class="et-verdict-kicker">
+          <span class="et-verdict-tag">{{ statusText(overall) || (finished ? '已结束' : '执行中') }}</span>
+          <span v-if="isLimit" class="et-limit-pill">步数上限</span>
+          <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
+          <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
+        </div>
+        <p class="et-verdict-body">{{ verdictText || '本用例已结束，详见下方时间线。' }}</p>
+      </div>
     </div>
 
     <div v-if="runId || steps.length" class="film-block">
@@ -498,7 +685,7 @@ defineExpose({ goal, overall, finished })
             }"
             :style="{ left: b.leftPct + '%', width: b.widthPct + '%', background: b.color }"
             :title="`#${b.step} ${b.cap} · ${fmtDuration(b.elapsed)}`"
-            @click="selectStep(b.step)"
+            @click="openStepDetailDrawer(b.step)"
           >#{{ b.step }}</button>
         </div>
         <div ref="filmEl" class="tl-flow">
@@ -532,9 +719,12 @@ defineExpose({ goal, overall, finished })
       </template>
     </div>
 
-    <section v-if="runId || steps.length" class="et-log-block">
-      <div class="et-log-head">步骤明细</div>
-      <div ref="scrollEl" class="et-timeline">
+    <section v-if="runId || steps.length" class="et-log-block" :class="{ open: stepsOpen }">
+      <button type="button" class="et-log-head" @click="stepsOpen = !stepsOpen">
+        步骤明细
+        <span>{{ stepsOpen ? '收起' : `展开 ${steps.length} 步` }}</span>
+      </button>
+      <div v-show="stepsOpen" ref="scrollEl" class="et-timeline">
       <div v-if="!steps.length" class="et-empty">暂无步骤（运行中会实时出现，或该 run 无明细）</div>
       <div
         v-for="s in steps"
@@ -542,7 +732,7 @@ defineExpose({ goal, overall, finished })
         class="et-step"
         :class="{ active: s.step === activeStep }"
         :data-step="s.step"
-        @click="selectStep(s.step)"
+        @click="openStepDetailDrawer(s.step)"
       >
         <div class="et-idx">#{{ s.step }}</div>
         <button
@@ -566,14 +756,75 @@ defineExpose({ goal, overall, finished })
             <span class="et-act-label">动作</span>
             <code>{{ fmtAction(s.action) }}</code>
           </div>
-          <div v-if="s.thought" class="et-thought">{{ s.thought }}</div>
-          <div v-if="s.summary" class="et-summary">{{ s.summary }}</div>
+          <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
+          <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
+          <!-- 本步命中的 Pack：知识/恢复规则影响了哪一步，在这里能溯源 -->
+          <div v-if="s.packs?.length" class="et-packs">
+            <span class="et-packs-label">本步命中</span>
+            <button
+              v-for="p in s.packs" :key="p.id || p.uid"
+              type="button"
+              class="et-pack" :class="{ applied: p.recovered, advise: p.mode === 'advise' }"
+              :title="p.uid || p.id"
+              @click.stop="openStepDetailDrawer(s.step)"
+            >
+              {{ p.id }}
+              <em v-if="p.mode === 'advise'">建议</em>
+              <em v-else-if="p.recovered">已恢复</em>
+              <em v-else-if="p.applied">未恢复</em>
+            </button>
+          </div>
+          <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
+            <span class="et-packs-label">知识库命中</span>
+            <button
+              v-for="k in usedKnowledge(s)" :key="k.uid || k.id"
+              type="button"
+              class="et-pack et-knowledge"
+              :title="k.title || k.id"
+              @click.stop="openStepDetailDrawer(s.step)"
+            >
+              {{ k.title || k.id }}
+              <em v-if="k.match_pct != null">{{ Number(k.match_pct) || 0 }}%</em>
+            </button>
+          </div>
+          <div v-if="s.recovery?.trigger && !s.packs?.length" class="et-packs muted">
+            <span class="et-packs-label">系统层预筛</span>
+            <button
+              type="button"
+              class="et-pack"
+              @click.stop="openStepDetailDrawer(s.step)"
+            >
+              {{ s.recovery.trigger }} · 无规则命中
+            </button>
+          </div>
         </div>
       </div>
     </div>
     </section>
 
+    <ExecutionStepDetailDrawer
+      v-model="stepDrawerOpen"
+      :step="drawerStep"
+      :focusUid="stepDrawerFocusUid"
+      :has-shot="inspectReady"
+      :checkpoint-catalog="checkpointCatalog"
+      @focus="(uid) => { stepDrawerFocusUid = uid }"
+    />
+
     <Teleport to="body">
+      <div
+        v-if="stepDrawerOpen && inspectReady"
+        class="et-inspect"
+        @click.self="closeStepDrawer"
+      >
+        <button type="button" class="et-inspect-close" aria-label="关闭" @click="closeStepDrawer">×</button>
+        <div class="et-inspect-shot">
+          <div class="et-inspect-frame">
+            <img :src="drawerThumbSrc" alt="screenshot" />
+          </div>
+          <p class="et-inspect-meta">#{{ drawerStep?.step }} · {{ drawerStep?.cap || '' }}</p>
+        </div>
+      </div>
       <div v-if="lightboxSrc" class="et-lightbox" @click.self="closeLightbox">
         <button type="button" class="et-lightbox-close" aria-label="关闭" @click="closeLightbox">×</button>
         <img :src="lightboxSrc" alt="screenshot" class="et-lightbox-img" @click.stop />
@@ -637,7 +888,27 @@ defineExpose({ goal, overall, finished })
   border-radius: 10px;
   border: 1px solid #e5e7eb;
   background: #f8fafc;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
 }
+.et-verdict-shot {
+  flex: 0 0 72px;
+  width: 72px;
+  height: 128px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f172a;
+  cursor: zoom-in;
+  border: none;
+  padding: 0;
+}
+.et-verdict-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.et-verdict-main { min-width: 0; flex: 1; }
 .et-verdict.ok { background: #ecfdf5; border-color: #6ee7b7; }
 .et-verdict.bad { background: #fef2f2; border-color: #fca5a5; }
 .et-verdict.warn { background: #fffbeb; border-color: #fcd34d; }
@@ -645,6 +916,7 @@ defineExpose({ goal, overall, finished })
 .et-verdict-kicker {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 6px;
 }
@@ -666,6 +938,16 @@ defineExpose({ goal, overall, finished })
   border-radius: 999px;
 }
 .et-verdict-ms { font-size: 12px; color: #64748b; margin-left: auto; }
+.et-jump {
+  border: 1px solid #fecaca;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 650;
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
 .et-verdict-body {
   margin: 0;
   font-size: 13px;
@@ -674,6 +956,32 @@ defineExpose({ goal, overall, finished })
   white-space: pre-wrap;
   word-break: break-word;
 }
+.et-cps {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.et-cps-label {
+  font-size: 12px;
+  color: #6b7280;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+.et-cps ol {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #111827;
+  line-height: 1.55;
+}
+.et-cps li + li { margin-top: 4px; }
 .et-goal {
   padding: 10px 12px;
   background: #fff;
@@ -851,8 +1159,8 @@ defineExpose({ goal, overall, finished })
 }
 
 .et-log-block {
-  flex: 1 1 240px;
-  min-height: 240px;
+  flex: 0 0 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -863,15 +1171,27 @@ defineExpose({ goal, overall, finished })
   border-radius: 10px;
   box-sizing: border-box;
 }
+.et-log-block.open {
+  flex: 1 1 240px;
+  min-height: 240px;
+}
 .et-log-head {
   flex-shrink: 0;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 8px 12px;
   font-size: 12px;
   font-weight: 700;
   color: #374151;
+  border: none;
   border-bottom: 1px solid #e5e7eb;
   background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
 }
+.et-log-head span { font-weight: 600; color: #64748b; }
 .et-timeline {
   flex: 1 1 auto;
   min-height: 0;
@@ -971,6 +1291,28 @@ defineExpose({ goal, overall, finished })
   font-size: 12px;
 }
 .et-thought { font-size: 13px; color: #374151; line-height: 1.6; white-space: pre-wrap; margin-top: 6px; }
+.et-packs { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.et-packs.muted { opacity: .7; }
+.et-packs-label { font-size: 11px; color: #6b7280; }
+.et-pack {
+  font-size: 11px; padding: 1px 6px; border-radius: 8px;
+  background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb;
+  cursor: pointer;
+}
+.et-knowledge {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.et-knowledge.skipped {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fed7aa;
+}
+.et-pack.applied { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.et-pack.advise { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.et-pack em { font-style: normal; opacity: .75; margin-left: 3px; }
+.et-pack-link { font-size: 11px; color: #2563eb; cursor: pointer; }
 .et-summary { margin-top: 3px; font-size: 12px; color: #6b7280; }
 .et-final { text-align: center; padding: 12px; border-radius: 8px; font-weight: 600; }
 .et-final.ok { background: #dcfce7; color: #166534; }
@@ -979,7 +1321,82 @@ defineExpose({ goal, overall, finished })
 </style>
 
 <style>
-/* lightbox 挂到 body，不能 scoped */
+/* lightbox / inspect overlay 挂到 body，不能 scoped */
+.et-inspect {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 35%;
+  z-index: 3000;
+  background: #0b1220;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 12px 16px 20px;
+  box-sizing: border-box;
+}
+.et-inspect-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+.et-inspect-close:hover { background: rgba(255, 255, 255, 0.22); }
+.et-inspect-shot {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.et-inspect-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.et-inspect-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  background: transparent;
+}
+.et-inspect-meta {
+  margin: 8px 0 0;
+  flex-shrink: 0;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+}
+.el-drawer.step-detail-drawer {
+  z-index: 3010 !important;
+  width: 35% !important;
+  box-shadow: none !important;
+  border-left: 1px solid #e3e8f0;
+}
+.el-drawer.step-detail-drawer .el-drawer__body {
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.el-drawer.step-detail-drawer .el-drawer__close-btn {
+  z-index: 2;
+}
+
 .et-lightbox {
   position: fixed;
   inset: 0;

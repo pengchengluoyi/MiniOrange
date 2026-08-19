@@ -57,13 +57,42 @@ import { shortTaskId } from '@/utils/testingTasks'
 
 const GENERIC_MODEL = /^(ios|iphone|ipad|ios device|device|apple)$/i
 
+function channelKindLabel(ch) {
+  const s = String(ch || '').toLowerCase()
+  if (s.includes('wifi')) return 'Wi‑Fi'
+  if (s.includes('usb')) return 'USB'
+  if (s.includes('simulator')) return '模拟器'
+  if (s.includes('ios')) return 'iOS'
+  if (s === 'adb') return 'Android'
+  if (s.includes('claw')) return 'ClawNode'
+  return s || '设备'
+}
+
+export function devicePrimaryName(device) {
+  const sn = String(device?.sn || '').trim()
+  const rawName = String(device?.name || device?.device_name || '').trim()
+  if (rawName && rawName !== sn) return rawName
+  const rawModel = String(device?.model || '').trim()
+  if (rawModel && !GENERIC_MODEL.test(rawModel) && rawModel !== sn) return rawModel
+  const iosName = String(device?.channels?.ios_name || '').trim()
+  if (iosName && iosName !== sn) return iosName
+  if (sn.startsWith('ios-wifi-')) {
+    const tail = sn.slice('ios-wifi-'.length)
+    if (tail && !/^[0-9a-f-]{20,}$/i.test(tail)) return tail
+  }
+  return shortTaskId(sn) || '未命名设备'
+}
+
 export function formatDeviceOption(device) {
-  const sn = String(device.sn || '').trim()
-  const rawModel = String(device.model || '').trim()
-  const model = rawModel && !GENERIC_MODEL.test(rawModel) && rawModel !== sn ? rawModel : ''
   const ch = device.execChannel || deviceExecChannel(device).label || '?'
-  const busy = device.busy_task_id ? ` · 占用 ${shortTaskId(device.busy_task_id)}` : ''
-  const id = sn || 'unknown'
-  if (model) return `${model} · ${id} · ${ch}${busy}`
-  return `${id} · ${ch}${busy}`
+  const kind = channelKindLabel(ch)
+  const name = devicePrimaryName(device)
+  const busy = device.busy_task_id ? ` · 占用中 ${shortTaskId(device.busy_task_id)}` : ''
+  return `${name} · ${kind}${busy}`
+}
+
+export function formatDeviceMeta(device) {
+  const ch = device?.execChannel || deviceExecChannel(device).label || ''
+  const sn = String(device?.sn || '').trim()
+  return [ch, sn].filter(Boolean).join(' · ')
 }

@@ -12,15 +12,23 @@ import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 import { fetchTaskDetail } from '@/composables/useTestingTasks'
 import { getFeishuCasesCached } from '@/api/feishuRegression'
+import { reviewKnowledgeItem } from '@/api/settings'
 import { normalizeCaseRow } from '@/utils/caseText'
 import {
   apiErrorDetail,
   applyTestingTaskEvent,
+  formatElapsed,
   isMissingTaskEndpoint,
   isStepLimitCase,
-  shortTaskId,
+  progressStatus,
+  shortDeviceLabel,
   statusLabel,
   statusTagType,
+  taskCountLabel,
+  taskPassRate,
+  taskProgressPct,
+  taskTitle,
+  displayTaskStatus,
 } from '@/utils/testingTasks'
 
 const props = defineProps({
@@ -86,7 +94,8 @@ const failedCases = computed(() =>
 const skippedCases = computed(() =>
   (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
 )
-const passRate = computed(() => task.value?.passRate ?? 0)
+const passRate = computed(() => taskPassRate(task.value))
+const caseRailOpen = ref(false)
 const selectedCase = computed(() =>
   (task.value?.cases || []).find((c) => caseRunIdOf(c) === selectedCaseRunId.value) || null,
 )
@@ -98,6 +107,14 @@ const runningCaseName = computed(() => {
   const row = (task.value?.cases || []).find((c) => c.status === 'running')
   return row?.name || row?.case_id || task.value?.currentCaseId || ''
 })
+const caseProposals = computed(() =>
+  (selectedCase.value?.knowledge_proposals || []).filter((k) => k && (k.review_status || 'pending') === 'pending'),
+)
+const taskProposals = computed(() =>
+  (task.value?.knowledge_proposals || []).filter((k) => k && (k.review_status || 'pending') === 'pending'),
+)
+const reviewingId = ref('')
+const SOURCE_LABEL = { manual: '手动添加', case_run: '用例执行', task_run: '任务汇总' }
 const hitlForThisTask = computed(() => {
   const fromCases = (task.value?.cases || []).find((c) => c.hitl)
   if (fromCases) {
@@ -116,6 +133,7 @@ const pickDefaultCase = (cases) => {
   return cases.find((c) => c.hitl)
     || cases.find((c) => c.status === 'running')
     || cases.find((c) => c.status === 'blocked')
+    || cases.find((c) => ['fail', 'failed', 'partial', 'declined'].includes(c.status))
     || cases.find((c) => c.status === 'pending')
     || cases[0]
 }
@@ -176,8 +194,16 @@ const loadTask = async ({ silent = false } = {}) => {
 
 const promoteRun = async () => {
   if (!selectedCaseRunId.value) return
+  const failed = ['fail', 'failed', 'partial'].includes(selectedCase.value?.status)
   try {
-    const note = await ElMessageBox.prompt(`把 ${selectedCaseRunId.value} 提升为 baseline 的备注（可空）`, '提升为 Baseline', {
+    if (failed) {
+      await ElMessageBox.confirm(
+        '当前用例未通过。仍要用这次轨迹作为以后执行的对照路径吗？',
+        '提升为 Baseline',
+        { type: 'warning', confirmButtonText: '仍要提升', cancelButtonText: '取消' },
+      )
+    }
+    const note = await ElMessageBox.prompt(`把 ${selectedCase.value?.case_id || selectedCaseRunId.value} 提升为 baseline 的备注（可空）`, '提升为 Baseline', {
       confirmButtonText: '确认',
       cancelButtonText: '取消',
       inputValue: '',
@@ -186,6 +212,27 @@ const promoteRun = async () => {
     ElMessage.success('已提升为 baseline')
   } catch (e) {
     if (e !== 'cancel') ElMessage.error(`promote 失败: ${e?.message || e}`)
+  }
+}
+
+const copyRunId = async () => {
+  const id = selectedCaseRunId.value || props.taskId
+  try {
+    await navigator.clipboard.writeText(id)
+    ElMessage.success('已复制编号')
+  } catch {
+    ElMessage.info(id)
+  }
+}
+
+const copyTaskId = async () => {
+  const id = props.taskId || task.value?.taskId
+  if (!id) return
+  try {
+    await navigator.clipboard.writeText(id)
+    ElMessage.success('已复制任务编号')
+  } catch {
+    ElMessage.info(id)
   }
 }
 
@@ -247,6 +294,40 @@ const retryOne = async (c) => {
     ElMessage.error(`重跑失败: ${e?.message || e}`)
   } finally {
     retrying.value = false
+  }
+}
+
+const approveProposal = async (row) => {
+  if (!row?.id) return
+  reviewingId.value = row.id
+  try {
+    await reviewKnowledgeItem(row.id, {
+      action: 'approve',
+      title: row.title,
+      content: row.content,
+      category: row.category,
+      tags: row.tags || [],
+    })
+    row.review_status = 'approved'
+    ElMessage.success('已审核并加入知识库')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '审核失败')
+  } finally {
+    reviewingId.value = ''
+  }
+}
+
+const rejectProposal = async (row) => {
+  if (!row?.id) return
+  reviewingId.value = row.id
+  try {
+    await reviewKnowledgeItem(row.id, { action: 'reject' })
+    row.review_status = 'rejected'
+    ElMessage.success('已驳回')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '驳回失败')
+  } finally {
+    reviewingId.value = ''
   }
 }
 
@@ -343,11 +424,12 @@ watch(selectedCase, (c) => {
     <template v-if="task">
       <div class="pane-head">
         <div class="pane-head-row">
-          <el-tag :type="statusTagType(task.status)" effect="dark" round>{{ statusLabel(task.status) }}</el-tag>
-          <span class="mono" :title="task.taskId">任务 {{ shortTaskId(task.taskId) }}</span>
-          <span v-if="task.sn">设备 {{ task.sn }}</span>
-          <span>P{{ task.passed }} F{{ task.failed }} B{{ task.blocked }}</span>
-          <span>{{ task.completed }}/{{ task.total }} · 通过率 {{ passRate }}%</span>
+          <el-tag :type="statusTagType(task.status, task)" effect="dark" round>{{ statusLabel(task.status, task) }}</el-tag>
+          <span class="title" :title="task.taskId">{{ taskTitle(task) }}</span>
+          <span v-if="task.sn" class="muted">设备 {{ shortDeviceLabel(task.sn) }}</span>
+          <span>通过 {{ task.passed }} · 失败 {{ task.failed }}{{ task.blocked ? ` · 阻塞 ${task.blocked}` : '' }}</span>
+          <span>{{ taskCountLabel(task) }}<template v-if="passRate != null && displayTaskStatus(task) !== 'cancelled'"> · 通过率 {{ passRate }}%</template></span>
+          <el-button size="small" text @click="copyTaskId">复制任务编号</el-button>
           <el-button
             v-if="task.status === 'running' || task.status === 'queued'"
             size="small"
@@ -365,9 +447,9 @@ watch(selectedCase, (c) => {
           >重跑失败用例</el-button>
         </div>
         <el-progress
-          :percentage="task.progress"
+          :percentage="taskProgressPct(task)"
           :stroke-width="6"
-          :status="task.status === 'failed' || task.failed ? 'exception' : (task.progress === 100 ? 'success' : undefined)"
+          :status="progressStatus(task)"
         />
         <p v-if="task.error" class="err">{{ task.error }}</p>
       </div>
@@ -388,10 +470,25 @@ watch(selectedCase, (c) => {
 
       <template v-if="view === 'summary'">
         <div class="metrics">
-          <div class="metric"><div class="k">通过率</div><div class="v">{{ passRate }}%</div></div>
+          <div class="metric"><div class="k">通过率</div><div class="v">{{ passRate == null ? '—' : `${passRate}%` }}</div></div>
           <div class="metric"><div class="k">通过</div><div class="v ok">{{ task.passed || 0 }}</div></div>
           <div class="metric"><div class="k">失败</div><div class="v bad">{{ task.failed || 0 }}</div></div>
           <div class="metric"><div class="k">阻塞</div><div class="v warn">{{ task.blocked || 0 }}</div></div>
+        </div>
+        <div v-if="taskProposals.length" class="know-block">
+          <h4>任务待审核知识</h4>
+          <article v-for="row in taskProposals" :key="row.id" class="know-card">
+            <header>
+              <strong>{{ row.title }}</strong>
+              <small>{{ SOURCE_LABEL[row.source] || '任务汇总' }}</small>
+            </header>
+            <p v-if="row.question" class="know-q">{{ row.question }}</p>
+            <el-input v-model="row.content" type="textarea" :rows="4" />
+            <div class="know-actions">
+              <el-button size="small" :loading="reviewingId === row.id" @click="rejectProposal(row)">驳回</el-button>
+              <el-button size="small" type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入知识库</el-button>
+            </div>
+          </article>
         </div>
         <div class="fail-block">
           <h4>失败 / 异常用例</h4>
@@ -427,23 +524,26 @@ watch(selectedCase, (c) => {
         </div>
       </template>
 
-      <div v-else class="split">
+      <div v-else class="split" :class="{ 'case-rail-collapsed': !caseRailOpen }">
         <div class="case-list">
-          <div v-if="showPendingTab" class="case-tabs">
-            <button
-              type="button"
-              :class="{ active: caseTab === 'pending' }"
-              @click="caseTab = 'pending'"
-            >待执行 {{ pendingCases.length }}</button>
-            <button
-              type="button"
-              :class="{ active: caseTab === 'executed' }"
-              @click="caseTab = 'executed'"
-            >已执行 {{ executedCases.length }}</button>
-          </div>
-          <div v-else class="case-list-head">
-            <strong>用例</strong>
-            <span>{{ railCases.length }}</span>
+          <div class="case-list-toolbar">
+            <div v-if="showPendingTab" class="case-tabs">
+              <button
+                type="button"
+                :class="{ active: caseTab === 'pending' }"
+                @click="caseTab = 'pending'"
+              >待执行 {{ pendingCases.length }}</button>
+              <button
+                type="button"
+                :class="{ active: caseTab === 'executed' }"
+                @click="caseTab = 'executed'"
+              >已执行 {{ executedCases.length }}</button>
+            </div>
+            <div v-else class="case-list-head">
+              <strong>用例</strong>
+              <span>{{ railCases.length }}</span>
+            </div>
+            <el-button text size="small" @click="caseRailOpen = false">收起</el-button>
           </div>
           <button
             v-for="c in railCases"
@@ -478,9 +578,10 @@ watch(selectedCase, (c) => {
           />
         </div>
         <div class="timeline-pane">
+          <button v-if="!caseRailOpen" type="button" class="case-rail-toggle" @click="caseRailOpen = true">展开用例</button>
           <template v-if="selectedCase">
             <div class="tl-head">
-              <div class="tl-title">{{ selectedCaseRunId }}</div>
+              <div class="tl-title" :title="selectedCaseRunId">{{ selectedCase.case_id || selectedCaseRunId }}</div>
               <div v-if="headerMeta && !headerMeta.live" class="tl-meta">
                 <el-tag
                   v-if="headerMeta.overall"
@@ -488,9 +589,31 @@ watch(selectedCase, (c) => {
                   size="small"
                   :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
                 >{{ statusLabel(headerMeta.overall, selectedCase) }}</el-tag>
-                <span v-if="headerMeta.elapsed">{{ headerMeta.elapsed }}ms</span>
-                <el-button size="small" text type="primary" @click="promoteRun">提升为 Baseline</el-button>
+                <span v-if="headerMeta.elapsed">{{ formatElapsed(headerMeta.elapsed) }}</span>
+                <el-button size="small" text @click="copyRunId">复制编号</el-button>
+                <el-button
+                  size="small"
+                  text
+                  :type="['fail', 'failed', 'partial'].includes(selectedCase.status) ? 'info' : 'primary'"
+                  @click="promoteRun"
+                >{{ ['fail', 'failed', 'partial'].includes(selectedCase.status) ? '仍提升为 Baseline' : '提升为 Baseline' }}</el-button>
               </div>
+            </div>
+            <div v-if="caseProposals.length" class="know-block compact">
+              <h4>本条可沉淀的知识</h4>
+              <article v-for="row in caseProposals" :key="row.id" class="know-card">
+                <header>
+                  <strong>{{ row.title }}</strong>
+                  <small>{{ SOURCE_LABEL[row.source] || '用例执行' }}</small>
+                </header>
+                <p v-if="row.question" class="know-q">{{ row.question }}</p>
+                <el-input v-model="row.title" size="small" class="know-title" />
+                <el-input v-model="row.content" type="textarea" :rows="4" />
+                <div class="know-actions">
+                  <el-button size="small" :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
+                  <el-button size="small" type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并审核通过</el-button>
+                </div>
+              </article>
             </div>
             <p v-if="selectedCase.status === 'pending'" class="pending-hint">
               {{ runningCaseName ? `排队中，当前正在跑 ${runningCaseName}` : '排队中，等待执行' }}
@@ -542,6 +665,8 @@ watch(selectedCase, (c) => {
   margin-bottom: 8px;
 }
 .mono { font-family: ui-monospace, monospace; color: #111827; font-weight: 600; }
+.title { color: #111827; font-weight: 700; font-size: 13px; }
+.muted { color: #6b7280; }
 .err { color: #dc2626; font-size: 12px; margin: 8px 0 0; }
 .hitl-banner {
   display: flex;
@@ -569,6 +694,39 @@ watch(selectedCase, (c) => {
   white-space: nowrap;
 }
 .hitl-banner-text small { font-size: 11px; color: #a16207; }
+.know-block {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e3e8f0;
+  border-radius: 12px;
+}
+.know-block.compact { margin: 8px 0 12px; }
+.know-block h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.know-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.know-card + .know-card { margin-top: 8px; }
+.know-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.know-card header strong { font-size: 13px; }
+.know-card header small { font-size: 11px; color: #9ca3af; }
+.know-q { margin: 0; font-size: 12px; color: #b45309; }
+.know-title { margin-top: 0; }
+.know-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .seg {
   display: inline-flex;
   gap: 4px;
@@ -624,10 +782,34 @@ watch(selectedCase, (c) => {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
   gap: 12px;
   width: 100%;
 }
+.split.case-rail-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.split.case-rail-collapsed .case-list { display: none; }
+.case-rail-toggle {
+  align-self: flex-start;
+  border: 1px solid #e3e8f0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4f46e5;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.case-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.case-list-toolbar .case-tabs,
+.case-list-toolbar .case-list-head { flex: 1; min-width: 0; }
 .case-list {
   overflow: auto;
   padding: 8px;
