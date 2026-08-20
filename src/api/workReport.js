@@ -24,6 +24,13 @@ export const createProject = (data) => {
     })
 }
 
+export const deleteProject = (projectId) => {
+    return request({
+        url: `/project/${projectId}`,
+        method: 'delete'
+    })
+}
+
 export const createAppInProject = (projectId, appData) => {
     const list = Array.isArray(appData.platforms)
         ? appData.platforms
@@ -47,6 +54,13 @@ export const getAppDetail = (appId) => {
     return request({
         url: `/project/app/${appId}`,
         method: 'get'
+    })
+}
+
+export const deleteAppInProject = (appId) => {
+    return request({
+        url: `/project/app/${appId}`,
+        method: 'delete'
     })
 }
 

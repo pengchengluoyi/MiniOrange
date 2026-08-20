@@ -3,6 +3,12 @@ import request from '@/utils/request'
 export const getAppAutomationConfig = (appId) =>
   request({ url: `/app-automation/config/${appId}`, method: 'get' })
 
+export const listQaProcessSummary = () =>
+  request({ url: '/app-automation/qa-process/summary', method: 'get' })
+
+export const assistQaProcess = (appId, data) =>
+  request({ url: `/app-automation/qa-process/assist/${appId}`, method: 'post', data, timeout: 30000 })
+
 export const updateAppAutomationConfig = (appId, data) =>
   request({ url: `/app-automation/config/${appId}`, method: 'put', data })
 

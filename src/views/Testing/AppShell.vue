@@ -15,6 +15,7 @@ import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import KnowledgePanel from '@/views/Settings/KnowledgePanel.vue'
 import FeishuRegressionPanel from '@/views/Settings/FeishuRegressionPanel.vue'
+import QaProcessPanel from '@/views/Testing/QaProcessPanel.vue'
 import { filterExecutableDevices, formatDeviceMeta, formatDeviceTag } from '@/utils/testingDevices'
 import {
   casePlatformKind,
@@ -38,6 +39,7 @@ import {
   taskTitle,
 } from '@/utils/testingTasks'
 import { fetchTaskDetail, fetchTasksForApp, useTestingTaskList } from '@/composables/useTestingTasks'
+import { envLabel } from '@/constants/envProfiles'
 import { parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
@@ -49,12 +51,17 @@ const appId = computed(() => String(route.params.appId || ''))
 const appName = computed(() => String(route.query.appName || '应用'))
 const projectName = computed(() => String(route.query.projectName || ''))
 const projectId = computed(() => String(route.query.projectId || ''))
-const VALID_TABS = ['tasks', 'cases', 'knowledge', 'config']
+const VALID_TABS = ['process', 'tasks', 'cases', 'knowledge', 'config']
 const resolveTab = (t) => VALID_TABS.includes(t) ? t : 'tasks'
 /** 本地 tab / task：点击立刻切面；再与路由对齐 */
 const tab = ref(resolveTab(route.query.tab))
 const selectedTaskId = ref(String(route.query.task || ''))
 const configSection = computed(() => String(route.query.configSection || 'env'))
+const resolveBoard = (b) => (b === 'req' || b === 'sch' ? b : 'rel')
+const processBoard = ref(resolveBoard(route.query.board))
+const processId = ref(String(route.query.pid || ''))
+const processPanel = ref(null)
+const runSeed = ref(null)
 
 watch(
   () => route.query.tab,
@@ -66,6 +73,18 @@ watch(
   () => route.query.task,
   (t) => {
     selectedTaskId.value = String(t || '')
+  },
+)
+watch(
+  () => route.query.pid,
+  (id) => {
+    processId.value = String(id || '')
+  },
+)
+watch(
+  () => route.query.board,
+  (b) => {
+    processBoard.value = resolveBoard(b)
   },
 )
 
@@ -90,7 +109,15 @@ const selectedSuiteId = ref('')
 const selectedTask = computed(() => tasks.value.find((t) => t.taskId === selectedTaskId.value) || null)
 const hasDetail = computed(() => !!selectedTaskId.value && tab.value === 'tasks')
 const showTaskRail = computed(() => tab.value === 'tasks' && (!hasDetail.value || taskRailOpen.value))
-const tabLabel = computed(() => ({ tasks: '任务', cases: '用例', knowledge: '知识', config: '配置' }[tab.value] || '任务'))
+const tabLabel = computed(() => ({ process: '流程', tasks: '任务', cases: '用例', knowledge: '知识', config: '配置' }[tab.value] || '任务'))
+const runDialogTitle = computed(() => {
+  const kind = runSeed.value?.kind
+  if (kind === 'req_admit') return '下发提测冒烟'
+  if (kind === 'req_test') return '下发功能测试'
+  if (kind === 'release_regression') return '下发预发回归'
+  if (kind === 'release_smoke') return '下发生产冒烟'
+  return '新建执行'
+})
 
 const currentProject = computed(() => projects.value.find((p) => p.id === projectId.value) || null)
 const appsInProject = computed(() => currentProject.value?.apps || [])
@@ -151,7 +178,15 @@ const selectedDeviceKinds = computed(() => {
 
 const mixedSelectedPlatforms = computed(() => selectedDeviceKinds.value.length > 1)
 
-const deviceOptionDisabled = (d) => Boolean(d.busy_task_id)
+const deviceOptionDisabled = (d) => {
+  if (d.busy_task_id) return true
+  if (!d.reserved_slot_id) return false
+  return d.reserved_slot_id !== runSeed.value?.slotId
+}
+
+const reservedSelectedDevice = computed(() => selectedDevices.value.find((d) => (
+  d.reserved_slot_id && d.reserved_slot_id !== runSeed.value?.slotId
+)) || null)
 
 const unitCount = computed(() => {
   const n = selectedCaseIds.value.length
@@ -179,6 +214,7 @@ const canStartRun = computed(() => (
   runForm.value.sns.length > 0
   && selectedCaseIds.value.length > 0
   && !busySelectedDevice.value
+  && !reservedSelectedDevice.value
 ))
 
 const baseQuery = () => ({
@@ -204,6 +240,16 @@ const clearTask = () => {
   replaceQuery({ ...baseQuery(), tab: 'tasks', task: undefined })
 }
 
+const onGoTab = (next) => {
+  const raw = String(next || '')
+  if (raw.startsWith('config')) {
+    const section = raw.includes(':') ? raw.split(':')[1] : 'env'
+    setConfigSection(section || 'env')
+    return
+  }
+  setTab(raw)
+}
+
 const setTab = async (next) => {
   const resolved = resolveTab(next)
   // 先改本地状态 → 主区立刻切换（不等路由）
@@ -219,6 +265,11 @@ const setTab = async (next) => {
   if (resolved === 'config') {
     q.configSection = String(route.query.configSection || configSection.value || 'env')
   }
+  if (resolved === 'process') {
+    q.board = processBoard.value
+    q.pid = processId.value || undefined
+    loadDevices()
+  }
   Object.keys(q).forEach((k) => {
     if (q[k] === undefined || q[k] === null || q[k] === '') delete q[k]
   })
@@ -228,6 +279,32 @@ const setTab = async (next) => {
   // 防止并发 replaceQuery 把旧 tab/task 写回
   tab.value = resolved
   selectedTaskId.value = ''
+}
+
+const onProcessBoard = (v) => {
+  processBoard.value = resolveBoard(v)
+  replaceQuery({
+    ...baseQuery(),
+    tab: 'process',
+    board: processBoard.value,
+    pid: processId.value || undefined,
+    task: undefined,
+  })
+}
+
+const onProcessId = (id) => {
+  processId.value = String(id || '')
+  replaceQuery({
+    ...baseQuery(),
+    tab: 'process',
+    board: processBoard.value,
+    pid: processId.value || undefined,
+    task: undefined,
+  })
+}
+
+const onProcessDispatch = (seed) => {
+  openNewRun(seed)
 }
 
 const setConfigSection = (key) => {
@@ -431,29 +508,58 @@ const consumeOpenRun = async () => {
     loadDevices(),
     loadSuites(),
   ])
+  const sns = String(route.query.sns || '').split(',').filter(Boolean)
   selectedSuiteId.value = ''
   selectedCaseIds.value = []
+  runSeed.value = ids.length || sns.length || route.query.kind
+    ? {
+        caseIds: ids,
+        kind: String(route.query.kind || '') || undefined,
+        slotId: String(route.query.slotId || '') || undefined,
+        requirementId: String(route.query.requirementId || '') || undefined,
+        releaseId: String(route.query.releaseId || '') || undefined,
+        sns,
+        envProfile: String(route.query.envProfile || '') || undefined,
+      }
+    : null
   newRunVisible.value = true
   if (suiteId && suites.value.some((s) => s.id === suiteId)) applySuiteId(suiteId)
   else if (ids.length) selectedCaseIds.value = ids
+  if (sns.length) {
+    const allowed = sns.filter((sn) => devices.value.some((d) => d.sn === sn))
+    if (allowed.length) runForm.value.sns = allowed
+  }
   replaceQuery({
     ...baseQuery(),
     tab: 'tasks',
     openRun: undefined,
     caseIds: undefined,
     suite: undefined,
+    kind: undefined,
+    slotId: undefined,
+    requirementId: undefined,
+    releaseId: undefined,
+    sns: undefined,
+    envProfile: undefined,
   })
 }
 
-const openNewRun = async () => {
+const openNewRun = async (seed = null) => {
+  const real = seed && Array.isArray(seed.caseIds) ? seed : null
+  runSeed.value = real && real.caseIds.length ? real : null
   selectedSuiteId.value = ''
-  selectedCaseIds.value = []
+  selectedCaseIds.value = runSeed.value ? [...runSeed.value.caseIds] : []
   newRunVisible.value = true
   await Promise.all([
     cases.value.length ? Promise.resolve() : loadCases(),
     loadDevices(),
     loadSuites(),
   ])
+  if (runSeed.value?.caseIds?.length) selectedCaseIds.value = [...runSeed.value.caseIds]
+  if (runSeed.value?.sns?.length) {
+    const allowed = runSeed.value.sns.filter((sn) => devices.value.some((d) => d.sn === sn))
+    if (allowed.length) runForm.value.sns = allowed
+  }
 }
 
 const selectAllVisibleCases = () => {
@@ -475,6 +581,11 @@ const submitRun = async () => {
     ElMessage.warning(`设备占用中（任务 ${shortTaskId(busyDev.busy_task_id)}）`)
     return
   }
+  const reservedDev = selectedDevices.value.find((d) => d.reserved_slot_id && d.reserved_slot_id !== runSeed.value?.slotId)
+  if (reservedDev) {
+    ElMessage.warning(`设备已被排期占用：${reservedDev.reserved_title || '其他窗口'} 至 ${String(reservedDev.reserved_until || '').replace('T', ' ').slice(5, 16)}`)
+    return
+  }
   submitting.value = true
   try {
     const kinds = selectedDeviceKinds.value
@@ -493,11 +604,43 @@ const submitRun = async () => {
       use_persisted_baseline: runForm.value.use_persisted_baseline,
       use_cache: runForm.value.use_cache,
       execution_mode: 'auto',
-      run_type: 'manual',
+      run_type: runSeed.value?.kind || 'manual',
+      slot_id: runSeed.value?.slotId || '',
+      requirement_id: runSeed.value?.requirementId || '',
+      release_id: runSeed.value?.releaseId || '',
     })
     const batch = res?.data?.run_id || res?.data?.task_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }
     newRunVisible.value = false
+    if (runSeed.value && processPanel.value?.attachRun) {
+      await processPanel.value.attachRun({
+        requirementId: runSeed.value.requirementId,
+        releaseId: runSeed.value.releaseId,
+        kind: runSeed.value.kind,
+        taskId: batch,
+      })
+      const seed = runSeed.value
+      runSeed.value = null
+      ElMessage.success('已下发，流程单已挂上该任务')
+      await loadTasks()
+      tab.value = 'process'
+      if (seed.releaseId) {
+        processBoard.value = 'rel'
+        processId.value = seed.releaseId
+      } else if (seed.requirementId) {
+        processBoard.value = 'req'
+        processId.value = seed.requirementId
+      }
+      replaceQuery({
+        ...baseQuery(),
+        tab: 'process',
+        board: processBoard.value,
+        pid: processId.value || undefined,
+        task: undefined,
+      })
+      return
+    }
+    runSeed.value = null
     ElMessage.success('已启动任务')
     await loadTasks()
     tab.value = 'tasks'
@@ -505,6 +648,10 @@ const submitRun = async () => {
     replaceQuery({ ...baseQuery(), tab: 'tasks', task: batch })
   } catch (e) {
     const busy = parseBusyConflict(e)
+    if (busy.isReserved) {
+      ElMessage.warning(`设备已被排期占用${busy.reservedTitle ? `：${busy.reservedTitle}` : ''}`)
+      return
+    }
     if (busy.isBusy) {
       ElMessage.warning(busy.message || '设备正在执行其他任务')
       if (busy.busyTaskId) {
@@ -534,11 +681,17 @@ const refreshLive = async () => {
 
 onMounted(async () => {
   // Redirect legacy ?tab=config&configSection=regression → ?tab=cases
-  if (route.query.tab === 'config' && route.query.configSection === 'regression') {
-    tab.value = 'cases'
-    replaceQuery({ ...baseQuery(), tab: 'cases', configSection: undefined })
+  if (route.query.tab === 'config' && (route.query.configSection === 'regression' || route.query.configSection === 'icons')) {
+    const nextTab = route.query.configSection === 'regression' ? 'cases' : 'config'
+    tab.value = nextTab
+    replaceQuery({ ...baseQuery(), tab: nextTab, configSection: nextTab === 'config' ? 'env' : undefined })
   }
-  await Promise.all([loadCases(), loadProjects(), loadProviders(), loadSuites()])
+  if (route.query.tab === 'process' && route.query.board === 'flow') {
+    tab.value = 'config'
+    processBoard.value = 'rel'
+    replaceQuery({ ...baseQuery(), tab: 'config', configSection: 'flow', board: undefined })
+  }
+  await Promise.all([loadCases(), loadProjects(), loadProviders(), loadSuites(), loadDevices()])
   await loadTasks()
   await consumeOpenRun()
   pollTimer.value = setInterval(refreshLive, 20000)
@@ -575,6 +728,10 @@ watch(() => runForm.value.sns, (sns) => {
   const ch = String(picked.execChannel || picked.device_type || '').toLowerCase()
   runForm.value.platform = ch.includes('ios') ? 'ios' : 'android'
 }, { deep: true })
+
+watch(newRunVisible, (open) => {
+  if (!open && !submitting.value) runSeed.value = null
+})
 </script>
 
 <template>
@@ -586,6 +743,15 @@ watch(() => runForm.value.sns, (sns) => {
       </div>
 
       <nav class="side-actions" aria-label="应用快捷操作">
+        <button
+          type="button"
+          class="side-action"
+          :class="{ on: tab === 'process' }"
+          @click.prevent.stop="setTab('process')"
+        >
+          <span class="side-action-icon">📌</span>
+          流程
+        </button>
         <button
           type="button"
           class="side-action"
@@ -772,6 +938,7 @@ watch(() => runForm.value.sns, (sns) => {
             <el-pagination
               class="settings-table-pager"
               background
+              size="small"
               layout="total, sizes, prev, pager, next"
               :total="visibleTasks.length"
               :page-sizes="TABLE_PAGE_SIZES"
@@ -844,7 +1011,7 @@ watch(() => runForm.value.sns, (sns) => {
           <el-pagination
             class="settings-table-pager compact"
             background
-            small
+            size="small"
             layout="total, prev, pager, next"
             :total="visibleTasks.length"
             :page-size="taskPageSize"
@@ -861,6 +1028,26 @@ watch(() => runForm.value.sns, (sns) => {
             @open-task="onOpenTask"
           />
         </section>
+      </div>
+
+      <div v-else-if="tab === 'process'" class="ws-config fill">
+        <QaProcessPanel
+          ref="processPanel"
+          :app-id="appId"
+          :app-name="appName"
+          :cases="cases"
+          :tasks="tasks"
+          :suites="suites"
+          :devices="devices"
+          :project-id="projectId"
+          :board="processBoard"
+          :selected-id="processId"
+          @update:board="onProcessBoard"
+          @update:selected-id="onProcessId"
+          @dispatch-run="onProcessDispatch"
+          @open-task="onOpenTask"
+          @go-tab="onGoTab"
+        />
       </div>
 
       <div v-else-if="tab === 'cases'" class="ws-config fill">
@@ -884,13 +1071,13 @@ watch(() => runForm.value.sns, (sns) => {
           :embed-project-id="projectId"
           :embed-project-name="projectName"
           :embed-section="configSection"
-          :hide-sections="['regression', 'logic', 'cases', 'feishu-legacy']"
+          :hide-sections="['regression', 'logic', 'cases', 'feishu-legacy', 'icons']"
           @update:embed-section="setConfigSection"
         />
       </div>
     </div>
 
-    <el-dialog v-model="newRunVisible" title="新建执行" width="640px" append-to-body class="new-run-dialog">
+    <el-dialog v-model="newRunVisible" :title="runDialogTitle" width="640px" append-to-body class="new-run-dialog">
       <div class="form">
         <div class="field">
           <label>设备（可多选，仅在线可执行）</label>
@@ -917,6 +1104,7 @@ watch(() => runForm.value.sns, (sns) => {
                 <small>
                   {{ formatDeviceMeta(d) }}
                   <template v-if="d.busy_task_id"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
+                  <template v-else-if="d.reserved_slot_id"> · 排期占用 {{ d.reserved_title || '其他窗口' }}</template>
                 </small>
               </div>
             </el-option>
@@ -924,6 +1112,9 @@ watch(() => runForm.value.sns, (sns) => {
           <div v-if="!devices.length" class="hint warn">暂无在线设备。请到运行状态确认 USB / Wi‑Fi / ClawNode 连接。</div>
           <div v-else-if="busySelectedDevice" class="hint warn">
             {{ formatDeviceTag(busySelectedDevice) }} 正在跑任务 {{ shortTaskId(busySelectedDevice.busy_task_id) }}，请换一台或等它结束。
+          </div>
+          <div v-else-if="reservedSelectedDevice" class="hint warn">
+            {{ formatDeviceTag(reservedSelectedDevice) }} 当前被排期占用（{{ reservedSelectedDevice.reserved_title || '其他窗口' }}），请换一台或等窗口结束。
           </div>
           <div v-else-if="selectedDevices.length" class="hint">
             已选 {{ selectedDevices.length }} 台 · {{ selectedDevices.map((d) => formatDeviceMeta(d)).join('；') }}
@@ -961,6 +1152,10 @@ watch(() => runForm.value.sns, (sns) => {
         </div>
         <div class="field">
           <div class="hint model-hint">将使用：{{ caseExecutionModelLabel }}</div>
+          <div v-if="runSeed?.envProfile" class="hint">
+            流程建议环境：{{ envLabel(runSeed.envProfile) }}
+            · 请在运行状态确认当前包就是该环境。发版评审不能拿测试全绿代替。
+          </div>
         </div>
         <div class="field">
           <label>套件</label>
@@ -1180,6 +1375,7 @@ watch(() => runForm.value.sns, (sns) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-sizing: border-box;
 }
 .task-list-page .settings-page-header { flex-shrink: 0; margin-bottom: 8px; }
 .col-head {

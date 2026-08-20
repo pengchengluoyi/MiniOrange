@@ -1,75 +1,132 @@
 <template>
   <div v-loading="loading" class="env-shell">
-    <nav class="env-nav" aria-label="环境列表">
-      <button
-        v-for="p in ENV_PROFILES"
-        :key="p.key"
-        type="button"
-        class="env-nav-item"
-        :class="{ active: activeTab === p.key, 'is-default': defaultProfile === p.key }"
-        @click="activeTab = p.key"
-      >
-        <span class="nav-label">{{ p.label }}</span>
-        <span v-if="defaultProfile === p.key" class="nav-badge">默认</span>
-        <span v-else-if="profileFilled(p.key)" class="nav-dot" title="已填写" />
-      </button>
+    <nav class="env-nav" aria-label="上线顺序">
+      <div class="nav-head">上线顺序</div>
+      <p class="nav-sub">从上到下依次上线</p>
+      <template v-for="(p, idx) in environments" :key="p.key">
+        <button
+          type="button"
+          class="env-nav-item"
+          :class="{ active: activeTab === p.key }"
+          @click="activeTab = p.key"
+        >
+          <span class="nav-step">{{ idx + 1 }}</span>
+          <span class="nav-label">{{ p.label }}</span>
+          <span class="nav-move">
+            <button type="button" class="icon-btn" :disabled="idx === 0" @click.stop="moveEnv(idx, -1)">↑</button>
+            <button type="button" class="icon-btn" :disabled="idx === environments.length - 1" @click.stop="moveEnv(idx, 1)">↓</button>
+          </span>
+        </button>
+        <div v-if="idx < environments.length - 1" class="nav-seq" aria-hidden="true">↓</div>
+      </template>
+      <button type="button" class="nav-add" @click="addEnvOpen = true">+ 新增环境</button>
     </nav>
 
     <section class="env-panel">
       <div class="panel-toolbar">
-        <span class="panel-title">正在编辑：{{ activeProfileLabel }}</span>
+        <el-input v-model="activeLabel" size="small" class="name-input" placeholder="环境名称" />
+        <el-tooltip placement="bottom" :show-after="200">
+          <template #content>
+            <span v-if="activeUsage.length">流程：{{ activeUsageText }}</span>
+            <span v-else>流程模板里还没有阶段挂到「{{ activeLabel || '当前环境' }}」</span>
+          </template>
+          <span class="step-chip">第 {{ activeIndex + 1 }} 步</span>
+        </el-tooltip>
         <el-button
-          v-if="defaultProfile !== activeTab"
           link
-          type="primary"
+          type="danger"
           size="small"
-          @click="defaultProfile = activeTab"
-        >
-          设为默认执行环境
-        </el-button>
-        <el-tag v-else size="small" type="success" effect="plain">默认环境</el-tag>
+          :disabled="environments.length <= 1"
+          @click="removeEnv"
+        >删除环境</el-button>
       </div>
 
+      <div class="channel-head">
+        <span>渠道</span>
+        <el-button size="small" @click="addChannelOpen = true">新增渠道</el-button>
+      </div>
       <div class="field-list">
-        <div v-for="f in PROFILE_FIELDS" :key="f.varKey" class="field-row">
+        <div v-for="ch in channels" :key="ch.id" class="field-row">
           <div class="field-label">
-            <span class="field-name">{{ f.label }}</span>
-            <button type="button" class="var-chip" :title="'复制变量名'" @click="copyKey(f.varKey)">变量名</button>
+            <span class="field-name">{{ ch.label }}</span>
+            <button type="button" class="var-chip" :title="'复制 ' + wrapVar(ch)" @click="copyKey(ch)">{{ wrapVar(ch) }}</button>
           </div>
           <div class="field-control">
             <el-input
-              v-model="profiles[activeTab][f.modelPath[0]][f.modelPath[1]]"
-              :placeholder="f.placeholder"
+              :model-value="channelVal(ch)"
+              :placeholder="ch.placeholder || ch.label"
               clearable
               spellcheck="false"
+              @update:model-value="(v) => setChannelVal(ch, v)"
             />
-            <p v-if="fieldWarn(f)" class="field-warn">{{ fieldWarn(f) }}</p>
+            <p v-if="channelWarn(ch)" class="field-warn">{{ channelWarn(ch) }}</p>
           </div>
+          <el-button
+            link
+            type="danger"
+            size="small"
+            :disabled="channels.length <= 1"
+            @click="removeChannel(ch.id)"
+          >删除</el-button>
         </div>
       </div>
 
       <p class="panel-hint">
-        回归 / 飞书 / 对话流执行时，按应用所选的「执行环境 Profile」解析包名与 Web 地址。
-        占位符仍为 <code v-pre>{{app.android.package}}</code> 等。
+        每个环境只维护各渠道的启动标识。流程下发时按阶段所选环境取对应渠道。
       </p>
     </section>
+
+    <el-dialog v-model="addEnvOpen" title="新增环境" width="400px" align-center append-to-body>
+      <el-form label-position="top">
+        <el-form-item label="环境名称" required>
+          <el-input v-model="draftEnvLabel" placeholder="例如：灰度" @keyup.enter="confirmAddEnv" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addEnvOpen = false">取消</el-button>
+        <el-button type="primary" @click="confirmAddEnv">添加</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="addChannelOpen" title="新增渠道" width="440px" align-center append-to-body>
+      <el-form label-position="top">
+        <el-form-item label="常用渠道">
+          <el-select v-model="draftChannelId" placeholder="选一个，或下面自定义" clearable style="width: 100%">
+            <el-option
+              v-for="c in unusedPresets"
+              :key="c.id"
+              :label="c.label"
+              :value="c.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="!draftChannelId" label="自定义名称">
+          <el-input v-model="draftChannelLabel" placeholder="例如：鸿蒙" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addChannelOpen = false">取消</el-button>
+        <el-button type="primary" @click="confirmAddChannel">添加</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, watch, computed, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { getProjectEnv, updateProjectEnv } from '@/api/workReport'
-import { ENV_PROFILES, emptyPlatformEnv } from '@/constants/envProfiles'
-
-const PROFILE_FIELDS = [
-  { label: 'Android 包名', varKey: 'app.android.package', modelPath: ['android', 'package'], placeholder: 'com.example.app.dev' },
-  { label: 'iOS Bundle', varKey: 'app.ios.bundle', modelPath: ['ios', 'bundle'], placeholder: 'com.example.app' },
-  { label: 'Web 地址', varKey: 'app.web.base_url', modelPath: ['web', 'base_url'], placeholder: 'https://test.example.com' },
-]
+import {
+  DEFAULT_CHANNELS,
+  emptyProfile,
+  normalizeEnvDoc,
+  slugEnvKey,
+} from '@/constants/envProfiles'
+import { envUsage } from '@/utils/qaWorkflow'
 
 const props = defineProps({
   projectId: { type: String, required: true },
+  workflow: { type: Object, default: null },
 })
 
 const emit = defineEmits(['saved'])
@@ -78,32 +135,69 @@ const loading = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
 const loadedProjectName = ref('')
-const defaultProfile = ref('test')
 const activeTab = ref('test')
+const environments = ref([])
+const channels = ref([])
+const profiles = reactive({})
 
-const profiles = reactive(Object.fromEntries(ENV_PROFILES.map((p) => [p.key, emptyPlatformEnv()])))
+const addEnvOpen = ref(false)
+const draftEnvLabel = ref('')
+const addChannelOpen = ref(false)
+const draftChannelId = ref('')
+const draftChannelLabel = ref('')
 
-const activeProfileLabel = computed(
-  () => ENV_PROFILES.find((p) => p.key === activeTab.value)?.label || activeTab.value,
-)
+const activeIndex = computed(() => Math.max(0, environments.value.findIndex((e) => e.key === activeTab.value)))
+const activeLabel = computed({
+  get: () => environments.value.find((e) => e.key === activeTab.value)?.label || '',
+  set: (v) => {
+    const hit = environments.value.find((e) => e.key === activeTab.value)
+    if (hit) hit.label = String(v || '').trim() || hit.key
+    dirty.value = true
+  },
+})
+const unusedPresets = computed(() => DEFAULT_CHANNELS.filter((c) => !channels.value.some((x) => x.id === c.id)))
+const activeUsage = computed(() => envUsage(props.workflow, activeTab.value))
+const activeUsageText = computed(() => activeUsage.value.map((u) => `${u.trackLabel}「${u.stepLabel}」`).join('、'))
 
-const wrapVar = (key) => `{{${key}}}`
+const wrapVar = (ch) => `{{app.${ch.id}.${ch.field || 'value'}}}`
 
-const fieldWarn = (f) => {
-  if (f.modelPath[0] !== 'ios') return ''
-  const bundle = String(profiles[activeTab.value]?.ios?.bundle || '').trim()
-  const pkg = String(profiles[activeTab.value]?.android?.package || '').trim()
-  if (bundle && pkg && bundle === pkg) return 'iOS Bundle 与 Android 包名相同，真机启动会失败'
+const ensureProfile = (key) => {
+  if (!profiles[key]) profiles[key] = emptyProfile(channels.value)
+  for (const ch of channels.value) {
+    if (!profiles[key][ch.id]) profiles[key][ch.id] = { [ch.field]: '' }
+    if (profiles[key][ch.id][ch.field] == null) profiles[key][ch.id][ch.field] = ''
+  }
+}
+
+const channelVal = (ch) => {
+  ensureProfile(activeTab.value)
+  return profiles[activeTab.value]?.[ch.id]?.[ch.field] || ''
+}
+const setChannelVal = (ch, v) => {
+  ensureProfile(activeTab.value)
+  profiles[activeTab.value][ch.id][ch.field] = v
+}
+
+const channelWarn = (ch) => {
+  if (ch.id !== 'ios') return ''
+  const bundle = String(channelVal(ch) || '').trim()
+  const android = channels.value.find((c) => c.id === 'android')
+  const pkg = android ? String(channelVal(android) || '').trim() : ''
+  if (bundle && pkg && bundle === pkg) return 'iOS Bundle 与安卓包名相同，真机启动会失败'
   return ''
 }
 
 const validateProfiles = () => {
-  for (const p of ENV_PROFILES) {
-    const pkg = String(profiles[p.key]?.android?.package || '').trim()
-    const bundle = String(profiles[p.key]?.ios?.bundle || '').trim()
+  const android = channels.value.find((c) => c.id === 'android')
+  const ios = channels.value.find((c) => c.id === 'ios')
+  if (!android || !ios) return true
+  for (const env of environments.value) {
+    const snap = profiles[env.key] || {}
+    const pkg = String(snap[android.id]?.[android.field] || '').trim()
+    const bundle = String(snap[ios.id]?.[ios.field] || '').trim()
     if (pkg && bundle && pkg === bundle) {
-      ElMessage.error(`「${p.label}」的 iOS Bundle 不能与 Android 包名相同`)
-      activeTab.value = p.key
+      ElMessage.error(`「${env.label}」的 iOS Bundle 不能与安卓包名相同`)
+      activeTab.value = env.key
       return false
     }
   }
@@ -113,23 +207,34 @@ const validateProfiles = () => {
 const profileFilled = (key) => {
   const snap = profiles[key]
   if (!snap) return false
-  return Boolean(snap.android?.package?.trim() || snap.ios?.bundle?.trim() || snap.web?.base_url?.trim())
+  return channels.value.some((ch) => String(snap[ch.id]?.[ch.field] || '').trim())
 }
 
 let hydrating = false
 
-const fillProfiles = (doc) => {
+const applyDoc = (raw) => {
   hydrating = true
-  const env = doc?.env || doc || {}
-  defaultProfile.value = env.default_profile || 'test'
-  activeTab.value = defaultProfile.value
-  const incoming = env.profiles || {}
-  for (const p of ENV_PROFILES) {
-    const snap = incoming[p.key] || {}
-    profiles[p.key].android.package = snap.android?.package || ''
-    profiles[p.key].ios.bundle = snap.ios?.bundle || ''
-    profiles[p.key].web.base_url = snap.web?.base_url || ''
+  const doc = normalizeEnvDoc(raw)
+  const byKey = new Map(doc.environments.map((e) => [e.key, { ...e }]))
+  const ordered = []
+  for (const key of doc.pipeline) {
+    const hit = byKey.get(key)
+    if (hit && !ordered.some((e) => e.key === hit.key)) ordered.push(hit)
   }
+  for (const env of doc.environments) {
+    if (!ordered.some((e) => e.key === env.key)) ordered.push({ ...env })
+  }
+  environments.value = ordered.length ? ordered : doc.environments.map((e) => ({ ...e }))
+  channels.value = doc.channels.map((c) => ({ ...c }))
+  Object.keys(profiles).forEach((k) => delete profiles[k])
+  for (const env of environments.value) {
+    profiles[env.key] = emptyProfile(doc.channels)
+    const snap = doc.profiles[env.key] || {}
+    for (const ch of doc.channels) {
+      profiles[env.key][ch.id][ch.field] = snap[ch.id]?.[ch.field] || ''
+    }
+  }
+  activeTab.value = environments.value[0]?.key || ''
   dirty.value = false
   nextTick(() => {
     hydrating = false
@@ -138,15 +243,25 @@ const fillProfiles = (doc) => {
 }
 
 const buildPayload = () => {
-  const out = {}
-  for (const p of ENV_PROFILES) {
-    out[p.key] = {
-      android: { package: (profiles[p.key].android.package || '').trim() },
-      ios: { bundle: (profiles[p.key].ios.bundle || '').trim() },
-      web: { base_url: (profiles[p.key].web.base_url || '').trim() },
-    }
+  const keys = environments.value.map((e) => e.key)
+  return {
+    default_profile: keys[0] || 'test',
+    environments: environments.value.map((e) => ({ key: e.key, label: e.label })),
+    channels: channels.value.map((c) => ({
+      id: c.id,
+      label: c.label,
+      field: c.field,
+      placeholder: c.placeholder || '',
+    })),
+    pipeline: keys,
+    profiles: Object.fromEntries(environments.value.map((e) => {
+      const snap = {}
+      for (const ch of channels.value) {
+        snap[ch.id] = { [ch.field]: String(profiles[e.key]?.[ch.id]?.[ch.field] || '').trim() }
+      }
+      return [e.key, snap]
+    })),
   }
-  return { default_profile: defaultProfile.value, profiles: out }
 }
 
 const loadProject = async () => {
@@ -156,7 +271,7 @@ const loadProject = async () => {
     const res = await getProjectEnv(props.projectId)
     const data = res?.data || res || {}
     loadedProjectName.value = data.project_name || ''
-    fillProfiles(data)
+    applyDoc(data.env || data)
   } catch {
     ElMessage.error('加载项目环境失败')
   } finally {
@@ -167,24 +282,105 @@ const loadProject = async () => {
 const save = async ({ quiet = false } = {}) => {
   if (!props.projectId) return false
   if (!validateProfiles()) return false
+  const payload = buildPayload()
+  if (payload.environments.length < 1) {
+    ElMessage.warning('至少保留一个环境')
+    return false
+  }
   saving.value = true
   try {
-    const payload = buildPayload()
     await updateProjectEnv(props.projectId, payload)
     if (!quiet) ElMessage.success('环境配置已保存')
     dirty.value = false
     emit('saved', payload)
     return true
-  } catch {
-    ElMessage.error('保存失败')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
     return false
   } finally {
     saving.value = false
   }
 }
 
-const copyKey = async (key) => {
-  const text = wrapVar(key)
+const moveEnv = (idx, dir) => {
+  const j = idx + dir
+  if (j < 0 || j >= environments.value.length) return
+  const next = [...environments.value]
+  const [row] = next.splice(idx, 1)
+  next.splice(j, 0, row)
+  environments.value = next
+  dirty.value = true
+}
+
+const confirmAddEnv = () => {
+  const label = String(draftEnvLabel.value || '').trim()
+  if (!label) {
+    ElMessage.warning('请填写环境名称')
+    return
+  }
+  let key = slugEnvKey(label, 'env')
+  if (environments.value.some((e) => e.key === key)) key = `${key}${environments.value.length + 1}`
+  environments.value = [...environments.value, { key, label }]
+  profiles[key] = emptyProfile(channels.value)
+  activeTab.value = key
+  draftEnvLabel.value = ''
+  addEnvOpen.value = false
+  dirty.value = true
+}
+
+const removeEnv = async () => {
+  if (environments.value.length <= 1) return
+  const cur = environments.value.find((e) => e.key === activeTab.value)
+  try {
+    await ElMessageBox.confirm(`删除环境「${cur?.label || activeTab.value}」？各渠道配置会一起丢掉。`, '删除环境', { type: 'warning' })
+  } catch { return }
+  const key = activeTab.value
+  const idx = environments.value.findIndex((e) => e.key === key)
+  environments.value = environments.value.filter((e) => e.key !== key)
+  delete profiles[key]
+  const fallback = environments.value[Math.min(Math.max(idx, 0), environments.value.length - 1)]
+  activeTab.value = fallback?.key || ''
+  dirty.value = true
+}
+
+const confirmAddChannel = () => {
+  let ch = unusedPresets.value.find((c) => c.id === draftChannelId.value)
+  if (!ch) {
+    const label = String(draftChannelLabel.value || '').trim()
+    if (!label) {
+      ElMessage.warning('请选择常用渠道，或填写自定义名称')
+      return
+    }
+    let id = slugEnvKey(label, 'ch')
+    if (channels.value.some((c) => c.id === id)) id = `${id}${channels.value.length + 1}`
+    ch = { id, label, field: 'value', placeholder: '' }
+  }
+  channels.value = [...channels.value, { ...ch }]
+  for (const env of environments.value) {
+    ensureProfile(env.key)
+    profiles[env.key][ch.id] = { [ch.field]: '' }
+  }
+  draftChannelId.value = ''
+  draftChannelLabel.value = ''
+  addChannelOpen.value = false
+  dirty.value = true
+}
+
+const removeChannel = async (id) => {
+  if (channels.value.length <= 1) return
+  const ch = channels.value.find((c) => c.id === id)
+  try {
+    await ElMessageBox.confirm(`删除渠道「${ch?.label || id}」？所有环境下的这项配置都会丢掉。`, '删除渠道', { type: 'warning' })
+  } catch { return }
+  channels.value = channels.value.filter((c) => c.id !== id)
+  for (const env of environments.value) {
+    if (profiles[env.key]) delete profiles[env.key][id]
+  }
+  dirty.value = true
+}
+
+const copyKey = async (ch) => {
+  const text = wrapVar(ch)
   try {
     await navigator.clipboard.writeText(text)
     ElMessage.success('已复制')
@@ -195,16 +391,16 @@ const copyKey = async (key) => {
 
 watch(() => props.projectId, loadProject, { immediate: true })
 watch(profiles, () => { if (!hydrating) dirty.value = true }, { deep: true })
-watch(defaultProfile, () => { if (!hydrating) dirty.value = true })
+watch(environments, () => { if (!hydrating) dirty.value = true }, { deep: true })
 
-defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
+defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFilled })
 </script>
 
 <style scoped>
 .env-shell {
   display: flex;
   gap: 0;
-  min-height: 280px;
+  min-height: 320px;
   width: 100%;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
@@ -213,7 +409,7 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   box-sizing: border-box;
 }
 .env-nav {
-  width: 168px;
+  width: 188px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -222,11 +418,23 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   background: #f3f4f6;
   border-right: 1px solid #e5e7eb;
 }
+.nav-head {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  padding: 4px 12px 0;
+}
+.nav-sub {
+  margin: 2px 12px 10px;
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.4;
+}
 .env-nav-item {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  gap: 8px;
   width: 100%;
   padding: 10px 12px;
   border: none;
@@ -244,21 +452,54 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   color: #111827;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
+.nav-step {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.env-nav-item.active .nav-step {
+  background: #4f46e5;
+  color: #fff;
+}
 .nav-label { flex: 1; min-width: 0; }
-.nav-badge {
-  font-size: 10px;
+.nav-seq {
+  text-align: center;
+  color: #818cf8;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 0;
+}
+.nav-move { display: flex; gap: 2px; }
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+}
+.icon-btn:disabled { opacity: 0.3; cursor: default; }
+.nav-add {
+  margin-top: 6px;
+  border: 1px dashed #d1d5db;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #4f46e5;
+  font-size: 13px;
   font-weight: 600;
-  color: #059669;
-  background: #ecfdf5;
-  padding: 1px 6px;
-  border-radius: 4px;
+  cursor: pointer;
 }
-.nav-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #94a3b8;
-}
+.nav-add:hover { background: #eef2ff; }
 .env-panel {
   flex: 1;
   min-width: 0;
@@ -271,10 +512,23 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   gap: 10px;
   margin-bottom: 16px;
 }
-.panel-title {
+.name-input { width: 160px; }
+.step-chip {
+  font-size: 12px;
+  font-weight: 650;
+  color: #4f46e5;
+  background: #eef2ff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: help;
+}
+.channel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
   font-size: 13px;
   font-weight: 600;
-  flex: 1;
 }
 .field-list {
   display: flex;
@@ -289,7 +543,7 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
 }
 .field-row {
   display: grid;
-  grid-template-columns: minmax(168px, 220px) minmax(0, 1fr);
+  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) auto;
   gap: 12px 16px;
   align-items: center;
 }
@@ -320,9 +574,7 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   white-space: nowrap;
 }
 .var-chip:hover { background: #eef2ff; color: #4f46e5; }
-.field-row :deep(.el-input) {
-  width: 100%;
-}
+.field-row :deep(.el-input) { width: 100%; }
 .panel-hint {
   margin-top: 18px;
   margin-bottom: 0;
@@ -330,4 +582,5 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject })
   color: #9ca3af;
   line-height: 1.6;
 }
+.panel-hint.tight { margin-top: 6px; margin-bottom: 10px; }
 </style>

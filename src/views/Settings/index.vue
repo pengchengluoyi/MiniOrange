@@ -34,8 +34,8 @@ const keysSubNav = [
 ]
 
 const appConfigSubNav = [
-  { key: 'env', label: '执行环境' },
-  { key: 'icons', label: '无字图标' },
+  { key: 'env', label: '环境配置' },
+  { key: 'flow', label: '流程模板' },
   { key: 'logic', label: '应用逻辑' },
   { key: 'regression', label: '用例来源' },
   { key: 'figma', label: '设计稿' },

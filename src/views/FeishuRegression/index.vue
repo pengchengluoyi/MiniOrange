@@ -604,7 +604,7 @@ onBeforeUnmount(clearRunState)
           type="info"
           :closable="false"
           show-icon
-          title="未扫描到底部图标行，请根据截图在「应用配置 → 无字图标」中手动标定后重试。"
+          title="未扫描到底部图标行。可在截图上标点后继续，或补充说明后重试。"
           style="margin: 12px 0"
         />
         <el-input

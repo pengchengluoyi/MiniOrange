@@ -10,6 +10,8 @@ import {
   getFeishuCasesCached,
 } from '@/api/feishuRegression'
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
+import { getProjectEnv } from '@/api/workReport'
+import { ENV_PROFILES, envSummaries } from '@/constants/envProfiles'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import {
@@ -37,7 +39,7 @@ const loading = ref(false)
 const fetching = ref(false)
 const suiteSaving = ref(false)
 
-const envProfiles = ['dev', 'test', 'pre', 'prod']
+const envProfiles = ref(ENV_PROFILES.map((p) => ({ key: p.key, label: p.label })))
 const configForm = ref({
   doc_url: '',
   spreadsheet_token: '',
@@ -64,7 +66,7 @@ const visibleCases = computed(() => {
   const q = libraryQuery.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((c) => {
-    const blob = `${c.case_id || ''} ${c.name || ''} ${c.platform || ''} ${c.module || ''}`
+    const blob = `${c.case_id || ''} ${c.name || ''} ${c.platform || ''} ${c.module || ''} ${c.requirement_id || ''}`
     return blob.toLowerCase().includes(q)
   })
 })
@@ -289,11 +291,27 @@ const deleteSuite = async (suite) => {
   if (await persistSuites(next)) ElMessage.success('已删除')
 }
 
+const loadEnvProfiles = async () => {
+  if (!props.projectId) {
+    envProfiles.value = ENV_PROFILES.map((p) => ({ key: p.key, label: p.label }))
+    return
+  }
+  try {
+    const res = await getProjectEnv(props.projectId)
+    const data = res?.data || res || {}
+    const list = envSummaries(data.env || data)
+    envProfiles.value = list.length ? list : ENV_PROFILES.map((p) => ({ key: p.key, label: p.label }))
+  } catch {
+    envProfiles.value = ENV_PROFILES.map((p) => ({ key: p.key, label: p.label }))
+  }
+}
+
 const init = async () => {
-  await Promise.all([loadConfig(), loadBots(), loadCachedCases(), loadSuites()])
+  await Promise.all([loadConfig(), loadBots(), loadCachedCases(), loadSuites(), loadEnvProfiles()])
 }
 
 watch(() => props.appId, init)
+watch(() => props.projectId, loadEnvProfiles)
 watch([moduleKey, libraryQuery], () => {
   casePage.value = 1
 })
@@ -338,7 +356,7 @@ onMounted(init)
           </el-form-item>
           <el-form-item label="运行环境">
             <el-select v-model="configForm.env_profile" style="width: 160px">
-              <el-option v-for="p in envProfiles" :key="p" :label="p" :value="p" />
+              <el-option v-for="p in envProfiles" :key="p.key" :label="p.label" :value="p.key" />
             </el-select>
           </el-form-item>
           <el-form-item label="表格链接">
@@ -399,7 +417,7 @@ onMounted(init)
               v-model="libraryQuery"
               size="small"
               clearable
-              placeholder="搜索编号、名称、端"
+              placeholder="搜索编号、名称、端、需求"
               class="lib-search"
             />
             <div class="table-wrap">
@@ -414,6 +432,7 @@ onMounted(init)
               >
                 <el-table-column type="selection" width="48" reserve-selection />
                 <el-table-column prop="case_id" label="编号" width="108" show-overflow-tooltip />
+                <el-table-column prop="requirement_id" label="需求" width="100" show-overflow-tooltip />
                 <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
                 <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
                 <el-table-column label="前置条件" min-width="140" class-name="col-multiline">

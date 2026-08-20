@@ -508,7 +508,16 @@ export function statusLabel(s, row = null) {
 }
 
 export function runTypeLabel(t) {
-  return statusLabel(t || 'manual')
+  const key = String(t || 'manual')
+  return ({
+    manual: '手工',
+    feishu: '飞书',
+    schedule: '定时',
+    req_admit: '提测冒烟',
+    req_test: '功能测试',
+    release_regression: '预发回归',
+    release_smoke: '生产冒烟',
+  })[key] || statusLabel(key)
 }
 
 /** 用例轨道：执行中/HITL → 等人 → 待执行 → 失败 → 通过 → 取消 */
@@ -554,10 +563,30 @@ export function parseBusyConflict(err) {
   const detail = err?.response?.data?.detail
   let busyTaskId = ''
   let message = err?.message || '启动失败'
+  let sn = ''
+  let slotId = ''
+  let reservedTitle = ''
+  let reservedUntil = ''
   if (typeof detail === 'string') message = detail
   if (detail && typeof detail === 'object') {
     busyTaskId = detail.busy_task_id || ''
     message = detail.message || message
+    sn = detail.sn || ''
+    slotId = detail.slot_id || ''
+    reservedTitle = detail.reserved_title || ''
+    reservedUntil = detail.reserved_until || ''
   }
-  return { isBusy: status === 409 || Boolean(busyTaskId), busyTaskId, message, status }
+  const isReserved = status === 409 && (message === 'device reserved' || detail?.reason === 'schedule')
+  const isBusy = status === 409 && !isReserved && (message === 'device busy' || Boolean(busyTaskId))
+  return {
+    isBusy,
+    isReserved,
+    busyTaskId,
+    message,
+    status,
+    sn,
+    slotId,
+    reservedTitle,
+    reservedUntil,
+  }
 }

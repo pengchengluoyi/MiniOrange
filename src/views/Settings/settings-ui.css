@@ -120,6 +120,7 @@
   border: 1px solid var(--settings-border);
   border-radius: var(--settings-radius);
   box-shadow: var(--settings-shadow);
+  box-sizing: border-box;
 }
 
 .settings-card {
@@ -141,8 +142,17 @@
 .settings-table-pager {
   display: flex;
   justify-content: flex-end;
-  padding-top: 12px;
-  flex-shrink: 0;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 !important;
+  padding: 10px 0 2px;
+  min-height: 40px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: visible;
+  white-space: normal;
 }
 
 .settings-info-card {
@@ -150,6 +160,7 @@
   border: 1px solid #c7d2fe;
   border-radius: var(--settings-radius);
   background: linear-gradient(135deg, #ffffff 0%, #eff6ff 52%, #f5f3ff 100%);
+  box-sizing: border-box;
 }
 
 .settings-kicker {
@@ -196,4 +207,48 @@
   --el-table-border-color: #edf2f7;
   --el-table-header-bg-color: #fbfdff;
   border-radius: 12px;
+}
+
+/* Teleported dialogs must stay inside the viewport (append-to-body). */
+.mo-fit-dialog.el-dialog {
+  max-height: calc(100vh - 48px);
+  height: fit-content;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  margin: auto !important;
+  box-sizing: border-box;
+}
+.mo-fit-dialog .el-dialog__header,
+.mo-fit-dialog .el-dialog__footer {
+  flex-shrink: 0;
+}
+.mo-fit-dialog .el-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  max-height: min(560px, calc(100vh - 168px));
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+.mo-fit-dialog .el-dialog__footer {
+  padding-top: 12px;
+}
+
+.mo-confirm-dialog.el-dialog {
+  height: fit-content !important;
+  max-height: none;
+  align-self: center;
+  margin: auto !important;
+}
+.mo-confirm-dialog .el-dialog__header {
+  padding-bottom: 8px;
+}
+.mo-confirm-dialog .el-dialog__body {
+  max-height: none;
+  overflow: visible;
+  padding: 4px 20px 8px;
+}
+.mo-confirm-dialog .el-dialog__footer {
+  padding-top: 8px;
 }

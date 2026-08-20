@@ -1455,14 +1455,6 @@ const saveToIconLibrary = async (candidate) => {
   }
 }
 
-const openIconSettings = () => {
-  if (!props.appId) return
-  router.push({
-    name: 'SettingsAppConfig',
-    params: { appId: props.appId, section: 'icons' },
-  })
-}
-
 const formatPageSource = (ctx) => {
   if (!ctx) return ''
   if (ctx.source === 'keyword' || ctx.method === 'keyword') return '界面关键词'
@@ -2366,8 +2358,7 @@ onUnmounted(() => {
       </div>
 
       <div v-if="appId && iconCandidates.length" class="icon-hint-bar">
-        <span>执行时会自动将 icon_* 等无字目标写入图标库；本页可入库 {{ iconCandidates.length }} 个</span>
-        <el-button size="small" link type="primary" @click="openIconSettings">打开图标库</el-button>
+        <span>执行时会自动记住无字目标，本页可入库 {{ iconCandidates.length }} 个</span>
       </div>
 
       <div class="screen-stage">

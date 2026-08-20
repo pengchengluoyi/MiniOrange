@@ -33,7 +33,7 @@ const openApp = (app, project) => {
 <template>
   <div class="settings-panel">
     <h2>应用配置</h2>
-    <p class="desc">按应用配置执行环境策略、Skills、无字图标目标与应用逻辑（图谱）。</p>
+    <p class="desc">按应用配置环境、流程模板与设计稿。</p>
 
     <div v-for="p in projects" :key="p.id" class="project-block">
       <h3>{{ p.name }}</h3>

@@ -1,11 +1,17 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getProjects } from '@/api/workReport'
+import { ElMessage } from 'element-plus'
+import { deleteAppInProject, deleteProject, getProjects } from '@/api/workReport'
+import { getAppAutomationConfig, listQaProcessSummary, updateAppAutomationConfig } from '@/api/appAutomation'
 import { formatPlatformTags } from '@/constants/appPlatforms'
-import { listCaseRunnerRuns, listTestingTaskSummary } from '@/api/caseRunner'
+import { listCaseRunnerDevices, listCaseRunnerRuns, listTestingTaskSummary } from '@/api/caseRunner'
 import { isMissingTaskEndpoint, normalizeTask, statusLabel, statusTagType, taskCountLabel } from '@/utils/testingTasks'
+import { filterExecutableDevices } from '@/utils/testingDevices'
+import { formatSlotCardLine, nextUpcomingSlot, nowIso, persistableSlot } from '@/utils/qaProcess'
 import WorkShell from '@/layouts/WorkShell.vue'
+import QaScheduleBoard from '@/views/Testing/QaScheduleBoard.vue'
+import '@/views/Settings/settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,11 +20,110 @@ const projects = ref([])
 const liveByApp = ref({})
 const runningCountByApp = ref({})
 const filterProjectId = ref('')
+const homeView = ref(['schedule', 'manage'].includes(String(route.query.view || '')) ? String(route.query.view) : 'apps')
+const processItems = ref([])
+const devices = ref([])
+const deleting = ref(false)
+const deleteOpen = ref(false)
+const deleteStep = ref(1)
+const deleteConfirmName = ref('')
+const deleteTarget = ref(null)
 
 const filteredProjects = computed(() => {
   if (!filterProjectId.value) return projects.value
   return projects.value.filter((p) => p.id === filterProjectId.value)
 })
+
+const appOptions = computed(() => processItems.value.map((row) => ({
+  id: row.app_id,
+  name: row.app_name,
+  projectId: row.project_id,
+  projectName: row.project_name,
+})))
+
+const labSlots = computed(() => processItems.value.flatMap((row) => (
+  (row.schedule || []).map((s) => ({
+    ...s,
+    app_id: row.app_id,
+    app_name: row.app_name,
+    project_id: row.project_id,
+    project_name: row.project_name,
+  }))
+)))
+
+const labRequirements = computed(() => processItems.value.flatMap((row) => (
+  (row.requirements || []).map((r) => ({ ...r, app_id: row.app_id }))
+)))
+
+const labReleases = computed(() => processItems.value.flatMap((row) => (
+  (row.releases || []).map((r) => ({ ...r, app_id: row.app_id }))
+)))
+
+const workflowsByApp = computed(() => {
+  const map = {}
+  for (const row of processItems.value) {
+    if (row.app_id && row.workflow) map[row.app_id] = row.workflow
+  }
+  return map
+})
+
+const nextSlotByApp = computed(() => {
+  const map = {}
+  for (const row of processItems.value) {
+    const hit = nextUpcomingSlot(row.schedule || [])
+    if (hit) map[row.app_id] = hit
+  }
+  return map
+})
+
+const findAppMeta = (appId) => {
+  for (const p of projects.value) {
+    const app = (p.apps || []).find((a) => a.id === appId)
+    if (app) return { app, project: p }
+  }
+  const row = processItems.value.find((x) => x.app_id === appId)
+  return {
+    app: { id: appId, name: row?.app_name || '' },
+    project: { id: row?.project_id || '', name: row?.project_name || '' },
+  }
+}
+
+const inventory = computed(() => ({
+  projects: filteredProjects.value.length,
+  apps: filteredProjects.value.reduce((n, p) => n + (p.apps || []).length, 0),
+}))
+
+const setHomeView = (v) => {
+  homeView.value = ['schedule', 'manage'].includes(v) ? v : 'apps'
+  const q = { ...route.query }
+  if (homeView.value === 'apps') delete q.view
+  else q.view = homeView.value
+  router.replace({ query: q }).catch(() => {})
+}
+
+const writeProcessCache = (appId, proc) => {
+  try {
+    localStorage.setItem(`mo.qa-process.${appId}`, JSON.stringify({ ...proc, updated_at: nowIso() }))
+  } catch (_) { /* ignore */ }
+}
+
+const loadProcess = async () => {
+  try {
+    const r = await listQaProcessSummary()
+    processItems.value = r?.data?.items || []
+  } catch (_) {
+    processItems.value = []
+  }
+}
+
+const loadDevices = async () => {
+  try {
+    const r = await listCaseRunnerDevices(true)
+    devices.value = filterExecutableDevices(r?.data?.items || [])
+  } catch (_) {
+    devices.value = []
+  }
+}
 
 const load = async () => {
   loading.value = true
@@ -33,6 +138,8 @@ const load = async () => {
   liveByApp.value = {}
   runningCountByApp.value = {}
   const appIds = projects.value.flatMap((p) => (p.apps || []).map((a) => a.id)).filter(Boolean)
+  loadProcess()
+  loadDevices()
   try {
     const s = await listTestingTaskSummary(appIds)
     const rows = s?.data?.items || s?.data || []
@@ -81,7 +188,7 @@ const load = async () => {
   }
 }
 
-const openApp = (app, project) => {
+const openApp = (app, project, extra = {}) => {
   router.push({
     name: 'TestingApp',
     params: { appId: app.id },
@@ -89,7 +196,85 @@ const openApp = (app, project) => {
       appName: app.name,
       projectName: project?.name || '',
       projectId: project?.id || '',
+      tab: extra.tab || 'tasks',
+      board: extra.board,
+      pid: extra.pid,
+    },
+  })
+}
+
+const openProcess = (appId, board, pid) => {
+  const { app, project } = findAppMeta(appId)
+  openApp(app, project, { tab: 'process', board, pid })
+}
+
+const onLabSave = async (slot) => {
+  const appId = slot.app_id
+  if (!appId) return
+  const res = await getAppAutomationConfig(appId)
+  const proc = {
+    requirements: [],
+    releases: [],
+    schedule: [],
+    ...(res?.data?.automation?.qa_process || {}),
+  }
+  const next = persistableSlot(slot)
+  const i = (proc.schedule || []).findIndex((s) => s.id === next.id)
+  if (i >= 0) proc.schedule.splice(i, 1, next)
+  else proc.schedule = [next, ...(proc.schedule || [])]
+  proc.updated_at = nowIso()
+  writeProcessCache(appId, proc)
+  try {
+    await updateAppAutomationConfig(appId, { qa_process: proc })
+  } catch (e) {
+    ElMessage.error(e?.message || '保存排期失败')
+    return
+  }
+  await loadProcess()
+}
+
+const onLabRemove = async (id, appId) => {
+  const aid = appId || labSlots.value.find((s) => s.id === id)?.app_id
+  if (!aid || !id) return
+  const res = await getAppAutomationConfig(aid)
+  const proc = {
+    requirements: [],
+    releases: [],
+    schedule: [],
+    ...(res?.data?.automation?.qa_process || {}),
+  }
+  proc.schedule = (proc.schedule || []).filter((s) => s.id !== id)
+  proc.updated_at = nowIso()
+  writeProcessCache(aid, proc)
+  try {
+    await updateAppAutomationConfig(aid, { qa_process: proc })
+  } catch (e) {
+    ElMessage.error(e?.message || '删除排期失败')
+    return
+  }
+  await loadProcess()
+}
+
+const onLabDispatch = (seed) => {
+  const appId = seed.appId
+  if (!appId) return
+  const { app, project } = findAppMeta(appId)
+  router.push({
+    name: 'TestingApp',
+    params: { appId },
+    query: {
+      appName: app.name,
+      projectName: project?.name || '',
+      projectId: project?.id || '',
       tab: 'tasks',
+      openRun: '1',
+      caseIds: (seed.caseIds || []).join(','),
+      kind: seed.kind,
+      slotId: seed.slotId,
+      requirementId: seed.requirementId,
+      releaseId: seed.releaseId,
+      sns: (seed.sns || []).join(','),
+      envProfile: seed.envProfile,
     },
   })
 }
@@ -98,9 +283,78 @@ const selectProject = (id) => {
   filterProjectId.value = filterProjectId.value === id ? '' : id
 }
 
+const openDeleteApp = (app, project) => {
+  deleteTarget.value = { kind: 'app', app, project }
+  deleteStep.value = 1
+  deleteConfirmName.value = ''
+  deleteOpen.value = true
+}
+
+const openDeleteProject = (project) => {
+  deleteTarget.value = { kind: 'project', app: null, project }
+  deleteStep.value = 1
+  deleteConfirmName.value = ''
+  deleteOpen.value = true
+}
+
+const closeDeleteApp = () => {
+  if (deleting.value) return
+  deleteOpen.value = false
+  deleteTarget.value = null
+  deleteConfirmName.value = ''
+  deleteStep.value = 1
+}
+
+const deleteKind = computed(() => deleteTarget.value?.kind || 'app')
+const deleteName = computed(() => (
+  deleteKind.value === 'project'
+    ? String(deleteTarget.value?.project?.name || '').trim()
+    : String(deleteTarget.value?.app?.name || '').trim()
+))
+const deleteAppNames = computed(() => (
+  (deleteTarget.value?.project?.apps || []).map((a) => a.name).filter(Boolean)
+))
+const canConfirmDelete = computed(() => {
+  const name = deleteName.value
+  return name && String(deleteConfirmName.value || '').trim() === name
+})
+
+const confirmDeleteApp = async () => {
+  if (!canConfirmDelete.value || !deleteTarget.value) return
+  deleting.value = true
+  try {
+    if (deleteKind.value === 'project') {
+      const project = deleteTarget.value.project
+      const appIds = (project?.apps || []).map((a) => a.id).filter(Boolean)
+      await deleteProject(project.id)
+      for (const id of appIds) {
+        try { localStorage.removeItem(`mo.qa-process.${id}`) } catch (_) { /* ignore */ }
+      }
+      if (filterProjectId.value === project.id) filterProjectId.value = ''
+      ElMessage.success(`已删除项目「${project.name}」`)
+    } else {
+      const app = deleteTarget.value.app
+      await deleteAppInProject(app.id)
+      try { localStorage.removeItem(`mo.qa-process.${app.id}`) } catch (_) { /* ignore */ }
+      ElMessage.success(`已删除应用「${app.name}」`)
+    }
+    deleteOpen.value = false
+    deleteTarget.value = null
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
+
 onMounted(load)
-watch(() => route.fullPath, () => {
-  if (route.name === 'TestingHome') load()
+watch(() => route.name, (name) => {
+  if (name === 'TestingHome') load()
+})
+watch(() => route.query.view, (v) => {
+  if (route.name !== 'TestingHome') return
+  homeView.value = ['schedule', 'manage'].includes(String(v || '')) ? String(v) : 'apps'
 })
 </script>
 
@@ -130,46 +384,198 @@ watch(() => route.fullPath, () => {
       <div v-if="!projects.length" class="side-empty">暂无项目</div>
     </template>
 
-    <div class="testing-home" v-loading="loading">
+    <div class="testing-home" :class="{ 'is-schedule': homeView === 'schedule' }" v-loading="loading">
       <header class="home-head">
         <div>
           <h2>测试</h2>
-          <p>选择应用进入工作台；左侧可按项目筛选。</p>
+          <p>
+            {{ homeView === 'schedule'
+              ? '点日历空位按整天排哪个版本 / 需求。设备在下发任务时再选。实验室视图要选应用。'
+              : homeView === 'manage'
+                ? '按项目管理应用。删除应用要两次确认，图标目标和自动化配置会一起清掉。'
+                : '选择应用进入工作台；卡片上会带本周下一条排期。左侧可按项目筛选。' }}
+          </p>
         </div>
-        <el-button text :loading="loading" @click="load">刷新</el-button>
+        <div class="home-head-actions">
+          <div v-if="homeView === 'manage'" class="settings-summary-pill">
+            {{ inventory.projects }} 个项目 · {{ inventory.apps }} 个应用
+          </div>
+          <el-button text :loading="loading" @click="load">刷新</el-button>
+        </div>
       </header>
 
-      <div v-for="p in filteredProjects" :key="p.id" class="project-block">
-        <div class="project-head">
-          <h3>{{ p.name }}</h3>
-          <span class="sub">{{ p.apps?.length || 0 }} 个应用</span>
-        </div>
-        <div class="app-grid">
-          <button
-            v-for="app in (p.apps || [])"
-            :key="app.id"
-            type="button"
-            class="app-card"
-            @click="openApp(app, p)"
-          >
-            <strong>{{ app.name }}</strong>
-            <span class="meta">
-              <span v-for="t in formatPlatformTags(app.platforms)" :key="t" class="tag">{{ t }}</span>
-            </span>
-            <span class="recent" v-if="runningCountByApp[app.id]">
-              <el-tag size="small" type="primary">运行中 {{ runningCountByApp[app.id] }}</el-tag>
-            </span>
-            <span class="recent" v-else-if="liveByApp[app.id]">
-              <el-tag size="small" :type="statusTagType(liveByApp[app.id].status, liveByApp[app.id])">{{ statusLabel(liveByApp[app.id].status, liveByApp[app.id]) }}</el-tag>
-              {{ taskCountLabel(liveByApp[app.id]) }}
-            </span>
-            <span class="recent muted" v-else>暂无最近任务</span>
-          </button>
-        </div>
+      <div class="home-tabs">
+        <button type="button" class="home-tab" :class="{ on: homeView === 'apps' }" @click="setHomeView('apps')">
+          <strong>应用</strong>
+          <span>进工作台</span>
+        </button>
+        <button type="button" class="home-tab" :class="{ on: homeView === 'schedule' }" @click="setHomeView('schedule')">
+          <strong>排期</strong>
+          <span>{{ filterProjectId ? '本项目高亮，仍显示全实验室排期' : '全实验室开测日历' }}</span>
+        </button>
+        <button type="button" class="home-tab" :class="{ on: homeView === 'manage' }" @click="setHomeView('manage')">
+          <strong>项目</strong>
+          <span>管理应用 · 删除需确认</span>
+        </button>
       </div>
 
-      <el-empty v-if="!filteredProjects.length && !loading" description="暂无项目/应用" />
+      <div v-if="homeView === 'schedule'" class="home-schedule">
+        <QaScheduleBoard
+          lab-mode
+          :slots="labSlots"
+          :requirements="labRequirements"
+          :releases="labReleases"
+          :devices="devices"
+          :app-options="appOptions"
+          :workflows-by-app="workflowsByApp"
+          :focus-project-id="filterProjectId"
+          @save="onLabSave"
+          @remove="onLabRemove"
+          @open-req="(id, appId) => openProcess(appId, 'req', id)"
+          @open-rel="(id, appId) => openProcess(appId, 'rel', id)"
+          @dispatch-run="onLabDispatch"
+        />
+      </div>
+
+      <div v-else-if="homeView === 'manage'" class="home-manage">
+        <section class="settings-info-card">
+          <div class="settings-kicker">项目是分组，应用才进工作台</div>
+          <p>项目是产品线（造好物、造物相机）。应用是这条线下要测的包（苹果 / 安卓 / 移动端）。删除项目或应用都要两次确认；配置和图标目标会清掉，历史任务会留下。</p>
+        </section>
+        <section
+          v-for="p in filteredProjects"
+          :key="p.id"
+          class="settings-table-card manage-card"
+        >
+          <div class="project-head">
+            <h3>{{ p.name }}</h3>
+            <span class="sub">{{ p.apps?.length || 0 }} 个应用</span>
+            <el-button link type="danger" size="small" class="project-del" @click="openDeleteProject(p)">删除项目</el-button>
+          </div>
+          <p v-if="p.description" class="project-desc">{{ p.description }}</p>
+          <el-table :data="p.apps || []" border stripe size="small" empty-text="这个项目还没有应用">
+            <el-table-column label="应用" min-width="160">
+              <template #default="{ row }">
+                <span class="task-name">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="平台" width="140">
+              <template #default="{ row }">
+                <span class="meta">
+                  <span v-for="t in formatPlatformTags(row.platforms)" :key="t" class="tag">{{ t }}</span>
+                  <span v-if="!formatPlatformTags(row.platforms).length" class="muted">—</span>
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="用例 / 图标" width="120">
+              <template #default="{ row }">
+                {{ row.automation_stats?.feishu_cases || 0 }} / {{ row.automation_stats?.icon_targets || 0 }}
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="148" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="openApp(row, p)">进入</el-button>
+                <el-button link type="danger" size="small" @click="openDeleteApp(row, p)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+        <el-empty v-if="!filteredProjects.length && !loading" description="暂无项目" />
+      </div>
+
+      <div v-else class="home-apps">
+        <div v-for="p in filteredProjects" :key="p.id" class="project-block">
+          <div class="project-head">
+            <h3>{{ p.name }}</h3>
+            <span class="sub">{{ p.apps?.length || 0 }} 个应用</span>
+          </div>
+          <div class="app-grid">
+            <button
+              v-for="app in (p.apps || [])"
+              :key="app.id"
+              type="button"
+              class="app-card"
+              @click="openApp(app, p)"
+            >
+              <strong>{{ app.name }}</strong>
+              <span class="meta">
+                <span v-for="t in formatPlatformTags(app.platforms)" :key="t" class="tag">{{ t }}</span>
+              </span>
+              <span class="recent" v-if="nextSlotByApp[app.id]">
+                {{ formatSlotCardLine(nextSlotByApp[app.id]) }}
+              </span>
+              <span class="recent" v-if="runningCountByApp[app.id]">
+                <el-tag size="small" type="primary">运行中 {{ runningCountByApp[app.id] }}</el-tag>
+              </span>
+              <span class="recent" v-else-if="liveByApp[app.id]">
+                <el-tag size="small" :type="statusTagType(liveByApp[app.id].status, liveByApp[app.id])">{{ statusLabel(liveByApp[app.id].status, liveByApp[app.id]) }}</el-tag>
+                {{ taskCountLabel(liveByApp[app.id]) }}
+              </span>
+              <span class="recent muted" v-else-if="!nextSlotByApp[app.id]">暂无最近任务</span>
+            </button>
+          </div>
+        </div>
+        <el-empty v-if="!filteredProjects.length && !loading" description="暂无项目/应用" />
+      </div>
     </div>
+
+    <el-dialog
+      v-model="deleteOpen"
+      :title="deleteStep === 1 ? (deleteKind === 'project' ? '删除项目' : '删除应用') : '再次确认'"
+      width="420px"
+      class="mo-confirm-dialog"
+      align-center
+      append-to-body
+      destroy-on-close
+      :close-on-click-modal="!deleting"
+      @closed="closeDeleteApp"
+    >
+      <div v-if="deleteStep === 1" class="del-box">
+        <p class="del-kicker">{{ deleteKind === 'project' ? '项目' : (deleteTarget?.project?.name || '—') }}</p>
+        <p class="del-lead">删除 <strong>{{ deleteName }}</strong></p>
+        <ul class="del-list">
+          <template v-if="deleteKind === 'project'">
+            <li v-if="deleteAppNames.length">将同时删除 {{ deleteAppNames.length }} 个应用：{{ deleteAppNames.join('、') }}</li>
+            <li v-else>这个项目下还没有应用</li>
+            <li>各应用的工作台配置、图标目标会删掉</li>
+            <li>图谱只解绑，历史任务会留下</li>
+            <li>删除后不能恢复</li>
+          </template>
+          <template v-else>
+            <li>工作台配置、图标目标会删掉</li>
+            <li>图谱只解绑，历史任务会留下</li>
+            <li>删除后不能恢复</li>
+          </template>
+        </ul>
+      </div>
+      <div v-else class="del-box">
+        <p class="del-lead">输入{{ deleteKind === 'project' ? '项目' : '应用' }}名称以确认</p>
+        <p class="del-name">{{ deleteName }}</p>
+        <el-input
+          v-model="deleteConfirmName"
+          size="large"
+          placeholder="输入上方名称"
+          @keyup.enter="confirmDeleteApp"
+        />
+      </div>
+      <template #footer>
+        <el-button :disabled="deleting" @click="deleteStep === 2 ? deleteStep = 1 : closeDeleteApp()">
+          {{ deleteStep === 2 ? '上一步' : '取消' }}
+        </el-button>
+        <el-button
+          v-if="deleteStep === 1"
+          type="danger"
+          @click="deleteStep = 2"
+        >继续删除</el-button>
+        <el-button
+          v-else
+          type="danger"
+          :loading="deleting"
+          :disabled="!canConfirmDelete"
+          @click="confirmDeleteApp"
+        >确认删除</el-button>
+      </template>
+    </el-dialog>
   </WorkShell>
 </template>
 
@@ -208,25 +614,114 @@ watch(() => route.fullPath, () => {
   overflow: auto;
   padding: 20px 24px 40px;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.testing-home.is-schedule {
+  overflow: hidden;
+  padding-bottom: 16px;
 }
 .home-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 .home-head h2 { margin: 0; font-size: 22px; color: #111827; }
 .home-head p { margin: 6px 0 0; color: #6b7280; font-size: 13px; }
+.home-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.home-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e3e8f0;
+  padding-bottom: 10px;
+}
+.home-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: #6b7280;
+}
+.home-tab strong { font-size: 14px; font-weight: 700; color: #111827; }
+.home-tab span { font-size: 12px; color: #94a3b8; }
+.home-tab:hover { background: #f8fafc; }
+.home-tab.on {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+.home-tab.on strong { color: #4338ca; }
+.home-schedule {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-schedule :deep(.sch-board) {
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #e3e8f0;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+.home-apps { flex: 1; min-height: 0; overflow: auto; }
+.home-manage { flex: 1; min-height: 0; overflow: auto; }
+.home-manage .settings-info-card { margin: 0 0 14px; padding: 12px 14px; overflow: visible; }
+.home-manage .settings-info-card p { margin: 4px 0 0; font-size: 13px; color: #374151; line-height: 1.55; white-space: normal; }
+.manage-card { margin-bottom: 14px; padding: 14px; }
+.project-desc { margin: 0 0 10px; font-size: 12px; color: #6b7280; }
+.task-name { font-weight: 600; color: #111827; }
+.muted { color: #94a3b8; font-size: 12px; }
+.del-box { display: flex; flex-direction: column; gap: 8px; }
+.del-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #6366f1;
+}
+.del-lead { margin: 0; font-size: 15px; color: #111827; line-height: 1.5; }
+.del-list {
+  margin: 0;
+  padding: 10px 12px 10px 28px;
+  border-radius: 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.del-name {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e3e8f0;
+  font-weight: 700;
+  color: #111827;
+}
 .project-block { margin-bottom: 22px; }
 .project-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
 }
 .project-head h3 { margin: 0; font-size: 15px; color: #111827; }
 .project-head .sub { font-size: 12px; color: #94a3b8; }
+.project-del { margin-left: auto; }
 .app-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
