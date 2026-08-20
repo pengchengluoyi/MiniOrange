@@ -22,11 +22,68 @@ export function shortTaskId(taskId = '') {
   return bare.length > 8 ? bare.slice(0, 8) : bare
 }
 
+export function taskSns(task) {
+  const list = Array.isArray(task?.sns) ? task.sns : []
+  const out = []
+  const seen = new Set()
+  for (const item of list) {
+    const sn = String(item || '').trim()
+    if (sn && !seen.has(sn)) {
+      seen.add(sn)
+      out.push(sn)
+    }
+  }
+  const one = String(task?.sn || '').trim()
+  if (one && !seen.has(one)) out.unshift(one)
+  return out
+}
+
+export function taskCoverage(task) {
+  const c = String(task?.coverage || '').toLowerCase()
+  return c === 'per_device' ? 'per_device' : 'once'
+}
+
+export function formatTaskDevices(task) {
+  const sns = taskSns(task)
+  if (!sns.length) return '未选设备'
+  if (sns.length === 1) return shortDeviceLabel(sns[0])
+  const plats = [...new Set(sns.map((sn) => taskPlatformOfSn(task, sn)).filter(Boolean))]
+  if (plats.length > 1) return `${sns.length} 台 · Android + iOS`
+  return `${shortDeviceLabel(sns[0])} +${sns.length - 1}`
+}
+
+export function coverageLabel(coverage) {
+  return coverage === 'per_device' ? '全机' : '拆分'
+}
+
+export function taskPlatformOfSn(task, sn = '') {
+  const map = task?.platforms_by_sn
+  const key = String(sn || '').trim()
+  if (map && typeof map === 'object' && key && map[key]) {
+    const v = String(map[key]).toLowerCase()
+    if (v.includes('ios')) return 'ios'
+    if (v.includes('android')) return 'android'
+  }
+  const p = String(task?.platform || '').toLowerCase()
+  if (p.includes('ios')) return 'ios'
+  if (p === 'mixed') return ''
+  return p.includes('android') ? 'android' : (p || 'android')
+}
+
+export function platformLabel(kind) {
+  const k = String(kind || '').toLowerCase()
+  if (k === 'ios') return 'iOS'
+  if (k === 'android') return 'Android'
+  if (k === 'mixed') return 'Android + iOS'
+  return ''
+}
+
 export function shortDeviceLabel(sn = '') {
   const s = String(sn || '').trim()
   if (!s) return ''
   if (s.startsWith('claw-')) return s.length > 14 ? `${s.slice(0, 14)}…` : s
-  if (s.length > 10) return s.slice(0, 8)
+  if (/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/.test(s)) return `${s.slice(0, 8)}-…${s.slice(-4)}`
+  if (s.length > 12) return `${s.slice(0, 8)}…`
   return s
 }
 
@@ -111,18 +168,19 @@ export function taskCountLabel(task) {
 }
 
 export function taskTitle(task) {
-  const device = shortDeviceLabel(task?.sn) || '未选设备'
   const cases = task?.cases || []
+  const running = cases.filter((c) => c.status === 'running' || c.hitl)
+  if (running.length === 1) return running[0].name || running[0].case_id || '执行中'
+  if (running.length > 1) {
+    const name = running[0].name || running[0].case_id || '用例'
+    return `${name} 等 ${running.length} 条执行中`
+  }
+  const names = [...new Set(cases.map((c) => c.name || c.case_id).filter(Boolean))]
+  if (names.length === 1) return names[0]
   const total = Number(task?.total || 0) || cases.length
-  if (cases.length === 1) {
-    const name = cases[0].name || cases[0].case_id
-    return name ? `${device} · ${name}` : `${device} · 1 条用例`
-  }
-  if (task?.currentCaseId && (task.status === 'running' || task.status === 'queued')) {
-    return `${device} · ${task.currentCaseId}`
-  }
-  if (total) return `${device} · ${total} 条用例`
-  return `${device} · 任务`
+  if (names.length) return `${names[0]} 等 ${total || names.length} 条`
+  if (total) return `${total} 条用例`
+  return shortTaskId(task?.taskId || task?.task_id) || '任务'
 }
 
 export function sortTasksForList(tasks = []) {
@@ -153,7 +211,7 @@ export function filterTasks(tasks = [], { status = 'all', sn = '', when = 'all' 
       if (status === 'cancelled' && vis !== 'cancelled') return false
       if (status === 'done' && vis !== 'done') return false
     }
-    if (sn && String(t.sn || '') !== sn) return false
+    if (sn && !taskSns(t).includes(sn)) return false
     if (when === 'today' || when === 'week') {
       const ts = Date.parse(t.startedAt || '') || 0
       if (!ts) return false
@@ -200,6 +258,7 @@ export function normalizeCase(raw = {}, taskId = '') {
   return {
     case_id: caseId,
     name: raw.name || raw.case_name || caseId,
+    sn: raw.sn || '',
     status: normalizeCaseStatus(raw.status || raw.overall_status),
     report_run_id: reportRunId,
     summary: raw.summary || '',
@@ -216,6 +275,8 @@ export function normalizeCase(raw = {}, taskId = '') {
     expected: raw.expected || [],
     steps_raw: raw.steps_raw || '',
     expected_raw: raw.expected_raw || '',
+    platform: raw.platform || '',
+    device_platform: raw.device_platform || '',
     failure_category: raw.failure_category || '',
     failure_label: raw.failure_label || '',
     knowledge_ids: Array.isArray(raw.knowledge_ids) ? raw.knowledge_ids : [],
@@ -248,7 +309,11 @@ export function normalizeTask(raw, { source = '' } = {}) {
     appName: raw.app_name || raw.appName || '',
     runType: raw.run_type || raw.runType || 'manual',
     sn: raw.sn || '',
+    sns: Array.isArray(raw.sns) ? raw.sns.map((s) => String(s || '').trim()).filter(Boolean) : (raw.sn ? [String(raw.sn)] : []),
+    coverage: String(raw.coverage || 'once').toLowerCase() === 'per_device' ? 'per_device' : 'once',
     platform: raw.platform || 'android',
+    platforms_by_sn: (raw.platforms_by_sn && typeof raw.platforms_by_sn === 'object') ? raw.platforms_by_sn : {},
+    packages_by_platform: (raw.packages_by_platform && typeof raw.packages_by_platform === 'object') ? raw.packages_by_platform : {},
     status,
     total,
     completed,
@@ -362,6 +427,11 @@ export function applyTestingTaskEvent(task, data) {
   if (data.error != null) next.error = data.error
   if (Array.isArray(data.knowledge_proposals)) next.knowledge_proposals = data.knowledge_proposals
   if (Array.isArray(data.knowledge_ids)) next.knowledge_ids = data.knowledge_ids
+  if (Array.isArray(data.sns) && data.sns.length) next.sns = data.sns
+  if (data.coverage) next.coverage = data.coverage === 'per_device' ? 'per_device' : 'once'
+  if (data.sn) next.sn = data.sn
+  if (data.platform) next.platform = data.platform
+  if (data.platforms_by_sn && typeof data.platforms_by_sn === 'object') next.platforms_by_sn = data.platforms_by_sn
   if (data.event === 'task_finished' && !data.status) {
     next.status = next.failed > 0 ? 'failed' : 'done'
   }
@@ -371,12 +441,22 @@ export function applyTestingTaskEvent(task, data) {
       ...normalizeCase(data.case, next.taskId),
       hitl: Boolean(data.case.hitl) || data.event === 'hitl',
     }
-    const i = next.cases.findIndex((c) => c.case_id === row.case_id)
+    const i = next.cases.findIndex((c) => {
+      if (row.report_run_id && c.report_run_id === row.report_run_id) return true
+      if (c.case_id !== row.case_id) return false
+      if (row.sn) return c.sn === row.sn
+      return true
+    })
     if (i >= 0) next.cases[i] = { ...next.cases[i], ...row }
     else next.cases.push(row)
   }
   if (data.event === 'hitl' && data.case?.case_id) {
-    const i = next.cases.findIndex((c) => c.case_id === data.case.case_id)
+    const i = next.cases.findIndex((c) => {
+      if (data.case.report_run_id && c.report_run_id === data.case.report_run_id) return true
+      if (c.case_id !== data.case.case_id) return false
+      if (data.case.sn) return c.sn === data.case.sn
+      return true
+    })
     if (i >= 0) next.cases[i] = { ...next.cases[i], hitl: true, status: next.cases[i].status || 'running' }
   }
   if (next.total > 0) next.progress = Math.round((next.completed / next.total) * 100)

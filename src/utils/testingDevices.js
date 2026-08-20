@@ -83,12 +83,14 @@ export function devicePrimaryName(device) {
   return shortTaskId(sn) || '未命名设备'
 }
 
-export function formatDeviceOption(device) {
+export function formatDeviceTag(device) {
   const ch = device.execChannel || deviceExecChannel(device).label || '?'
-  const kind = channelKindLabel(ch)
-  const name = devicePrimaryName(device)
+  return `${devicePrimaryName(device)} · ${channelKindLabel(ch)}`
+}
+
+export function formatDeviceOption(device) {
   const busy = device.busy_task_id ? ` · 占用中 ${shortTaskId(device.busy_task_id)}` : ''
-  return `${name} · ${kind}${busy}`
+  return `${formatDeviceTag(device)}${busy}`
 }
 
 export function formatDeviceMeta(device) {

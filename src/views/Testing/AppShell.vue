@@ -15,12 +15,14 @@ import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import KnowledgePanel from '@/views/Settings/KnowledgePanel.vue'
 import FeishuRegressionPanel from '@/views/Settings/FeishuRegressionPanel.vue'
-import { filterExecutableDevices, formatDeviceMeta, formatDeviceOption } from '@/utils/testingDevices'
+import { filterExecutableDevices, formatDeviceMeta, formatDeviceTag } from '@/utils/testingDevices'
 import {
   casePlatformKind,
+  coverageLabel,
   devicePlatformKind,
   displayTaskStatus,
   filterTasks,
+  formatTaskDevices,
   parseBusyConflict,
   progressStatus,
   runTypeLabel,
@@ -30,11 +32,15 @@ import {
   statusLabel,
   statusTagType,
   taskCountLabel,
+  taskCoverage,
   taskProgressPct,
+  taskSns,
   taskTitle,
 } from '@/utils/testingTasks'
 import { fetchTaskDetail, fetchTasksForApp, useTestingTaskList } from '@/composables/useTestingTasks'
 import { parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
+import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
+import '@/views/Settings/settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,7 +82,7 @@ const cases = ref([])
 const casesLoading = ref(false)
 const newRunVisible = ref(false)
 const submitting = ref(false)
-const runForm = ref({ sn: '', platform: 'android', use_persisted_baseline: true, use_cache: true, async_exec: true })
+const runForm = ref({ sns: [], coverage: 'once', platform: 'android', use_persisted_baseline: true, use_cache: true, async_exec: true })
 const selectedCaseIds = ref([])
 const suites = ref([])
 const selectedSuiteId = ref('')
@@ -95,7 +101,9 @@ const caseExecutionModelLabel = computed(() => {
   const p = caseExecutionProvider.value
   return p ? `${p.name || p.id} · ${p.model || '默认模型'}` : '未配置（设置 → 密钥配置 → 大模型 Key）'
 })
-const selectedDevice = computed(() => devices.value.find((d) => d.sn === runForm.value.sn) || null)
+const selectedDevices = computed(() =>
+  (runForm.value.sns || []).map((sn) => devices.value.find((d) => d.sn === sn)).filter(Boolean),
+)
 const caseQuery = ref('')
 const taskFilter = ref('all')
 const taskDeviceFilter = ref('')
@@ -104,7 +112,7 @@ const taskWhen = ref('all')
 const taskDeviceOptions = computed(() => {
   const set = new Set()
   for (const t of tasks.value) {
-    if (t.sn) set.add(t.sn)
+    for (const sn of taskSns(t)) set.add(sn)
   }
   return [...set]
 })
@@ -114,6 +122,18 @@ const visibleTasks = computed(() => sortTasksForList(filterTasks(tasks.value, {
   sn: taskDeviceFilter.value,
   when: taskWhen.value,
 })))
+const taskPage = ref(1)
+const taskPageSize = ref(20)
+const pagedTasks = computed(() => slicePage(visibleTasks.value, taskPage.value, taskPageSize.value))
+const runningTaskCount = computed(() =>
+  tasks.value.filter((t) => ['running', 'queued'].includes(displayTaskStatus(t))).length,
+)
+const taskListPill = computed(() => {
+  if (runningTaskCount.value) return `${runningTaskCount.value} 条进行中`
+  return `${visibleTasks.value.length} 条任务`
+})
+const taskEmptyText = computed(() => (tasks.value.length ? '没有符合筛选的任务' : '暂无任务'))
+const formatTaskTime = (row) => (row?.startedAt || '').replace('T', ' ').slice(5, 16) || '—'
 
 const filteredCases = computed(() => {
   const q = caseQuery.value.trim().toLowerCase()
@@ -124,13 +144,28 @@ const filteredCases = computed(() => {
   })
 })
 
-const selectedDeviceKind = computed(() => (
-  selectedDevice.value ? devicePlatformKind(selectedDevice.value) : ''
-))
+const selectedDeviceKinds = computed(() => {
+  const set = new Set(selectedDevices.value.map((d) => devicePlatformKind(d)).filter(Boolean))
+  return [...set]
+})
+
+const mixedSelectedPlatforms = computed(() => selectedDeviceKinds.value.length > 1)
+
+const deviceOptionDisabled = (d) => Boolean(d.busy_task_id)
+
+const unitCount = computed(() => {
+  const n = selectedCaseIds.value.length
+  const m = runForm.value.sns.length
+  if (!n || !m) return 0
+  return runForm.value.coverage === 'per_device' && m > 1 ? n * m : n
+})
+
+const showCoveragePick = computed(() => runForm.value.sns.length >= 2)
 
 const platformConflictCases = computed(() => {
-  if (!selectedDeviceKind.value || !selectedCaseIds.value.length) return []
-  const want = selectedDeviceKind.value
+  if (mixedSelectedPlatforms.value || selectedDeviceKinds.value.length !== 1) return []
+  if (!selectedCaseIds.value.length) return []
+  const want = selectedDeviceKinds.value[0]
   return (cases.value || []).filter((c) => {
     if (!selectedCaseIds.value.includes(c.case_id)) return false
     const kind = casePlatformKind(c)
@@ -138,11 +173,12 @@ const platformConflictCases = computed(() => {
   })
 })
 
+const busySelectedDevice = computed(() => selectedDevices.value.find((d) => d.busy_task_id) || null)
+
 const canStartRun = computed(() => (
-  Boolean(runForm.value.sn)
+  runForm.value.sns.length > 0
   && selectedCaseIds.value.length > 0
-  && !selectedDevice.value?.busy_task_id
-  && !platformConflictCases.value.length
+  && !busySelectedDevice.value
 ))
 
 const baseQuery = () => ({
@@ -225,6 +261,15 @@ const taskRowClass = (row) => {
   if (s === 'done' || s === 'pass') return 'is-done'
   return ''
 }
+const taskTableRowClass = ({ row }) => {
+  const bits = [taskRowClass(row)]
+  if (row.taskId === selectedTaskId.value) bits.push('is-current')
+  return bits.filter(Boolean).join(' ')
+}
+
+watch([taskFilter, taskDeviceFilter, taskWhen, () => visibleTasks.value.length], () => {
+  taskPage.value = 1
+})
 
 const openApp = (app, project) => {
   router.push({
@@ -297,9 +342,7 @@ const loadDevices = async () => {
   try {
     const r = await listCaseRunnerDevices(true)
     devices.value = filterExecutableDevices(r?.data?.items || [])
-    if (runForm.value.sn && !devices.value.some((d) => d.sn === runForm.value.sn)) {
-      runForm.value.sn = ''
-    }
+    runForm.value.sns = (runForm.value.sns || []).filter((sn) => devices.value.some((d) => d.sn === sn))
   } catch (_) {
     devices.value = []
   }
@@ -425,25 +468,25 @@ const clearSelectedCases = () => {
 }
 
 const submitRun = async () => {
-  if (!runForm.value.sn) { ElMessage.warning('请先选择在线设备'); return }
+  if (!runForm.value.sns.length) { ElMessage.warning('请先选择在线设备'); return }
   if (!selectedCaseIds.value.length) { ElMessage.warning('请至少选择一条用例'); return }
-  if (platformConflictCases.value.length) {
-    ElMessage.warning('所选用例与当前设备平台不一致')
-    return
-  }
-  const busyDev = devices.value.find((d) => d.sn === runForm.value.sn && d.busy_task_id)
+  const busyDev = selectedDevices.value.find((d) => d.busy_task_id)
   if (busyDev) {
     ElMessage.warning(`设备占用中（任务 ${shortTaskId(busyDev.busy_task_id)}）`)
     return
   }
   submitting.value = true
   try {
-    const picked = devices.value.find((d) => d.sn === runForm.value.sn)
-    const ch = String(picked?.execChannel || picked?.device_type || '').toLowerCase()
-    const platform = ch.includes('ios') ? 'ios' : (runForm.value.platform || 'android')
+    const kinds = selectedDeviceKinds.value
+    const platform = kinds.length === 1
+      ? kinds[0]
+      : (kinds.length > 1 ? 'mixed' : (runForm.value.platform || 'android'))
+    const coverage = runForm.value.sns.length > 1 ? runForm.value.coverage : 'once'
     const res = await runCaseRunner({
       app_id: appId.value,
-      sn: runForm.value.sn,
+      sn: runForm.value.sns[0],
+      sns: runForm.value.sns,
+      coverage,
       platform,
       case_ids: selectedCaseIds.value,
       async_exec: runForm.value.async_exec,
@@ -524,12 +567,14 @@ watch(() => route.query.openRun, (v) => {
   if (String(v || '') === '1') consumeOpenRun()
 })
 
-watch(() => runForm.value.sn, (sn) => {
-  const picked = devices.value.find((d) => d.sn === sn)
+watch(() => runForm.value.sns, (sns) => {
+  if (!sns?.length) return
+  if (sns.length < 2) runForm.value.coverage = 'once'
+  const picked = devices.value.find((d) => d.sn === sns[0])
   if (!picked) return
   const ch = String(picked.execChannel || picked.device_type || '').toLowerCase()
   runForm.value.platform = ch.includes('ios') ? 'ios' : 'android'
-})
+}, { deep: true })
 </script>
 
 <template>
@@ -612,31 +657,143 @@ watch(() => runForm.value.sn, (sn) => {
         </nav>
 
         <div class="ws-actions">
-          <template v-if="tab === 'tasks'">
-            <el-button v-if="hasDetail" text @click="toggleTaskRail">
+          <template v-if="tab === 'tasks' && hasDetail">
+            <el-button text @click="toggleTaskRail">
               {{ taskRailOpen ? '折叠任务列表' : '展开任务列表' }}
             </el-button>
-            <el-button v-if="selectedTaskId" text @click="clearTask">收起详情</el-button>
-            <el-button v-if="hasDetail && !showTaskRail" type="primary" @click="openNewRun">新建执行</el-button>
+            <el-button text @click="clearTask">收起详情</el-button>
+            <el-button v-if="!showTaskRail" type="primary" @click="openNewRun">新建执行</el-button>
           </template>
         </div>
       </header>
 
       <div
-        v-if="tab === 'tasks'"
-        class="ws-body"
-        :class="{ 'with-detail': hasDetail, 'rail-open': showTaskRail && hasDetail }"
+        v-if="tab === 'tasks' && !hasDetail"
+        class="ws-config fill"
+        v-loading="loading"
+      >
+        <div class="settings-panel task-list-page">
+          <header class="settings-page-header">
+            <div>
+              <h2 class="settings-page-title">任务列表</h2>
+              <p class="settings-page-desc">按状态、设备、时间筛选执行记录，点击一行打开详情。</p>
+            </div>
+            <div
+              class="settings-summary-pill"
+              :style="runningTaskCount ? { background: '#ecfdf5', color: '#047857' } : undefined"
+            >{{ taskListPill }}</div>
+          </header>
+          <section class="settings-table-card is-fill">
+            <div class="col-head">
+              <h3>全部任务</h3>
+              <div class="col-actions">
+                <el-select v-model="taskFilter" size="small" class="filter-item">
+                  <el-option label="全部状态" value="all" />
+                  <el-option label="进行中" value="running" />
+                  <el-option label="部分失败" value="partial_fail" />
+                  <el-option label="失败" value="failed" />
+                  <el-option label="已取消" value="cancelled" />
+                  <el-option label="已通过" value="done" />
+                </el-select>
+                <el-select v-model="taskDeviceFilter" size="small" clearable placeholder="设备" class="filter-item">
+                  <el-option
+                    v-for="sn in taskDeviceOptions"
+                    :key="sn"
+                    :label="shortDeviceLabel(sn)"
+                    :value="sn"
+                  />
+                </el-select>
+                <el-select v-model="taskWhen" size="small" class="filter-item">
+                  <el-option label="全部时间" value="all" />
+                  <el-option label="今天" value="today" />
+                  <el-option label="近 7 天" value="week" />
+                </el-select>
+                <el-button size="small" :loading="loading" @click="loadTasks">刷新</el-button>
+                <el-button size="small" type="primary" @click="openNewRun">新建执行</el-button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <el-table
+                :data="pagedTasks"
+                border
+                stripe
+                size="small"
+                height="100%"
+                highlight-current-row
+                :row-class-name="taskTableRowClass"
+                :empty-text="taskEmptyText"
+                @row-click="selectTask"
+              >
+                <el-table-column label="状态" width="96">
+                  <template #default="{ row }">
+                    <el-tag :type="statusTagType(row.status, row)" size="small" effect="light">{{ statusLabel(row.status, row) }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="任务" min-width="180" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="task-name">{{ taskTitle(row) }}</span>
+                    <span v-if="row.runType && row.runType !== 'manual'" class="run-type">{{ runTypeLabel(row.runType) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="编号" width="100" show-overflow-tooltip>
+                  <template #default="{ row }">{{ shortTaskId(row.taskId) }}</template>
+                </el-table-column>
+                <el-table-column label="进度" width="160">
+                  <template #default="{ row }">
+                    <div class="task-prog-cell">
+                      <el-progress
+                        :percentage="taskProgressPct(row)"
+                        :stroke-width="6"
+                        :show-text="false"
+                        :status="progressStatus(row)"
+                      />
+                      <span>{{ taskCountLabel(row) }}</span>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="覆盖" width="72">
+                  <template #default="{ row }">
+                    {{ taskSns(row).length > 1 ? coverageLabel(taskCoverage(row)) : '—' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="设备" width="140" show-overflow-tooltip>
+                  <template #default="{ row }">{{ formatTaskDevices(row) || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="时间" width="108">
+                  <template #default="{ row }">{{ formatTaskTime(row) }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="72" fixed="right">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click.stop="selectTask(row)">查看</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <el-pagination
+              class="settings-table-pager"
+              background
+              layout="total, sizes, prev, pager, next"
+              :total="visibleTasks.length"
+              :page-sizes="TABLE_PAGE_SIZES"
+              v-model:page-size="taskPageSize"
+              v-model:current-page="taskPage"
+            />
+          </section>
+        </div>
+      </div>
+
+      <div
+        v-else-if="tab === 'tasks'"
+        class="ws-body with-detail"
+        :class="{ 'rail-open': showTaskRail }"
         v-loading="loading"
       >
         <aside v-if="showTaskRail" class="task-rail">
-          <div class="rail-head">
-            <div class="rail-head-title">
-              <strong>任务</strong>
-              <span>{{ visibleTasks.length }}{{ visibleTasks.length !== tasks.length ? ` / ${tasks.length}` : '' }}</span>
-            </div>
-            <div class="rail-head-actions">
+          <div class="col-head compact">
+            <h3>任务</h3>
+            <div class="col-actions">
               <el-button text size="small" :loading="loading" @click="loadTasks">刷新</el-button>
-              <el-button type="primary" size="small" @click="openNewRun">新建执行</el-button>
+              <el-button type="primary" size="small" @click="openNewRun">新建</el-button>
             </div>
           </div>
           <div class="rail-filters">
@@ -662,38 +819,40 @@ watch(() => runForm.value.sn, (sn) => {
               <el-option label="近 7 天" value="week" />
             </el-select>
           </div>
-          <button
-            v-for="row in visibleTasks"
-            :key="row.taskId"
-            type="button"
-            class="task-item"
-            :class="[taskRowClass(row), { active: row.taskId === selectedTaskId, wide: !hasDetail }]"
-            @click="selectTask(row)"
-          >
-            <div class="task-item-top">
-              <el-tag :type="statusTagType(row.status, row)" size="small" effect="light" round>{{ statusLabel(row.status, row) }}</el-tag>
-              <strong :title="row.taskId">{{ taskTitle(row) }}</strong>
-              <span v-if="!hasDetail && row.taskId" class="task-id">{{ shortTaskId(row.taskId) }}</span>
-              <span v-if="row.runType && row.runType !== 'manual'" class="run-type">{{ runTypeLabel(row.runType) }}</span>
-            </div>
-            <div class="task-item-prog">
-              <el-progress
-                class="mini-progress"
-                :percentage="taskProgressPct(row)"
-                :stroke-width="5"
-                :show-text="false"
-                :status="progressStatus(row)"
-              />
-              <span class="rate">{{ taskCountLabel(row) }}</span>
-              <span v-if="row.sn" class="dev">{{ shortDeviceLabel(row.sn) }}</span>
-              <span class="time">{{ (row.startedAt || '').replace('T', ' ').slice(5, 16) || '—' }}</span>
-            </div>
-            <div v-if="row.error && !hasDetail" class="task-err">{{ row.error }}</div>
-          </button>
-          <el-empty v-if="!visibleTasks.length && !loading" :description="tasks.length ? '没有符合筛选的任务' : '暂无任务'" :image-size="48" />
+          <div class="table-wrap">
+            <el-table
+              :data="pagedTasks"
+              border
+              stripe
+              size="small"
+              height="100%"
+              highlight-current-row
+              :row-class-name="taskTableRowClass"
+              :empty-text="taskEmptyText"
+              @row-click="selectTask"
+            >
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="statusTagType(row.status, row)" size="small" effect="light">{{ statusLabel(row.status, row) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="任务" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ taskTitle(row) }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <el-pagination
+            class="settings-table-pager compact"
+            background
+            small
+            layout="total, prev, pager, next"
+            :total="visibleTasks.length"
+            :page-size="taskPageSize"
+            v-model:current-page="taskPage"
+          />
         </aside>
 
-        <section v-if="hasDetail" class="detail-pane">
+        <section class="detail-pane">
           <TaskDetailPane
             :key="selectedTaskId"
             :task-id="selectedTaskId"
@@ -704,7 +863,7 @@ watch(() => runForm.value.sn, (sn) => {
         </section>
       </div>
 
-      <div v-else-if="tab === 'cases'" class="ws-config">
+      <div v-else-if="tab === 'cases'" class="ws-config fill">
         <FeishuRegressionPanel
           :app-id="appId"
           :app-name="appName"
@@ -713,7 +872,7 @@ watch(() => runForm.value.sn, (sn) => {
         />
       </div>
 
-      <div v-else-if="tab === 'knowledge'" class="ws-config">
+      <div v-else-if="tab === 'knowledge'" class="ws-config fill">
         <KnowledgePanel embedded app-only :app-id="appId" :app-name="appName" />
       </div>
 
@@ -731,12 +890,15 @@ watch(() => runForm.value.sn, (sn) => {
       </div>
     </div>
 
-    <el-dialog v-model="newRunVisible" title="新建执行" width="560px" append-to-body class="new-run-dialog">
+    <el-dialog v-model="newRunVisible" title="新建执行" width="640px" append-to-body class="new-run-dialog">
       <div class="form">
         <div class="field">
-          <label>设备（仅在线可执行）</label>
+          <label>设备（可多选，仅在线可执行）</label>
           <el-select
-            v-model="runForm.sn"
+            v-model="runForm.sns"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
             placeholder="选择在线设备"
             style="width:100%"
             filterable
@@ -746,21 +908,56 @@ watch(() => runForm.value.sn, (sn) => {
             <el-option
               v-for="d in devices"
               :key="d.sn"
-              :label="formatDeviceOption(d)"
+              :label="formatDeviceTag(d)"
               :value="d.sn"
-              :disabled="Boolean(d.busy_task_id)"
+              :disabled="deviceOptionDisabled(d)"
             >
               <div class="dev-opt">
-                <span class="dev-name">{{ formatDeviceOption(d) }}</span>
-                <small>{{ formatDeviceMeta(d) }}</small>
+                <span class="dev-name">{{ formatDeviceTag(d) }}</span>
+                <small>
+                  {{ formatDeviceMeta(d) }}
+                  <template v-if="d.busy_task_id"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
+                </small>
               </div>
             </el-option>
           </el-select>
           <div v-if="!devices.length" class="hint warn">暂无在线设备。请到运行状态确认 USB / Wi‑Fi / ClawNode 连接。</div>
-          <div v-else-if="selectedDevice?.busy_task_id" class="hint warn">
-            该设备占用中（任务 {{ shortTaskId(selectedDevice.busy_task_id) }}）。
+          <div v-else-if="busySelectedDevice" class="hint warn">
+            {{ formatDeviceTag(busySelectedDevice) }} 正在跑任务 {{ shortTaskId(busySelectedDevice.busy_task_id) }}，请换一台或等它结束。
           </div>
-          <div v-else-if="selectedDevice" class="hint">{{ formatDeviceMeta(selectedDevice) }}</div>
+          <div v-else-if="selectedDevices.length" class="hint">
+            已选 {{ selectedDevices.length }} 台 · {{ selectedDevices.map((d) => formatDeviceMeta(d)).join('；') }}
+            <template v-if="mixedSelectedPlatforms">。每台按项目环境里对应的包名 / Bundle 执行</template>
+          </div>
+        </div>
+        <div v-if="showCoveragePick" class="field">
+          <label>覆盖方式</label>
+          <div class="coverage-pick">
+            <button
+              type="button"
+              class="coverage-card"
+              :class="{ on: runForm.coverage === 'once' }"
+              @click="runForm.coverage = 'once'"
+            >
+              <strong>加速拆分</strong>
+              <span>每条用例只跑一次，空闲设备接着领</span>
+              <em>{{ selectedCaseIds.length ? `${selectedCaseIds.length} 次执行` : '先勾选用例' }}</em>
+            </button>
+            <button
+              type="button"
+              class="coverage-card"
+              :class="{ on: runForm.coverage === 'per_device' }"
+              @click="runForm.coverage = 'per_device'"
+            >
+              <strong>全机覆盖</strong>
+              <span>每台设备都把这批用例跑完</span>
+              <em>{{ selectedCaseIds.length ? `${(selectedCaseIds.length || 0) * runForm.sns.length} 次执行` : '先勾选用例' }}</em>
+            </button>
+          </div>
+          <div class="hint">
+            <template v-if="unitCount">将执行 {{ unitCount }} 次 · 占用 {{ runForm.sns.length }} 台直到任务结束</template>
+            <template v-else>勾选用例后显示执行次数 · 已选 {{ runForm.sns.length }} 台</template>
+          </div>
         </div>
         <div class="field">
           <div class="hint model-hint">将使用：{{ caseExecutionModelLabel }}</div>
@@ -813,11 +1010,10 @@ watch(() => runForm.value.sn, (sn) => {
             <p v-else-if="caseQuery && !filteredCases.length" class="hint">没有匹配的用例</p>
           </div>
         </div>
-        <p v-if="platformConflictCases.length" class="hint warn">
-          已选 {{ platformConflictCases.length }} 条用例与当前设备平台不符
-          （设备 {{ selectedDeviceKind === 'ios' ? 'iOS' : 'Android' }}）：
-          {{ platformConflictCases.map((c) => c.case_id).slice(0, 4).join('、') }}{{ platformConflictCases.length > 4 ? '…' : '' }}。
-          请换设备或取消这些用例后再启动。
+        <p v-if="platformConflictCases.length" class="hint">
+          {{ platformConflictCases.length }} 条用例标注了另一平台，仍会在当前设备上执行。
+          该端不支持的前置条件可能失败或跳过：
+          {{ platformConflictCases.map((c) => c.case_id).slice(0, 4).join('、') }}{{ platformConflictCases.length > 4 ? '…' : '' }}
         </p>
         <div class="field opts">
           <el-checkbox v-model="runForm.use_persisted_baseline">沿用上次成功路径</el-checkbox>
@@ -826,7 +1022,9 @@ watch(() => runForm.value.sn, (sn) => {
       </div>
       <template #footer>
         <el-button @click="newRunVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!canStartRun" @click="submitRun">启动</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!canStartRun" @click="submitRun">
+          {{ unitCount ? `开始 · ${unitCount} 次执行` : '启动' }}
+        </el-button>
       </template>
     </el-dialog>
   </WorkShell>
@@ -974,173 +1172,80 @@ watch(() => runForm.value.sn, (sn) => {
   grid-template-columns: minmax(0, 1fr);
 }
 .ws-body.with-detail.rail-open {
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
 }
+.task-list-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.task-list-page .settings-page-header { flex-shrink: 0; margin-bottom: 8px; }
+.col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.col-head h3 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; color: #111827; }
+.col-head.compact { padding: 2px 2px 8px; margin-bottom: 0; }
+.col-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; align-items: center; }
+.filter-item { width: 118px; }
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.task-list-page :deep(.el-table .el-table__row) { cursor: pointer; }
+.task-list-page :deep(.el-table .is-running),
+.task-rail :deep(.el-table .is-running) { background: #ecfdf5; }
+.task-list-page :deep(.el-table .is-current),
+.task-rail :deep(.el-table .is-current) { background: #eef2ff !important; }
+.task-name { font-weight: 600; color: #111827; }
+.task-prog-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.task-prog-cell span { font-size: 11px; color: #6b7280; font-weight: 600; }
 .task-rail {
   min-height: 0;
   min-width: 0;
-  overflow: auto;
-  padding: 8px;
+  overflow: hidden;
+  padding: 10px 12px;
   border: 1px solid #e3e8f0;
   border-radius: 16px;
   background: #fff;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
   width: 100%;
   box-sizing: border-box;
-}
-.ws-body.with-detail.rail-open .task-rail {
-  padding: 6px;
-}
-.ws-body.with-detail.rail-open .task-item {
-  padding: 8px;
-}
-.ws-body.with-detail.rail-open .mini-progress {
-  width: 48px;
-}
-.ws-body.with-detail.rail-open .time {
-  display: none;
-}
-.rail-head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px 8px;
-  color: #6b7280;
-  font-size: 12px;
-  flex-wrap: wrap;
+  flex-direction: column;
 }
-.rail-head-title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.rail-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.rail-head strong { color: #111827; font-size: 15px; }
+.task-rail :deep(.el-table .el-table__row) { cursor: pointer; }
 .rail-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 0 6px 10px;
+  padding: 0 0 8px;
+  flex-shrink: 0;
 }
-.rail-filters .filter-item { width: 112px; }
-.task-item {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-left: 3px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  margin-bottom: 6px;
-}
-.task-item:hover { background: #f8fafc; }
-.task-item.active {
-  background: #eff6ff;
-  border-color: #bfdbfe;
-}
-.task-item.is-running {
-  background: #ecfdf5;
-  border-left-color: #34d399;
-  animation: task-pulse 1.6s ease-in-out infinite;
-}
-.task-item.is-failed { border-left-color: #f87171; background: #fef2f2; }
-.task-item.is-partial { border-left-color: #f59e0b; background: #fffbeb; }
-.task-item.is-done { border-left-color: #34d399; background: #fff; }
-.task-item.is-cancelled { border-left-color: #fbbf24; background: #fffbeb; }
+.rail-filters .filter-item { width: 100px; }
 .run-type {
+  display: inline-flex;
+  margin-left: 6px;
   font-size: 10px;
   color: #64748b;
   background: #f1f5f9;
   padding: 0 6px;
   border-radius: 999px;
+  vertical-align: middle;
 }
-.task-err {
-  font-size: 11px;
-  color: #b91c1c;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-item.is-running.active { background: #d1fae5; border-color: #6ee7b7; }
-@keyframes task-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.28); }
-  50% { box-shadow: 0 0 0 5px rgba(52, 211, 153, 0.1); }
-}
-.task-item.wide {
-  display: grid;
-  grid-template-columns: minmax(160px, max-content) minmax(180px, 1fr) auto;
-  align-items: center;
-  column-gap: 16px;
-  row-gap: 6px;
-  width: 100%;
-}
-.task-item.wide .task-item-top {
-  min-width: 0;
-}
-.task-item.wide .task-item-prog {
-  min-width: 0;
-  width: 100%;
-}
-.task-item.wide .task-err {
-  grid-column: 1 / -1;
-  white-space: normal;
-}
-.task-item.wide .mini-progress {
-  flex: 1;
-  width: auto;
-  min-width: 80px;
-  max-width: none;
-}
-.task-item-top {
-  display: flex;
-  justify-content: flex-start;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-.task-item-top strong {
-  font-size: 13px;
-  font-family: inherit;
-  font-weight: 650;
-  color: #111827;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.task-id {
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-.task-item-prog {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.mini-progress {
-  width: 80px;
-  flex-shrink: 0;
-}
-.rate, .time, .dev {
-  font-size: 11px;
-  color: #94a3b8;
-  white-space: nowrap;
-}
-.rate { color: #6b7280; font-weight: 600; }
-.dev { color: #64748b; }
+.settings-table-pager.compact { padding-top: 8px; }
 .detail-pane {
   min-width: 0;
   min-height: 0;
@@ -1166,7 +1271,40 @@ watch(() => runForm.value.sn, (sn) => {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
   box-sizing: border-box;
 }
-.form { display: flex; flex-direction: column; gap: 14px; }
+.ws-config.fill {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.ws-config.fill > * {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+.coverage-pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.coverage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid #e3e8f0;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  color: #111827;
+}
+.coverage-card strong { font-size: 13px; }
+.coverage-card span { font-size: 12px; color: #6b7280; line-height: 1.4; }
+.coverage-card em { font-size: 12px; font-style: normal; font-weight: 650; color: #4f46e5; }
+.coverage-card.on {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
 .field label { display: block; font-size: 13px; color: #374151; margin-bottom: 6px; font-weight: 500; }
 .hint { font-size: 12px; color: #6b7280; }
 .hint.warn { color: #b45309; }
@@ -1188,9 +1326,6 @@ watch(() => runForm.value.sn, (sn) => {
 .suite-pick { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 960px) {
   .ws-body.with-detail.rail-open { grid-template-columns: minmax(0, 1fr); }
-  .task-item.wide {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 </style>
 

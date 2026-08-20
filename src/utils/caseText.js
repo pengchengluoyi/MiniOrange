@@ -42,7 +42,10 @@ export function splitNumberedLines(text) {
     .map((p) => stripNumberPrefix(p.trim()))
     .filter(Boolean)
 
-  if (parts.length <= 1) return [raw]
+  if (parts.length <= 1) {
+    const one = stripNumberPrefix(raw)
+    return one ? [one] : []
+  }
   return parts
 }
 

@@ -14,19 +14,26 @@ import { fetchTaskDetail } from '@/composables/useTestingTasks'
 import { getFeishuCasesCached } from '@/api/feishuRegression'
 import { reviewKnowledgeItem } from '@/api/settings'
 import { normalizeCaseRow } from '@/utils/caseText'
+import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import {
   apiErrorDetail,
   applyTestingTaskEvent,
+  coverageLabel,
   formatElapsed,
+  formatTaskDevices,
   isMissingTaskEndpoint,
   isStepLimitCase,
+  platformLabel,
   progressStatus,
   shortDeviceLabel,
   statusLabel,
   statusTagType,
   taskCountLabel,
+  taskCoverage,
   taskPassRate,
+  taskPlatformOfSn,
   taskProgressPct,
+  taskSns,
   taskTitle,
   displayTaskStatus,
 } from '@/utils/testingTasks'
@@ -44,6 +51,17 @@ const selectedCaseRunId = ref('')
 const headerMeta = ref(null)
 const pollTimer = ref(null)
 const view = ref('cases')
+const casePage = ref(1)
+const casePageSize = ref(10)
+const knowPage = ref(1)
+const knowPageSize = ref(10)
+const reviewingDraft = ref(null)
+const reviewOpen = computed({
+  get: () => Boolean(reviewingDraft.value),
+  set: (open) => {
+    if (!open) reviewingDraft.value = null
+  },
+})
 const hitlPending = ref(null)
 const cancelling = ref(false)
 const retrying = ref(false)
@@ -75,7 +93,12 @@ const specOf = (c) => {
   const hit = list.find((x) => String(x.case_id || '') === cid)
     || list.find((x) => name && String(x.name || x.case_name || x.title || '') === name)
   const merged = mergeCaseSpec(normalizeCaseRow(hit || {}), normalizeCaseRow(c))
-  if (isEmptySpecVal(merged.platform) && task.value?.platform) merged.platform = task.value.platform
+  if (isEmptySpecVal(merged.platform)) {
+    const fromUnit = String(c.device_platform || '').trim()
+    const fromMap = taskPlatformOfSn(task.value, c.sn)
+    const taskPlat = String(task.value?.platform || '').trim()
+    merged.platform = fromUnit || fromMap || (taskPlat && taskPlat !== 'mixed' ? taskPlat : '')
+  }
   return merged
 }
 const selectedSpec = computed(() => specOf(selectedCase.value))
@@ -86,6 +109,7 @@ const pendingCases = computed(() => sourceCases.value.filter((c) => isPendingSta
 const executedCases = computed(() => sourceCases.value.filter((c) => !isPendingStatus(c.status)))
 const showPendingTab = computed(() => pendingCases.value.length > 0)
 const railCases = computed(() => (caseTab.value === 'pending' && showPendingTab.value ? pendingCases.value : executedCases.value))
+const pagedRailCases = computed(() => slicePage(railCases.value, casePage.value, casePageSize.value))
 
 const isLive = computed(() => task.value?.status === 'running')
 const failedCases = computed(() =>
@@ -95,7 +119,7 @@ const skippedCases = computed(() =>
   (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
 )
 const passRate = computed(() => taskPassRate(task.value))
-const caseRailOpen = ref(false)
+const caseRailOpen = ref(true)
 const selectedCase = computed(() =>
   (task.value?.cases || []).find((c) => caseRunIdOf(c) === selectedCaseRunId.value) || null,
 )
@@ -103,6 +127,75 @@ const showTimeline = computed(() => {
   const s = selectedCase.value?.status
   return Boolean(selectedCaseRunId.value && s && !['pending', 'cancelled', 'skipped'].includes(s))
 })
+const isMatrix = computed(() => taskCoverage(task.value) === 'per_device' && taskSns(task.value).length > 1)
+const deviceLanes = computed(() => {
+  const sns = taskSns(task.value)
+  const cases = task.value?.cases || []
+  const runningTask = task.value?.status === 'running' || task.value?.status === 'queued'
+  return sns.map((sn) => {
+    const units = cases.filter((c) => c.sn === sn)
+    const running = units.find((c) => c.status === 'running')
+    const pendingOwn = units.filter((c) => c.status === 'pending').length
+    const unclaimed = cases.filter((c) => c.status === 'pending' && !c.sn).length
+    const doneUnits = units.filter((c) => !['pending', 'queued', 'running'].includes(String(c.status || '')))
+    let label = '已完成'
+    let laneState = 'done'
+    if (!runningTask) {
+      const failed = units.filter((c) => ['fail', 'blocked', 'declined'].includes(c.status)).length
+      if (!units.length) {
+        label = '未执行'
+        laneState = 'idle'
+      } else {
+        label = failed ? `${failed} 失败` : '已完成'
+        laneState = failed ? 'fail' : 'done'
+      }
+    } else if (running?.hitl) {
+      label = '等待人工确认'
+      laneState = 'hitl'
+    } else if (running) {
+      label = `${running.name || running.case_id} · 执行中`
+      laneState = 'run'
+    } else if (isMatrix.value && pendingOwn) {
+      label = `排队 ${pendingOwn}`
+      laneState = 'idle'
+    } else if (!isMatrix.value && unclaimed) {
+      label = '空闲，待领'
+      laneState = 'idle'
+    } else if (!units.length) {
+      label = '未领到用例'
+      laneState = 'idle'
+    } else if (doneUnits.length) {
+      const failed = doneUnits.filter((c) => ['fail', 'blocked', 'declined'].includes(c.status)).length
+      label = failed ? `${failed} 失败` : '已完成'
+      laneState = failed ? 'fail' : 'done'
+    }
+    return {
+      sn,
+      label,
+      hitl: Boolean(running?.hitl),
+      running: Boolean(running),
+      laneState,
+      platform: taskPlatformOfSn(task.value, sn),
+    }
+  })
+})
+const matrixCaseIds = computed(() => {
+  const seen = []
+  for (const c of task.value?.cases || []) {
+    if (c.case_id && !seen.includes(c.case_id)) seen.push(c.case_id)
+  }
+  return seen
+})
+const unitAt = (caseId, sn) => (task.value?.cases || []).find((c) => c.case_id === caseId && c.sn === sn)
+const matrixCellClass = (cell) => {
+  const s = String(cell?.status || 'pending')
+  if (cell?.hitl) return 'hitl'
+  if (s === 'pass') return 'pass'
+  if (['fail', 'declined'].includes(s)) return 'fail'
+  if (s === 'running') return 'run'
+  if (s === 'blocked') return 'hitl'
+  return 'wait'
+}
 const runningCaseName = computed(() => {
   const row = (task.value?.cases || []).find((c) => c.status === 'running')
   return row?.name || row?.case_id || task.value?.currentCaseId || ''
@@ -113,6 +206,25 @@ const caseProposals = computed(() =>
 const taskProposals = computed(() =>
   (task.value?.knowledge_proposals || []).filter((k) => k && (k.review_status || 'pending') === 'pending'),
 )
+const pendingKnowledge = computed(() => {
+  const seen = new Set()
+  const out = []
+  for (const row of taskProposals.value) {
+    if (!row?.id || seen.has(row.id)) continue
+    seen.add(row.id)
+    out.push({ ...row, from: 'task', case_id: '' })
+  }
+  for (const c of task.value?.cases || []) {
+    for (const row of c.knowledge_proposals || []) {
+      if (!row?.id || seen.has(row.id)) continue
+      if ((row.review_status || 'pending') !== 'pending') continue
+      seen.add(row.id)
+      out.push({ ...row, from: 'case', case_id: c.case_id })
+    }
+  }
+  return out
+})
+const pagedKnowledge = computed(() => slicePage(pendingKnowledge.value, knowPage.value, knowPageSize.value))
 const reviewingId = ref('')
 const SOURCE_LABEL = { manual: '手动添加', case_run: '用例执行', task_run: '任务汇总' }
 const hitlForThisTask = computed(() => {
@@ -280,8 +392,10 @@ const retryOne = async (c) => {
   try {
     const r = await runCaseRunner({
       app_id: props.appId,
-      sn: task.value?.sn,
-      platform: task.value?.platform || 'android',
+      sn: c.sn || taskSns(task.value)[0] || task.value?.sn,
+      sns: c.sn ? [c.sn] : taskSns(task.value),
+      coverage: c.sn && taskCoverage(task.value) === 'per_device' ? 'once' : taskCoverage(task.value),
+      platform: taskPlatformOfSn(task.value, c.sn) || 'android',
       case_ids: [c.case_id],
       async_exec: true,
       execution_mode: 'auto',
@@ -297,6 +411,15 @@ const retryOne = async (c) => {
   }
 }
 
+const markProposalStatus = (id, status) => {
+  const apply = (list) => {
+    const hit = (list || []).find((k) => k?.id === id)
+    if (hit) hit.review_status = status
+  }
+  apply(task.value?.knowledge_proposals)
+  for (const c of task.value?.cases || []) apply(c.knowledge_proposals)
+}
+
 const approveProposal = async (row) => {
   if (!row?.id) return
   reviewingId.value = row.id
@@ -308,7 +431,7 @@ const approveProposal = async (row) => {
       category: row.category,
       tags: row.tags || [],
     })
-    row.review_status = 'approved'
+    markProposalStatus(row.id, 'approved')
     ElMessage.success('已审核并加入知识库')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '审核失败')
@@ -322,7 +445,7 @@ const rejectProposal = async (row) => {
   reviewingId.value = row.id
   try {
     await reviewKnowledgeItem(row.id, { action: 'reject' })
-    row.review_status = 'rejected'
+    markProposalStatus(row.id, 'rejected')
     ElMessage.success('已驳回')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '驳回失败')
@@ -417,6 +540,27 @@ watch(selectedCase, (c) => {
   if (isPendingStatus(c.status) && showPendingTab.value) caseTab.value = 'pending'
   else if (!isPendingStatus(c.status)) caseTab.value = 'executed'
 })
+
+watch([caseTab, () => railCases.value.length, selectedCaseRunId], () => {
+  const idx = railCases.value.findIndex((c) => caseRunIdOf(c) === selectedCaseRunId.value)
+  casePage.value = idx >= 0 ? Math.floor(idx / casePageSize.value) + 1 : 1
+})
+
+watch(() => pendingKnowledge.value.length, () => {
+  knowPage.value = 1
+})
+
+const caseRowClass = ({ row }) => (caseRunIdOf(row) === selectedCaseRunId.value ? 'is-current' : '')
+
+const openReview = (row) => {
+  reviewingDraft.value = { ...row }
+}
+
+const saveReview = async () => {
+  if (!reviewingDraft.value) return
+  await approveProposal(reviewingDraft.value)
+  reviewingDraft.value = null
+}
 </script>
 
 <template>
@@ -426,7 +570,8 @@ watch(selectedCase, (c) => {
         <div class="pane-head-row">
           <el-tag :type="statusTagType(task.status, task)" effect="dark" round>{{ statusLabel(task.status, task) }}</el-tag>
           <span class="title" :title="task.taskId">{{ taskTitle(task) }}</span>
-          <span v-if="task.sn" class="muted">设备 {{ shortDeviceLabel(task.sn) }}</span>
+          <el-tag v-if="taskSns(task).length > 1" size="small" effect="plain" round>{{ coverageLabel(taskCoverage(task)) }}</el-tag>
+          <span v-if="taskSns(task).length" class="muted">设备 {{ formatTaskDevices(task) }}</span>
           <span>通过 {{ task.passed }} · 失败 {{ task.failed }}{{ task.blocked ? ` · 阻塞 ${task.blocked}` : '' }}</span>
           <span>{{ taskCountLabel(task) }}<template v-if="passRate != null && displayTaskStatus(task) !== 'cancelled'"> · 通过率 {{ passRate }}%</template></span>
           <el-button size="small" text @click="copyTaskId">复制任务编号</el-button>
@@ -451,6 +596,17 @@ watch(selectedCase, (c) => {
           :stroke-width="6"
           :status="progressStatus(task)"
         />
+        <div v-if="deviceLanes.length > 1" class="device-lanes">
+          <div
+            v-for="lane in deviceLanes"
+            :key="lane.sn"
+            class="device-lane"
+            :class="lane.laneState || { hitl: lane.hitl, run: lane.running }"
+          >
+            <strong>{{ shortDeviceLabel(lane.sn) }}</strong>
+            <span :title="[platformLabel(lane.platform), lane.label].filter(Boolean).join(' · ')">{{ [platformLabel(lane.platform), lane.label].filter(Boolean).join(' · ') }}</span>
+          </div>
+        </div>
         <p v-if="task.error" class="err">{{ task.error }}</p>
       </div>
 
@@ -466,6 +622,9 @@ watch(selectedCase, (c) => {
       <div class="seg">
         <button type="button" :class="{ active: view === 'cases' }" @click="view = 'cases'">用例与时间线</button>
         <button type="button" :class="{ active: view === 'summary' }" @click="view = 'summary'">总结报表</button>
+        <button type="button" :class="{ active: view === 'knowledge' }" @click="view = 'knowledge'">
+          待审核知识<template v-if="pendingKnowledge.length"> {{ pendingKnowledge.length }}</template>
+        </button>
       </div>
 
       <template v-if="view === 'summary'">
@@ -475,33 +634,27 @@ watch(selectedCase, (c) => {
           <div class="metric"><div class="k">失败</div><div class="v bad">{{ task.failed || 0 }}</div></div>
           <div class="metric"><div class="k">阻塞</div><div class="v warn">{{ task.blocked || 0 }}</div></div>
         </div>
-        <div v-if="taskProposals.length" class="know-block">
-          <h4>任务待审核知识</h4>
-          <article v-for="row in taskProposals" :key="row.id" class="know-card">
-            <header>
-              <strong>{{ row.title }}</strong>
-              <small>{{ SOURCE_LABEL[row.source] || '任务汇总' }}</small>
-            </header>
-            <p v-if="row.question" class="know-q">{{ row.question }}</p>
-            <el-input v-model="row.content" type="textarea" :rows="4" />
-            <div class="know-actions">
-              <el-button size="small" :loading="reviewingId === row.id" @click="rejectProposal(row)">驳回</el-button>
-              <el-button size="small" type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入知识库</el-button>
-            </div>
-          </article>
-        </div>
         <div class="fail-block">
           <h4>失败 / 异常用例</h4>
-          <el-table :data="failedCases" size="small" empty-text="暂无失败用例">
-            <el-table-column prop="case_id" label="用例" width="120" />
-            <el-table-column prop="name" label="名称" min-width="120" />
-            <el-table-column label="状态" width="90">
+          <el-table :data="failedCases" border stripe size="small" empty-text="暂无失败用例">
+            <el-table-column prop="case_id" label="用例" width="100" />
+            <el-table-column prop="name" label="名称" min-width="110" />
+            <el-table-column label="设备" width="128">
+              <template #default="{ row }">
+                {{ [platformLabel(row.device_platform || taskPlatformOfSn(task, row.sn)), shortDeviceLabel(row.sn)].filter(Boolean).join(' · ') || '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
               <template #default="{ row }">
                 <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="summary" label="摘要" min-width="160" show-overflow-tooltip />
-            <el-table-column label="操作" width="140">
+            <el-table-column label="摘要" min-width="200">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ row.summary || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
                 <el-button link type="primary" :disabled="retrying" @click="retryOne(row)">重跑</el-button>
@@ -511,20 +664,96 @@ watch(selectedCase, (c) => {
         </div>
         <div v-if="skippedCases.length" class="fail-block">
           <h4>未执行 / 已取消</h4>
-          <el-table :data="skippedCases" size="small">
-            <el-table-column prop="case_id" label="用例" width="120" />
-            <el-table-column prop="name" label="名称" min-width="120" />
-            <el-table-column label="状态" width="90">
+          <el-table :data="skippedCases" border stripe size="small">
+            <el-table-column prop="case_id" label="用例" width="100" />
+            <el-table-column prop="name" label="名称" min-width="110" />
+            <el-table-column label="状态" width="80">
               <template #default="{ row }">
                 <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="summary" label="摘要" min-width="160" show-overflow-tooltip />
+            <el-table-column label="摘要" min-width="200">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ row.summary || '—' }}</span>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
       </template>
 
-      <div v-else class="split" :class="{ 'case-rail-collapsed': !caseRailOpen }">
+      <template v-else-if="view === 'knowledge'">
+        <div class="fail-block knowledge-tab">
+          <h4>待审核知识</h4>
+          <div class="table-wrap">
+          <el-table
+            :data="pagedKnowledge"
+            border
+            stripe
+            size="small"
+            empty-text="本任务没有待审核知识"
+            height="100%"
+          >
+            <el-table-column label="标题" min-width="160" show-overflow-tooltip prop="title" />
+            <el-table-column label="来源" width="100">
+              <template #default="{ row }">{{ SOURCE_LABEL[row.source] || (row.from === 'case' ? '用例执行' : '任务汇总') }}</template>
+            </el-table-column>
+            <el-table-column label="用例" width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.case_id || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="提问" min-width="140">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ clipText(row.question, 60) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="知识内容" min-width="200">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ clipText(row.content, 80) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="160" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" :loading="reviewingId === row.id" @click="openReview(row)">审核</el-button>
+                <el-button link type="danger" :loading="reviewingId === row.id" @click="rejectProposal(row)">驳回</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          </div>
+          <el-pagination
+            class="table-pager"
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="pendingKnowledge.length"
+            :page-sizes="TABLE_PAGE_SIZES"
+            v-model:page-size="knowPageSize"
+            v-model:current-page="knowPage"
+          />
+        </div>
+      </template>
+
+      <template v-else>
+        <div v-if="isMatrix" class="matrix-wrap">
+          <div class="matrix" :style="{ gridTemplateColumns: `88px repeat(${deviceLanes.length}, minmax(64px, 1fr))` }">
+            <span class="matrix-h">用例</span>
+            <span v-for="lane in deviceLanes" :key="lane.sn" class="matrix-h">{{ shortDeviceLabel(lane.sn) }}</span>
+            <template v-for="cid in matrixCaseIds" :key="cid">
+              <span class="matrix-case">{{ cid }}</span>
+              <button
+                v-for="lane in deviceLanes"
+                :key="`${cid}-${lane.sn}`"
+                type="button"
+                class="matrix-cell"
+                :class="[matrixCellClass(unitAt(cid, lane.sn)), { active: caseRunIdOf(unitAt(cid, lane.sn) || {}) === selectedCaseRunId }]"
+                @click="unitAt(cid, lane.sn) && selectCase(unitAt(cid, lane.sn))"
+              >{{
+                unitAt(cid, lane.sn)?.status === 'pass' ? '过'
+                  : ['fail', 'declined'].includes(unitAt(cid, lane.sn)?.status) ? '败'
+                    : unitAt(cid, lane.sn)?.status === 'running' ? '跑'
+                      : ''
+              }}</button>
+            </template>
+          </div>
+        </div>
+        <div class="split" :class="{ 'case-rail-collapsed': !caseRailOpen }">
         <div class="case-list">
           <div class="case-list-toolbar">
             <div v-if="showPendingTab" class="case-tabs">
@@ -543,62 +772,73 @@ watch(selectedCase, (c) => {
               <strong>用例</strong>
               <span>{{ railCases.length }}</span>
             </div>
-            <el-button text size="small" @click="caseRailOpen = false">收起</el-button>
+            <el-button text size="small" @click="caseRailOpen = false">收起列表</el-button>
           </div>
-          <button
-            v-for="c in railCases"
-            :key="caseRunIdOf(c)"
-            type="button"
-            class="case-row"
-            :class="[
-              c.status,
-              {
-                active: caseRunIdOf(c) === selectedCaseRunId,
-                hitl: c.hitl,
-                limit: isStepLimitCase(c),
-              },
-            ]"
-            @click="selectCase(c)"
-          >
-            <span class="case-top">
-              <el-tag
-                :type="statusTagType(c.status, c)"
-                size="small"
-                effect="light"
-                :class="{ 'tag-limit': isStepLimitCase(c) }"
-              >{{ statusLabel(c.status, c) }}</el-tag>
-              <strong :title="c.case_id">{{ c.case_id }}</strong>
-            </span>
-            <span class="case-sub">{{ c.name || c.summary || caseRunIdOf(c) }}</span>
-          </button>
-          <el-empty
-            v-if="!railCases.length"
-            :description="caseTab === 'pending' ? '没有待执行用例' : (task.total === 0 ? '任务尚未开始' : '尚无已执行用例')"
-            :image-size="48"
+          <div class="table-wrap">
+            <el-table
+              :data="pagedRailCases"
+              border
+              stripe
+              size="small"
+              highlight-current-row
+              :row-class-name="caseRowClass"
+              empty-text="暂无用例"
+              height="100%"
+              @row-click="selectCase"
+            >
+              <el-table-column label="状态" width="72">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="statusTagType(row.status, row)"
+                    size="small"
+                    effect="light"
+                    :class="{ 'tag-limit': isStepLimitCase(row) }"
+                  >{{ statusLabel(row.status, row) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="case_id" label="编号" width="88" show-overflow-tooltip />
+              <el-table-column label="名称" min-width="108" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.name || row.summary || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="设备" width="100" show-overflow-tooltip>
+                <template #default="{ row }">{{ shortDeviceLabel(row.sn) || '—' }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <el-pagination
+            class="table-pager compact"
+            background
+            small
+            layout="total, prev, pager, next"
+            :total="railCases.length"
+            :page-size="casePageSize"
+            v-model:current-page="casePage"
           />
         </div>
         <div class="timeline-pane">
-          <button v-if="!caseRailOpen" type="button" class="case-rail-toggle" @click="caseRailOpen = true">展开用例</button>
+          <div class="tl-toolbar">
+            <el-button v-if="!caseRailOpen" size="small" @click="caseRailOpen = true">展开用例列表</el-button>
+            <template v-if="selectedCase">
+              <strong class="tl-title" :title="selectedCaseRunId">{{ selectedCase.case_id || selectedCaseRunId }}<template v-if="selectedCase.sn"> · {{ shortDeviceLabel(selectedCase.sn) }}</template></strong>
+              <el-tag
+                v-if="selectedCase.status"
+                :type="statusTagType(selectedCase.status, selectedCase)"
+                size="small"
+                :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
+              >{{ statusLabel(selectedCase.status, selectedCase) }}</el-tag>
+              <span v-if="headerMeta?.elapsed && !headerMeta.live" class="muted">{{ formatElapsed(headerMeta.elapsed) }}</span>
+              <span class="tl-toolbar-spacer" />
+              <el-button size="small" text @click="copyRunId">复制编号</el-button>
+              <el-button
+                v-if="headerMeta && !headerMeta.live"
+                size="small"
+                text
+                :type="['fail', 'failed', 'partial'].includes(selectedCase.status) ? 'info' : 'primary'"
+                @click="promoteRun"
+              >{{ ['fail', 'failed', 'partial'].includes(selectedCase.status) ? '仍提升为 Baseline' : '提升为 Baseline' }}</el-button>
+            </template>
+          </div>
           <template v-if="selectedCase">
-            <div class="tl-head">
-              <div class="tl-title" :title="selectedCaseRunId">{{ selectedCase.case_id || selectedCaseRunId }}</div>
-              <div v-if="headerMeta && !headerMeta.live" class="tl-meta">
-                <el-tag
-                  v-if="headerMeta.overall"
-                  :type="statusTagType(headerMeta.overall, selectedCase)"
-                  size="small"
-                  :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
-                >{{ statusLabel(headerMeta.overall, selectedCase) }}</el-tag>
-                <span v-if="headerMeta.elapsed">{{ formatElapsed(headerMeta.elapsed) }}</span>
-                <el-button size="small" text @click="copyRunId">复制编号</el-button>
-                <el-button
-                  size="small"
-                  text
-                  :type="['fail', 'failed', 'partial'].includes(selectedCase.status) ? 'info' : 'primary'"
-                  @click="promoteRun"
-                >{{ ['fail', 'failed', 'partial'].includes(selectedCase.status) ? '仍提升为 Baseline' : '提升为 Baseline' }}</el-button>
-              </div>
-            </div>
             <div v-if="caseProposals.length" class="know-block compact">
               <h4>本条可沉淀的知识</h4>
               <article v-for="row in caseProposals" :key="row.id" class="know-card">
@@ -608,7 +848,7 @@ watch(selectedCase, (c) => {
                 </header>
                 <p v-if="row.question" class="know-q">{{ row.question }}</p>
                 <el-input v-model="row.title" size="small" class="know-title" />
-                <el-input v-model="row.content" type="textarea" :rows="4" />
+                <el-input v-model="row.content" type="textarea" :rows="3" />
                 <div class="know-actions">
                   <el-button size="small" :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
                   <el-button size="small" type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并审核通过</el-button>
@@ -633,8 +873,31 @@ watch(selectedCase, (c) => {
           <el-empty v-else description="选择左侧用例查看详情" />
         </div>
       </div>
+      </template>
     </template>
     <el-empty v-else-if="!loading" description="无法加载该任务" />
+    <el-dialog
+      v-model="reviewOpen"
+      title="审核知识"
+      width="560px"
+      destroy-on-close
+    >
+      <el-form v-if="reviewingDraft" label-width="72px">
+        <el-form-item label="标题">
+          <el-input v-model="reviewingDraft.title" />
+        </el-form-item>
+        <el-form-item v-if="reviewingDraft.question" label="提问">
+          <p class="know-q">{{ reviewingDraft.question }}</p>
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input v-model="reviewingDraft.content" type="textarea" :rows="8" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewingDraft = null">取消</el-button>
+        <el-button type="primary" :loading="!!reviewingId" @click="saveReview">录入知识库</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -647,7 +910,60 @@ watch(selectedCase, (c) => {
   width: 100%;
   gap: 10px;
   box-sizing: border-box;
+  overflow: hidden;
 }
+.device-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.device-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #e3e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.device-lane strong { font-size: 12px; color: #111827; }
+.device-lane span {
+  font-size: 11px;
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.matrix-wrap {
+  flex-shrink: 0;
+  overflow-x: auto;
+  padding: 4px 2px 2px;
+}
+.matrix {
+  display: grid;
+  gap: 6px;
+  min-width: 320px;
+  align-items: center;
+}
+.matrix-h, .matrix-case { font-size: 11px; color: #6b7280; }
+.matrix-h { font-weight: 650; color: #374151; }
+.matrix-cell {
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: #e5e7eb;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.matrix-cell.pass { background: #34d399; }
+.matrix-cell.fail { background: #f87171; }
+.matrix-cell.run { background: #6366f1; }
+.matrix-cell.hitl { background: #f59e0b; }
+.matrix-cell.wait { background: #e5e7eb; color: transparent; }
+.matrix-cell.active { outline: 2px solid #111827; }
 .pane-head {
   padding: 12px 14px;
   border: 1px solid #e3e8f0;
@@ -665,7 +981,26 @@ watch(selectedCase, (c) => {
   margin-bottom: 8px;
 }
 .mono { font-family: ui-monospace, monospace; color: #111827; font-weight: 600; }
-.title { color: #111827; font-weight: 700; font-size: 13px; }
+.title {
+  color: #111827;
+  font-weight: 700;
+  font-size: 13px;
+  min-width: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fail-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+  color: #4b5563;
+}
 .muted { color: #6b7280; }
 .err { color: #dc2626; font-size: 12px; margin: 8px 0 0; }
 .hitl-banner {
@@ -776,13 +1111,28 @@ watch(selectedCase, (c) => {
   background: #fff;
   overflow: auto;
 }
-.fail-block h4 { margin: 0 0 10px; font-size: 14px; }
+.knowledge-tab {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.knowledge-tab h4 { flex-shrink: 0; margin: 0 0 8px; }
+.knowledge-tab .table-wrap { min-height: 200px; }
+.fail-block :deep(.el-table .cell) {
+  white-space: normal;
+  line-height: 1.45;
+}
+.fail-block :deep(.el-popper) {
+  max-width: min(480px, 70vw);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .split {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
   gap: 12px;
   width: 100%;
 }
@@ -790,38 +1140,46 @@ watch(selectedCase, (c) => {
   grid-template-columns: minmax(0, 1fr);
 }
 .split.case-rail-collapsed .case-list { display: none; }
-.case-rail-toggle {
-  align-self: flex-start;
-  border: 1px solid #e3e8f0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #4f46e5;
-  cursor: pointer;
-  margin-bottom: 8px;
-}
 .case-list-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
 }
 .case-list-toolbar .case-tabs,
 .case-list-toolbar .case-list-head { flex: 1; min-width: 0; }
 .case-list {
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   padding: 8px;
   border: 1px solid #e3e8f0;
   border-radius: 14px;
   background: #fff;
-  min-width: 0;
+}
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.table-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 0 0;
+  flex-shrink: 0;
+}
+.table-pager.compact { padding-top: 6px; }
+.case-list :deep(.el-table .el-table__row) { cursor: pointer; }
+.case-list :deep(.el-table .el-table__row.is-current) {
+  background: #eef2ff !important;
 }
 .case-list-head {
   display: flex;
   justify-content: space-between;
-  padding: 6px 8px 8px;
+  padding: 2px 4px;
   font-size: 12px;
   color: #6b7280;
 }
@@ -830,7 +1188,6 @@ watch(selectedCase, (c) => {
   display: flex;
   gap: 4px;
   padding: 4px;
-  margin-bottom: 6px;
   border-radius: 10px;
   background: #f1f5f9;
 }
@@ -856,65 +1213,11 @@ watch(selectedCase, (c) => {
   color: #64748b;
   flex-shrink: 0;
 }
-.case-row {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-left: 3px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  margin-bottom: 4px;
-  box-sizing: border-box;
-  overflow: hidden;
-}
-.case-row:hover { background: #f3f4f6; }
-.case-row.active { background: #eff6ff; border-color: #bfdbfe; }
-.case-row.running {
-  background: #ecfdf5;
-  border-left-color: #34d399;
-  animation: case-pulse 1.6s ease-in-out infinite;
-}
-.case-row.pending { border-left-color: #cbd5e1; }
-.case-row.pass { border-left-color: #34d399; }
-.case-row.fail,
-.case-row.failed { border-left-color: #f87171; }
-.case-row.blocked { border-left-color: #fbbf24; }
-.case-row.hitl { background: #fffbeb; border-left-color: #f59e0b; }
-.case-row.limit { border-left-color: #8b5cf6; }
 .tag-limit {
   --el-tag-bg-color: #f5f3ff !important;
   --el-tag-border-color: #c4b5fd !important;
   --el-tag-text-color: #6d28d9 !important;
 }
-.case-row.cancelled,
-.case-row.skipped { border-left-color: #cbd5e1; opacity: 0.85; }
-@keyframes case-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.25); }
-  50% { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.12); }
-}
-.case-top {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 6px;
-  align-items: center;
-  min-width: 0;
-}
-.case-top strong {
-  font-size: 12px;
-  line-height: 1.35;
-  color: #111827;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.case-sub { font-size: 11px; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-pane {
   min-width: 0;
   min-height: 0;
@@ -928,13 +1231,41 @@ watch(selectedCase, (c) => {
   overflow: hidden;
   box-sizing: border-box;
 }
-.tl-head { margin-bottom: 8px; flex-shrink: 0; }
-.tl-title { font-size: 12px; font-weight: 600; font-family: ui-monospace, monospace; color: #111827; }
-.tl-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: #6b7280; margin-top: 4px; }
-.goal { margin: 6px 0 0; font-size: 12px; color: #374151; }
+.tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.tl-toolbar-spacer { flex: 1; min-width: 8px; }
+.tl-title {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  color: #111827;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tl { flex: 1; min-height: 0; width: 100%; overflow: auto; padding-top: 4px; }
 @media (max-width: 1100px) {
-  .split { grid-template-columns: minmax(0, 1fr); }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(200px, 32vh) minmax(0, 1fr);
+  }
+  .split.case-rail-collapsed { grid-template-rows: minmax(0, 1fr); }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+
+<style>
+.el-popper.is-dark {
+  max-width: min(520px, 80vw);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
 }
 </style>

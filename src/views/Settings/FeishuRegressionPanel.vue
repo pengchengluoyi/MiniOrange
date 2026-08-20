@@ -18,6 +18,8 @@ import {
   groupCasesByModule,
   suiteCaseIds,
 } from '@/utils/caseLibrary'
+import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
+import './settings-ui.css'
 
 const props = defineProps({
   appId: { type: String, required: true },
@@ -66,6 +68,11 @@ const visibleCases = computed(() => {
     return blob.toLowerCase().includes(q)
   })
 })
+
+const casePage = ref(1)
+const casePageSize = ref(20)
+const pagedCases = computed(() => slicePage(visibleCases.value, casePage.value, casePageSize.value))
+const syncingSelection = ref(false)
 
 const syncLabel = computed(() => formatSyncedAt(casesSyncedAt.value))
 
@@ -201,19 +208,34 @@ const openNewRun = () => {
 const applySuite = async (suite) => {
   moduleKey.value = ''
   libraryQuery.value = ''
+  casePage.value = 1
   selectedCaseIds.value = suiteCaseIds(suite, cases.value)
   if (suite?.case_ids?.length && !selectedCaseIds.value.length) {
     ElMessage.warning('该套件里的用例已不在当前表中，请重新保存套件')
     return
   }
+  await restoreCaseSelection()
+}
+
+const onCaseSelectionChange = (rows) => {
+  if (syncingSelection.value) return
+  const pageIds = new Set(pagedCases.value.map((r) => r.case_id))
+  const kept = selectedCaseIds.value.filter((id) => !pageIds.has(id))
+  selectedCaseIds.value = [...kept, ...rows.map((r) => r.case_id)]
+}
+
+const restoreCaseSelection = async () => {
   await nextTick()
   const table = caseTableRef.value
   if (!table) return
-  table.clearSelection()
+  syncingSelection.value = true
   const want = new Set(selectedCaseIds.value)
-  for (const row of visibleCases.value) {
+  table.clearSelection()
+  for (const row of pagedCases.value) {
     if (want.has(row.case_id)) table.toggleRowSelection(row, true)
   }
+  await nextTick()
+  syncingSelection.value = false
 }
 
 const saveSuiteFromSelection = async () => {
@@ -272,6 +294,10 @@ const init = async () => {
 }
 
 watch(() => props.appId, init)
+watch([moduleKey, libraryQuery], () => {
+  casePage.value = 1
+})
+watch([casePage, casePageSize, () => cases.value.length], restoreCaseSelection)
 onMounted(init)
 </script>
 
@@ -328,6 +354,7 @@ onMounted(init)
       </el-tab-pane>
 
       <el-tab-pane :label="`用例库 (${cases.length})`" name="cases">
+        <div class="cases-tab">
         <div v-if="suites.length" class="suite-row">
           <span class="suite-kicker">套件</span>
           <button
@@ -375,35 +402,52 @@ onMounted(init)
               placeholder="搜索编号、名称、端"
               class="lib-search"
             />
-            <el-table
-              ref="caseTableRef"
-              :data="visibleCases"
-              row-key="case_id"
-              border
-              stripe
-              max-height="440"
-              @selection-change="(rows) => (selectedCaseIds = rows.map((r) => r.case_id))"
-            >
-              <el-table-column type="selection" width="48" reserve-selection />
-              <el-table-column prop="case_id" label="编号" width="108" />
-              <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
-              <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-              <el-table-column label="前置条件" min-width="140" class-name="col-multiline">
-                <template #default="{ row }">
-                  <CaseMultilineCell :row="row" raw-key="precondition" />
-                </template>
-              </el-table-column>
-              <el-table-column label="测试步骤" min-width="180" class-name="col-multiline">
-                <template #default="{ row }">
-                  <CaseAlignedFieldCell :row="row" field="step" />
-                </template>
-              </el-table-column>
-              <el-table-column label="预期效果" min-width="160" class-name="col-multiline">
-                <template #default="{ row }">
-                  <CaseAlignedFieldCell :row="row" field="expected" />
-                </template>
-              </el-table-column>
-            </el-table>
+            <div class="table-wrap">
+              <el-table
+                ref="caseTableRef"
+                :data="pagedCases"
+                row-key="case_id"
+                border
+                stripe
+                height="100%"
+                @selection-change="onCaseSelectionChange"
+              >
+                <el-table-column type="selection" width="48" reserve-selection />
+                <el-table-column prop="case_id" label="编号" width="108" show-overflow-tooltip />
+                <el-table-column prop="platform" label="端" width="72" show-overflow-tooltip />
+                <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+                <el-table-column label="前置条件" min-width="140" class-name="col-multiline">
+                  <template #default="{ row }">
+                    <div class="col-clamp" :title="row.precondition || ''">
+                      <CaseMultilineCell :row="row" raw-key="precondition" />
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="测试步骤" min-width="180" class-name="col-multiline">
+                  <template #default="{ row }">
+                    <div class="col-clamp">
+                      <CaseAlignedFieldCell :row="row" field="step" />
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="预期效果" min-width="160" class-name="col-multiline">
+                  <template #default="{ row }">
+                    <div class="col-clamp">
+                      <CaseAlignedFieldCell :row="row" field="expected" />
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <el-pagination
+              class="table-pager"
+              background
+              layout="total, sizes, prev, pager, next"
+              :total="visibleCases.length"
+              :page-sizes="TABLE_PAGE_SIZES"
+              v-model:page-size="casePageSize"
+              v-model:current-page="casePage"
+            />
           </div>
         </div>
 
@@ -415,16 +459,25 @@ onMounted(init)
             <el-button link type="danger" size="small" @click="deleteSuite(s)">删除</el-button>
           </span>
         </div>
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <style scoped>
-.feishu-panel { margin-top: 8px; width: 100%; }
+.feishu-panel {
+  margin-top: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+.feishu-panel :deep(.settings-toolbar) { flex-shrink: 0; }
 .toolbar-copy { min-width: 0; flex: 1; }
 .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.cred-alert { margin-bottom: 12px; }
+.cred-alert { margin-bottom: 12px; flex-shrink: 0; }
 .sync-meta { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
 .ios-hint { color: #b45309; }
 .config-form { max-width: 720px; }
@@ -434,6 +487,7 @@ onMounted(init)
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 .suite-kicker {
   font-size: 11px;
@@ -441,7 +495,7 @@ onMounted(init)
   color: #94a3b8;
   letter-spacing: 0.04em;
 }
-.suite-empty { font-size: 12px; color: #94a3b8; margin: 0 0 12px; }
+.suite-empty { font-size: 12px; color: #94a3b8; margin: 0 0 12px; flex-shrink: 0; }
 .suite-chip {
   border: 1px solid #e3e8f0;
   background: #fff;
@@ -453,13 +507,21 @@ onMounted(init)
 }
 .suite-chip small { margin-left: 6px; color: #94a3b8; }
 .suite-chip:hover { border-color: #c7d2fe; background: #eef2ff; }
-.suite-manage { margin-top: 12px; }
+.suite-manage { margin-top: 12px; margin-bottom: 0; }
 .suite-manage-item { font-size: 12px; color: #6b7280; }
+.cases-tab {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .library {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr);
   gap: 12px;
-  min-height: 280px;
+  flex: 1;
+  min-height: 0;
 }
 .module-tree {
   border: 1px solid #e3e8f0;
@@ -488,15 +550,59 @@ onMounted(init)
 .mod-item:hover { background: #fff; }
 .mod-item.on { background: #eef2ff; color: #4f46e5; }
 .mod-item.on span { color: #6366f1; }
-.library-main { min-width: 0; }
-.lib-search { margin-bottom: 8px; max-width: 280px; }
+.library-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lib-search { margin-bottom: 8px; max-width: 280px; flex-shrink: 0; }
+.table-wrap {
+  flex: 1;
+  min-height: 280px;
+  overflow: hidden;
+}
+.table-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  flex-shrink: 0;
+}
+.col-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 3.1em;
+  line-height: 1.5;
+}
+.col-clamp :deep(.case-multiline-cell),
+.col-clamp :deep(.case-aligned-cell) {
+  display: block;
+}
 @media (max-width: 860px) {
-  .library { grid-template-columns: 1fr; }
+  .library { grid-template-columns: 1fr; grid-template-rows: 140px minmax(0, 1fr); }
 }
 </style>
 
 <style>
-.feishu-panel :deep(.el-table .col-multiline .cell) {
+.feishu-panel .inner-tabs.el-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.feishu-panel .inner-tabs .el-tabs__header { flex-shrink: 0; }
+.feishu-panel .inner-tabs .el-tabs__content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.feishu-panel .inner-tabs .el-tab-pane {
+  height: 100%;
+  overflow: auto;
+}
+.feishu-panel .el-table .col-multiline .cell {
   white-space: normal;
   line-height: 1.5;
   align-items: flex-start;

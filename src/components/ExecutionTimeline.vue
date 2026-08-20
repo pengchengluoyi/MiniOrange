@@ -7,7 +7,7 @@ import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { normalizeCaseRow } from '@/utils/caseText'
-import { formatElapsed } from '@/utils/testingTasks'
+import { formatElapsed, platformLabel } from '@/utils/testingTasks'
 import {
   mergeCheckpointCatalog,
   parseCheckpointCatalog,
@@ -380,12 +380,16 @@ const isLimit = computed(() => {
 const spec = computed(() => normalizeCaseRow(props.caseSpec || {}))
 const caseName = computed(() => spec.value.name || spec.value.case_name || spec.value.title || '')
 const caseModule = computed(() => spec.value.module || '')
-const casePlatform = computed(() => spec.value.platform || spec.value.client || spec.value.terminal || '')
+const casePlatform = computed(() => {
+  const raw = spec.value.platform || spec.value.client || spec.value.terminal || spec.value.device_platform || ''
+  return platformLabel(raw) || raw || ''
+})
 const showCaseInfo = computed(() => true)
 
 const statusText = (s) => {
   if (isLimit.value && (s === overall.value || s === 'partial')) return '步数耗尽'
   return ({
+    running: '执行中', queued: '排队',
     continue: '决策', done: '完成', give_up: '放弃', ask_human: '请求人工',
     pass: '成功', fail: '失败', blocked: '阻塞', skipped: '跳过', declined: '拒绝',
     partial: '步数耗尽',
@@ -457,10 +461,8 @@ const filmFrames = computed(() => {
     }
   })
 })
-const totalMs = computed(() => {
-  const sum = filmFrames.value.reduce((n, f) => n + (f.elapsed || 0), 0)
-  return sum > 0 ? sum : 1
-})
+const totalMs = computed(() => filmFrames.value.reduce((n, f) => n + (Number(f.elapsed) || 0), 0))
+const scaleMs = computed(() => (totalMs.value > 0 ? totalMs.value : 1))
 const nodeCols = computed(() => filmFrames.value.map((f, i) => ({
   ...f,
   color: barColorFor(f, i),
@@ -468,7 +470,7 @@ const nodeCols = computed(() => filmFrames.value.map((f, i) => ({
 })))
 
 const waterfallBars = computed(() => {
-  const total = totalMs.value
+  const total = scaleMs.value
   return filmFrames.value.map((f, i) => {
     const rawW = total > 0 ? (f.elapsed / total) * 100 : 0
     return {
@@ -481,8 +483,8 @@ const waterfallBars = computed(() => {
 })
 
 const axisMarks = computed(() => {
-  const total = totalMs.value
-  if (total <= 0) return [{ label: '0ms', pct: 0 }]
+  const total = scaleMs.value
+  if (totalMs.value <= 0) return [{ label: '0ms', pct: 0 }]
   const step = total > 120000 ? 30000 : total > 40000 ? 10000 : 5000
   const marks = []
   for (let ms = 0; ms <= total; ms += step) {
@@ -653,7 +655,7 @@ defineExpose({ goal, overall, finished })
           <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
           <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
         </div>
-        <p class="et-verdict-body">{{ verdictText || '本用例已结束，详见下方时间线。' }}</p>
+        <p class="et-verdict-body">{{ verdictText || (finished || !props.live ? '本用例已结束，详见下方时间线。' : '正在执行，步骤会实时出现在下方。') }}</p>
       </div>
     </div>
 
@@ -841,7 +843,7 @@ defineExpose({ goal, overall, finished })
 .et-case {
   flex: 0 1 auto;
   min-height: 88px;
-  max-height: 34%;
+  max-height: 42%;
   width: 100%;
   box-sizing: border-box;
   overflow: auto;
@@ -874,12 +876,18 @@ defineExpose({ goal, overall, finished })
   line-height: 1.5;
 }
 .case-spec-table th:nth-child(1),
-.case-spec-table td:nth-child(1) { width: 64px; text-align: center; }
+.case-spec-table td:nth-child(1) { width: 56px; text-align: center; }
 .case-spec-table th:nth-child(2),
-.case-spec-table td:nth-child(2) { width: 88px; }
+.case-spec-table td:nth-child(2) { width: 72px; }
 .case-spec-table th:nth-child(3),
-.case-spec-table td:nth-child(3) { width: 18%; }
-.case-spec-table td.col-multi { min-width: 0; }
+.case-spec-table td:nth-child(3) { width: 16%; }
+.case-spec-table th:nth-child(4),
+.case-spec-table td:nth-child(4) { width: 18%; }
+.case-spec-table th:nth-child(5),
+.case-spec-table td:nth-child(5),
+.case-spec-table th:nth-child(6),
+.case-spec-table td:nth-child(6) { width: 22%; }
+.case-spec-table td.col-multi { min-width: 0; overflow-wrap: anywhere; }
 .et-verdict {
   flex-shrink: 0;
   width: 100%;

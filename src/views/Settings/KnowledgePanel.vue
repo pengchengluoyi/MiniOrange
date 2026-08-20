@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getTestingKnowledge, upsertKnowledgeItem, deleteKnowledgeItem, reviewKnowledgeItem, getFigmaSettings, saveFigmaSettings, testFigmaToken } from '@/api/settings'
+import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import './settings-ui.css'
 
 const props = defineProps({
@@ -58,24 +59,37 @@ const appItems = computed(() => {
   })
 })
 
-const visibleAppItems = computed(() => {
-  if (listFilter.value === 'pending') {
-    return appItems.value.filter((r) => r.review_status === 'pending')
-  }
-  return appItems.value
-})
-const visibleGlobalItems = computed(() => {
-  if (listFilter.value === 'pending') {
-    return globalItems.value.filter((r) => r.review_status === 'pending')
-  }
-  return globalItems.value
-})
-const visibleAllItems = computed(() => {
-  if (listFilter.value === 'pending') {
-    return allItems.value.filter((r) => r.review_status === 'pending')
-  }
+const sourcePool = computed(() => {
+  if (props.appOnly) return appItems.value
+  if (props.embedded) return globalItems.value
   return allItems.value
 })
+const visibleItems = computed(() => filterPool(sourcePool.value))
+const page = ref(1)
+const pageSize = ref(20)
+const pagedItems = computed(() => slicePage(visibleItems.value, page.value, pageSize.value))
+const showAppColumn = computed(() => !props.embedded)
+const pageTitle = computed(() => {
+  if (props.appOnly) return '应用知识库'
+  if (props.embedded) return '全局知识库'
+  return '知识库'
+})
+const pageDesc = computed(() => {
+  if (props.appOnly) {
+    return `${props.appName ? `${props.appName} · ` : ''}用例执行自动生成的条目在「待审核」中确认后，才会被执行匹配。`
+  }
+  if (props.embedded) return '自动生成的条目在「待审核」确认后才会被匹配。'
+  return '自动生成的条目须在「待审核」通过后才会注入执行。'
+})
+const createLabel = computed(() => (props.embedded ? '新建' : '新建条目'))
+const tableTitle = computed(() => (listFilter.value === 'pending' ? '待审核' : '已通过知识'))
+
+function filterPool(list) {
+  if (listFilter.value === 'pending') {
+    return list.filter((r) => r.review_status === 'pending')
+  }
+  return list.filter((r) => r.review_status !== 'pending')
+}
 const pendingCount = computed(() => {
   const pool = props.appOnly ? appItems.value : (props.embedded ? globalItems.value : allItems.value)
   return pool.filter((r) => r.review_status === 'pending').length
@@ -85,7 +99,7 @@ const reviewLabel = (row) => REVIEW_LABEL[row?.review_status] || REVIEW_LABEL.ap
 const emptyText = computed(() => (
   listFilter.value === 'pending'
     ? '暂无待审核知识。跑完用例后会自动出现在这里。'
-    : '暂无知识条目'
+    : '暂无已通过知识'
 ))
 const metaEditable = computed(() => {
   if (!editingRow.value) return false
@@ -93,10 +107,11 @@ const metaEditable = computed(() => {
   return editingRow.value.review_status === 'pending'
 })
 
-const contentPreview = (text) => {
-  const s = String(text || '').trim()
-  if (!s) return '—'
-  return s.length > 48 ? `${s.slice(0, 48)}…` : s
+const contentPreview = (text) => clipText(text, 72)
+
+const onCreate = () => {
+  if (props.appOnly) addAppRow()
+  else addGlobalRow()
 }
 
 const load = async () => {
@@ -312,240 +327,129 @@ onMounted(async () => {
   await Promise.all([load(), loadFigma()])
 })
 
+watch([listFilter, () => visibleItems.value.length], () => {
+  page.value = 1
+})
+
 defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
 </script>
 
 <template>
   <div class="settings-panel knowledge-panel" :class="{ embedded }" v-loading="loading">
-    <template v-if="embedded && appOnly">
-      <header class="settings-page-header">
-        <div>
-          <h2 class="settings-page-title">应用知识库</h2>
-          <p class="settings-page-desc">
-            {{ appName ? `${appName} · ` : '' }}用例执行自动生成的条目在「待审核」中确认后，才会被执行匹配。
-          </p>
-        </div>
-        <div class="settings-summary-pill" :style="pendingCount ? { background: '#fffbeb', color: '#b45309' } : undefined">
-          {{ pendingCount ? `${pendingCount} 条待审核` : '暂无待审核' }}
-        </div>
-      </header>
-      <div class="settings-tabbar">
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'pending' }" @click="listFilter = 'pending'">
-          <strong>待审核</strong>
-          <span>自动生成，通过后才使用</span>
-        </button>
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'all' }" @click="listFilter = 'all'">
-          <strong>全部知识</strong>
-          <span>已通过与待审核</span>
-        </button>
+    <header class="settings-page-header">
+      <div>
+        <h2 class="settings-page-title">{{ pageTitle }}</h2>
+        <p class="settings-page-desc">{{ pageDesc }}</p>
       </div>
-      <section class="settings-table-card">
+      <div class="settings-summary-pill" :style="pendingCount ? { background: '#fffbeb', color: '#b45309' } : undefined">
+        {{ pendingCount ? `${pendingCount} 条待审核` : '暂无待审核' }}
+      </div>
+    </header>
+    <div class="settings-tabbar">
+      <button type="button" class="settings-tab" :class="{ active: listFilter === 'pending' }" @click="listFilter = 'pending'">
+        <strong>待审核</strong>
+        <span>自动生成，通过后才使用</span>
+      </button>
+      <button type="button" class="settings-tab" :class="{ active: listFilter === 'all' }" @click="listFilter = 'all'">
+        <strong>已通过</strong>
+        <span>可被执行匹配</span>
+      </button>
+    </div>
+    <section class="settings-table-card is-fill">
       <div class="col-head">
-        <h3>{{ listFilter === 'pending' ? '待审核' : '全部知识' }}</h3>
+        <h3>{{ tableTitle }}</h3>
         <div class="col-actions">
-          <el-button size="small" type="primary" @click="addAppRow">新建</el-button>
+          <el-button size="small" type="primary" @click="onCreate">{{ createLabel }}</el-button>
         </div>
       </div>
-      <el-table :data="visibleAppItems" border size="small" class="col-table" :empty-text="emptyText">
-        <el-table-column label="分类" width="100" prop="category" />
-        <el-table-column label="标题" min-width="140" show-overflow-tooltip prop="title" />
-        <el-table-column label="标签" width="110" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.tagsText || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="来源" width="92">
-          <template #default="{ row }">{{ sourceLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column label="审核" width="88">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="知识内容" min-width="160">
-          <template #default="{ row }">
-            <span class="content-preview">{{ contentPreview(row.content) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" width="56">
-          <template #default="{ row }">
-            <el-switch
-              v-model="row.enabled"
-              size="small"
-              :disabled="row.review_status === 'pending'"
-              @change="persistEnabled(row)"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="148" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.review_status === 'pending'" link type="primary" size="small" @click="openConfig(row)">审核</el-button>
-            <el-button v-else link type="primary" size="small" @click="openConfig(row)">查看</el-button>
-            <el-button v-if="row.review_status === 'pending'" link type="danger" size="small" @click="rejectRow(row)">驳回</el-button>
-            <el-button v-else link type="danger" size="small" @click="removeRow(row)">删</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </section>
-    </template>
+      <div class="table-wrap">
+        <el-table
+          :data="pagedItems"
+          border
+          stripe
+          size="small"
+          class="col-table"
+          height="100%"
+          :empty-text="emptyText"
+        >
+          <el-table-column label="分类" width="100" prop="category" show-overflow-tooltip />
+          <el-table-column label="标题" min-width="140" show-overflow-tooltip prop="title" />
+          <el-table-column label="标签" width="110" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.tagsText || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="来源" width="92" show-overflow-tooltip>
+            <template #default="{ row }">{{ sourceLabel(row) }}</template>
+          </el-table-column>
+          <el-table-column label="审核" width="88">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="showAppColumn" label="限定应用" width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.appIdsText || '全局' }}</template>
+          </el-table-column>
+          <el-table-column label="知识内容" min-width="180">
+            <template #default="{ row }">
+              <span class="content-preview" :title="row.content">{{ contentPreview(row.content) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="启用" width="64">
+            <template #default="{ row }">
+              <el-switch
+                v-model="row.enabled"
+                size="small"
+                :disabled="row.review_status === 'pending'"
+                @change="persistEnabled(row)"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="148" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="row.review_status === 'pending'" link type="primary" size="small" @click="openConfig(row)">审核</el-button>
+              <el-button v-else link type="primary" size="small" @click="openConfig(row)">查看</el-button>
+              <el-button v-if="row.review_status === 'pending'" link type="danger" size="small" @click="rejectRow(row)">驳回</el-button>
+              <el-button v-else link type="danger" size="small" @click="removeRow(row)">删</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <el-pagination
+        class="settings-table-pager"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="visibleItems.length"
+        :page-sizes="TABLE_PAGE_SIZES"
+        v-model:page-size="pageSize"
+        v-model:current-page="page"
+      />
+    </section>
 
-    <template v-else-if="embedded">
-      <header class="settings-page-header">
-        <div>
-          <h2 class="settings-page-title">全局知识库</h2>
-          <p class="settings-page-desc">自动生成的条目在「待审核」确认后才会被匹配。</p>
-        </div>
-        <div class="settings-summary-pill" :style="pendingCount ? { background: '#fffbeb', color: '#b45309' } : undefined">
-          {{ pendingCount ? `${pendingCount} 条待审核` : '暂无待审核' }}
-        </div>
-      </header>
-      <div class="settings-tabbar">
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'pending' }" @click="listFilter = 'pending'">
-          <strong>待审核</strong>
-          <span>自动生成，通过后才使用</span>
-        </button>
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'all' }" @click="listFilter = 'all'">
-          <strong>全部知识</strong>
-          <span>已通过与待审核</span>
-        </button>
+    <div v-if="embedded && !appOnly" class="figma-section">
+      <h4>Figma Token（普通账号即可）</h4>
+      <p class="desc compact">
+        在 figma.com → 头像 → Settings → Security → Personal access tokens 生成 Token，
+        勾选 <code>file_content:read</code>。不需要 Developer OAuth 应用；Token 所属账号需能打开设计稿。
+      </p>
+      <div class="figma-row">
+        <el-input
+          v-model="figmaToken"
+          size="small"
+          type="password"
+          :placeholder="figmaConfigured ? 'Token 已配置，输入新值可覆盖' : 'figd_... Personal Access Token'"
+          style="width: 240px"
+        />
+        <el-button size="small" :loading="testingFigma" @click="verifyFigmaToken">验证</el-button>
+        <el-button size="small" type="primary" @click="saveFigma">保存 Token</el-button>
       </div>
-      <section class="settings-table-card">
-      <div class="col-head">
-        <h3>{{ listFilter === 'pending' ? '待审核' : '全部知识' }}</h3>
-        <div class="col-actions">
-          <el-button size="small" type="primary" @click="addGlobalRow">新建</el-button>
-        </div>
-      </div>
-      <el-table :data="visibleGlobalItems" border size="small" class="col-table" :empty-text="emptyText">
-        <el-table-column label="分类" width="100" prop="category" />
-        <el-table-column label="标题" min-width="140" show-overflow-tooltip prop="title" />
-        <el-table-column label="标签" width="110" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.tagsText || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="来源" width="92">
-          <template #default="{ row }">{{ sourceLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column label="审核" width="88">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="知识内容" min-width="140">
-          <template #default="{ row }">
-            <span class="content-preview">{{ contentPreview(row.content) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" width="56">
-          <template #default="{ row }">
-            <el-switch
-              v-model="row.enabled"
-              size="small"
-              :disabled="row.review_status === 'pending'"
-              @change="persistEnabled(row)"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="148" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.review_status === 'pending'" link type="primary" size="small" @click="openConfig(row)">审核</el-button>
-            <el-button v-else link type="primary" size="small" @click="openConfig(row)">查看</el-button>
-            <el-button v-if="row.review_status === 'pending'" link type="danger" size="small" @click="rejectRow(row)">驳回</el-button>
-            <el-button v-else link type="danger" size="small" @click="removeRow(row)">删</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </section>
+    </div>
 
-      <div class="figma-section">
-        <h4>Figma Token（普通账号即可）</h4>
-        <p class="desc compact">
-          在 figma.com → 头像 → Settings → Security → Personal access tokens 生成 Token，
-          勾选 <code>file_content:read</code>。不需要 Developer OAuth 应用；Token 所属账号需能打开设计稿。
-        </p>
-        <div class="figma-row">
-          <el-input
-            v-model="figmaToken"
-            size="small"
-            type="password"
-            :placeholder="figmaConfigured ? 'Token 已配置，输入新值可覆盖' : 'figd_... Personal Access Token'"
-            style="width: 240px"
-          />
-          <el-button size="small" :loading="testingFigma" @click="verifyFigmaToken">验证</el-button>
-          <el-button size="small" type="primary" @click="saveFigma">保存 Token</el-button>
-        </div>
-      </div>
-    </template>
-
-    <template v-else>
-      <header class="settings-page-header">
-        <div>
-          <h2 class="settings-page-title">知识库</h2>
-          <p class="settings-page-desc">自动生成的条目须在「待审核」通过后才会注入执行。</p>
-        </div>
-        <div class="settings-summary-pill" :style="pendingCount ? { background: '#fffbeb', color: '#b45309' } : undefined">
-          {{ pendingCount ? `${pendingCount} 条待审核` : '暂无待审核' }}
-        </div>
-      </header>
-      <div class="settings-tabbar">
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'pending' }" @click="listFilter = 'pending'">
-          <strong>待审核</strong>
-          <span>自动生成，通过后才使用</span>
-        </button>
-        <button type="button" class="settings-tab" :class="{ active: listFilter === 'all' }" @click="listFilter = 'all'">
-          <strong>全部知识</strong>
-          <span>已通过与待审核</span>
-        </button>
-      </div>
-      <section class="settings-table-card">
-      <div class="col-head">
-        <h3>{{ listFilter === 'pending' ? '待审核' : '全部知识' }}</h3>
-        <div class="col-actions">
-          <el-button size="small" type="primary" @click="addGlobalRow">新建条目</el-button>
-        </div>
-      </div>
-      <el-table :data="visibleAllItems" border size="small" :empty-text="emptyText">
-        <el-table-column label="分类" width="100" prop="category" />
-        <el-table-column label="标题" width="140" show-overflow-tooltip prop="title" />
-        <el-table-column label="标签" width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.tagsText || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="来源" width="100">
-          <template #default="{ row }">{{ sourceLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column label="审核" width="88">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="限定应用" width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.appIdsText || '全局' }}</template>
-        </el-table-column>
-        <el-table-column label="知识内容" min-width="200">
-          <template #default="{ row }">
-            <span class="content-preview">{{ contentPreview(row.content) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" width="64">
-          <template #default="{ row }">
-            <el-switch v-model="row.enabled" :disabled="row.review_status === 'pending'" @change="persistEnabled(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="148">
-          <template #default="{ row }">
-            <el-button v-if="row.review_status === 'pending'" link type="primary" size="small" @click="openConfig(row)">审核</el-button>
-            <el-button v-if="row.review_status === 'pending'" link type="danger" size="small" @click="rejectRow(row)">驳回</el-button>
-            <el-button v-else link type="danger" size="small" @click="removeRow(row)">删</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </section>
-    </template>
-
-<el-dialog
-  v-model="configDialogVisible"
-  :title="editingRow?.review_status === 'pending' ? '审核知识' : '知识配置'"
-  width="520px"
-  destroy-on-close
-  :before-close="beforeDialogClose"
->
+    <el-dialog
+      v-model="configDialogVisible"
+      :title="editingRow?.review_status === 'pending' ? '审核知识' : '知识配置'"
+      width="520px"
+      destroy-on-close
+      :before-close="beforeDialogClose"
+    >
       <el-form v-if="editingRow" label-width="80px">
         <el-form-item label="来源">
           <span>{{ sourceLabel(editingRow) }}</span>
@@ -587,7 +491,18 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
 </template>
 
 <style scoped>
+.knowledge-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .knowledge-panel.embedded { padding: 0; }
+.knowledge-panel.embedded .settings-page-header { margin-bottom: 8px; }
+.knowledge-panel.embedded .settings-tabbar { margin-bottom: 12px; }
+.knowledge-panel .settings-page-header,
+.knowledge-panel .settings-tabbar { flex-shrink: 0; }
 .desc { margin: 0 0 12px; color: #6b7280; font-size: 13px; }
 .desc.compact { margin-top: 0; }
 .col-head {
@@ -596,18 +511,34 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
   gap: 8px;
   margin-bottom: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .col-head h3 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
 .col-sub.inline { margin: 0; font-size: 12px; color: #9ca3af; flex: 1; }
 .col-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.table-wrap {
+  flex: 1;
+  min-height: 280px;
+  overflow: hidden;
+}
 .col-table { width: 100%; }
-.content-preview { font-size: 12px; color: #6b7280; }
+.content-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.45;
+}
 .figma-section {
-  margin-top: 20px;
+  margin-top: 16px;
   padding: 12px;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+  flex-shrink: 0;
 }
 .figma-section h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 .figma-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
