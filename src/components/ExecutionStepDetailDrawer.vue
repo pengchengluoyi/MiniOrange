@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { getPack } from '@/api/packs'
 import { formatElapsed } from '@/utils/testingTasks'
 import { checkpointLabel, resolveCheckpointHits } from '@/utils/checkpoints'
+import PayloadView from '@/components/PayloadView.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -65,14 +66,9 @@ const fmtAction = (a) => {
 
 const fmtMs = (ms) => formatElapsed(ms) || (ms ? `${ms}ms` : '')
 
-const pretty = (v) => {
-  if (v === undefined || v === null || v === '') return ''
-  try { return typeof v === 'string' ? v : JSON.stringify(v, null, 2) } catch { return String(v) }
-}
-
-const llmInputText = computed(() => pretty(step.value?.llm_input))
-const llmOutputText = computed(() => pretty(step.value?.llm_output))
-const llmMetaText = computed(() => pretty(step.value?.llm_meta))
+const hasLlmInput = computed(() => step.value?.llm_input != null && step.value?.llm_input !== '')
+const hasLlmOutput = computed(() => step.value?.llm_output != null && step.value?.llm_output !== '')
+const hasLlmMeta = computed(() => step.value?.llm_meta != null && step.value?.llm_meta !== '')
 
 const recovery = computed(() => step.value?.recovery || null)
 const recoveryActions = computed(() => {
@@ -296,15 +292,15 @@ watch(
           </div>
         </section>
 
-        <section v-if="llmInputText" class="sd-card">
+        <section v-if="hasLlmInput" class="sd-card">
           <h4>模型输入</h4>
-          <pre class="sd-pre">{{ llmInputText }}</pre>
+          <PayloadView :value="step.llm_input" />
         </section>
 
-        <section v-if="llmOutputText || llmMetaText || step.parse_warnings?.length" class="sd-card">
+        <section v-if="hasLlmOutput || hasLlmMeta || step.parse_warnings?.length" class="sd-card">
           <h4>模型输出</h4>
-          <pre v-if="llmOutputText" class="sd-pre">{{ llmOutputText }}</pre>
-          <pre v-if="llmMetaText" class="sd-pre dim">{{ llmMetaText }}</pre>
+          <PayloadView v-if="hasLlmOutput" :value="step.llm_output" />
+          <PayloadView v-if="hasLlmMeta" title="元数据" :value="step.llm_meta" />
           <p v-if="step.parse_warnings?.length" class="sd-warn">
             {{ step.parse_warnings.join('；') }}
           </p>

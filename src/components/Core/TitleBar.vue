@@ -1,8 +1,8 @@
 <template>
   <header class="app-titlebar">
-    <div class="mac-spacer" v-if="isMac"></div>
+    <div class="mac-spacer" v-if="showMacTraffic"></div>
     <div id="titlebar-center-portal" class="titlebar-center"></div>
-    <div class="win-controls" v-if="!isMac">
+    <div class="win-controls" v-if="showWinControls">
       <div class="control-btn minimize" @click="handleMinimize">
         <el-icon><Minus /></el-icon>
       </div>
@@ -17,19 +17,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
 import { ElIcon } from 'element-plus'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
+import { useAppChrome } from '@/composables/useAppChrome'
 
-const isMac = ref(false)
-
-onMounted(() => {
-  isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
-})
-
-const handleMinimize = () => window.electronAPI?.minimize()
-const handleMaximize = () => window.electronAPI?.maximize()
-const handleClose = () => window.electronAPI?.close()
+const { showMacTraffic, showWinControls, handleMinimize, handleMaximize, handleClose } = useAppChrome()
 </script>
 
 <style scoped>

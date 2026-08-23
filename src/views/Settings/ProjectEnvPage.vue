@@ -13,7 +13,7 @@ const save = async () => {
   await editorRef.value?.save()
 }
 
-const goProjects = () => router.push({ name: 'SettingsHub' })
+const goProjects = () => router.push({ name: 'TestingHome' })
 </script>
 
 <template>

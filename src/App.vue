@@ -1,9 +1,9 @@
 <template>
   <div class="app-root">
     <!-- 🔥 Global TitleBar -->
-    <TitleBar v-if="!isSettingsRoute && !isWorkShellRoute" />
+    <TitleBar v-if="!hideGlobalTitlebar" />
     
-    <div class="content-area" :class="{ 'is-settings': isSettingsRoute || isWorkShellRoute }">
+    <div class="content-area" :class="{ 'is-settings': hideGlobalTitlebar }">
       <router-view />
     </div>
 
@@ -29,7 +29,7 @@ import CommandPalette from './components/Core/CommandPalette.vue'
 import CopilotWidget from './components/Ai/CopilotWidget.vue'
 import GlobalLanAdoptDialog from './components/GlobalLanAdoptDialog.vue'
 import GlobalHitlDialog from './components/GlobalHitlDialog.vue'
-import { initWebSocket } from '@/api/mWebSocket'
+import { bootstrapRealtime } from '@/utils/realtime'
 import { reportOverlayOpen } from '@/composables/useOverlayState'
 import { startGlobalLanDiscovery, stopGlobalLanDiscovery } from '@/utils/globalLanDiscovery'
 
@@ -41,6 +41,9 @@ const isWorkShellRoute = computed(() => (
   route.meta?.workMode === 'agent' ||
   route.meta?.workMode === 'testing' ||
   route.path.startsWith('/testing')
+))
+const hideGlobalTitlebar = computed(() => (
+  isSettingsRoute.value || isWorkShellRoute.value || route.name === 'Login'
 ))
 const showCopilotWidget = computed(() => (
   route.name !== 'Dialogue' &&
@@ -62,11 +65,7 @@ const handleGlobalKeydown = (e) => {
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
 
-  // 启动时立即连接 WebSocket
-  // 不需要 Token，后端会自动处理：
-  // 1. 如果是 Server 模式，允许匿名连接
-  // 2. 如果是 Node 模式，后端会鉴权，如果本地有缓存 Token 会自动带上
-  initWebSocket()
+  bootstrapRealtime()
   startGlobalLanDiscovery()
 })
 

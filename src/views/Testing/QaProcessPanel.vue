@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useQaProcess } from '@/composables/useQaProcess'
 import QaScheduleBoard from '@/views/Testing/QaScheduleBoard.vue'
 import QaFlowPipeline from '@/views/Testing/QaFlowPipeline.vue'
-import { assistQaProcess } from '@/api/appAutomation'
+import { assistQaProcess, reviewAtlasPatch, tickQaProcess } from '@/api/appAutomation'
+import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import { suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import {
@@ -17,18 +18,22 @@ import {
   caseRequirementId,
   casesForRequirement,
   coverageStats,
+  coverHistory,
+  coverReady,
   createRelease,
   createRequirement,
   createSlot,
   extractUnderstanding,
   emptyUnderstanding,
+  flattenMindmap,
   formatShortTime,
   fromDateEnd,
   fromDateStart,
   formatShortDate,
+  generatedCasesFromProcess,
+  slotKindMeta,
+  sortReleases,
   gateHint,
-  gatePassed,
-  isNextGate,
   goNoGoReport,
   latestArtifact,
   linkedCaseIds,
@@ -36,24 +41,27 @@ import {
   nowIso,
   reqOptionLabel,
   reqSigned,
+  reqVersionImpact,
   runAssistJob,
   signOffReport,
   upsertArtifact,
   visibleArtifact,
 } from '@/utils/qaProcess'
 import {
-  detailTabsFor,
   dispatchSteps,
+  ensurePipelineDispatch,
+  envLabel,
   findStep,
   hasReached,
+  jobMeta,
   kindAssistJob,
   kindTab,
   nextStep,
   previousStepOfKind,
   resolveWorkflow,
+  stageJobTabs,
   trackSteps,
   understood,
-  envLabel,
 } from '@/utils/qaWorkflow'
 import { envSummaries, filledEnvKeys, pipelineKeys } from '@/constants/envProfiles'
 import { getProjectEnv } from '@/api/workReport'
@@ -70,6 +78,7 @@ const props = defineProps({
   devices: { type: Array, default: () => [] },
   board: { type: String, default: 'rel' },
   selectedId: { type: String, default: '' },
+  hideNav: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['dispatch-run', 'open-task', 'go-tab', 'update:board', 'update:selectedId'])
@@ -78,11 +87,13 @@ const appIdRef = computed(() => props.appId)
 const {
   requirements,
   releases,
+  appAtlas,
   schedule,
   workflow,
   loading,
   saving,
   load,
+  apply,
   persist,
   persistSoon,
   upsertReq,
@@ -92,6 +103,7 @@ const {
   upsertSlot,
   removeSlot,
   attachRun,
+  atlasPatches,
 } = useQaProcess(appIdRef)
 
 const envSnap = ref({ summaries: [], filledKeys: [], pipeline: [] })
@@ -140,9 +152,13 @@ const page = ref(1)
 const pageSize = ref(20)
 const detailTab = ref(props.board === 'req' ? 'understand' : 'scope')
 const assisting = ref(false)
+const assistJob = ref('')
+const ticking = ref(false)
+const tickLabel = ref('')
 let assistChain = Promise.resolve()
 const createOpen = ref(false)
 const creatingRel = ref(false)
+const creatingSubmit = ref(false)
 const draft = reactive({
   title: '',
   external_id: '',
@@ -157,30 +173,89 @@ const draft = reactive({
   online_at: '',
 })
 const scheduleBoard = ref(null)
+const inspectGateId = ref('')
 
-const wf = computed(() => resolveWorkflow(workflow.value))
+const inspectReqStep = computed(() => {
+  const id = inspectGateId.value || selectedReq.value?.gate
+  return findStep(wf.value, 'req', id) || reqStep.value
+})
+const inspectRelStep = computed(() => {
+  const id = inspectGateId.value || selectedRel.value?.gate
+  return findStep(wf.value, 'rel', id) || relStep.value
+})
+const inspectJobTabs = computed(() => stageJobTabs(inspectReqStep.value, wf.value, 'req'))
+const showJobTabs = computed(() => inspectJobTabs.value.length > 1)
+const stageJobId = ref('')
+const activeJobId = computed(() => {
+  const ids = inspectJobTabs.value.map((j) => j.id)
+  if (ids.includes(stageJobId.value)) return stageJobId.value
+  return ids[0] || ''
+})
+const showJobPanel = (id) => !showJobTabs.value || activeJobId.value === id
+const listPageTitle = computed(() => {
+  if (board.value === 'req') return '需求测试'
+  if (board.value === 'sch') return '本应用排期'
+  return '版本测试'
+})
+const listPageDesc = computed(() => {
+  if (board.value === 'req') return '评审需求 · 准备用例 · 提测 · 验收。点需求单进入阶段；点节点只查看，不会改状态。'
+  if (board.value === 'sch') return '只看本应用的开测窗口。实验室总日历在测试首页。'
+  return '定开测日期 · 预发回归 · 发版评审。'
+})
+const viewingReqCurrent = computed(() => {
+  const cur = selectedReq.value?.gate
+  return Boolean(cur) && (inspectGateId.value || cur) === cur
+})
+const viewingRelCurrent = computed(() => {
+  const cur = selectedRel.value?.gate
+  return Boolean(cur) && (inspectGateId.value || cur) === cur
+})
+const reqDispatchFocus = computed(() => (inspectReqStep.value?.kind === 'dispatch' ? inspectReqStep.value : null))
+const relDispatchFocus = computed(() => (inspectRelStep.value?.kind === 'dispatch' ? inspectRelStep.value : null))
+const inspectReqRuns = computed(() => {
+  const runs = selectedReq.value?.runs || []
+  const step = reqDispatchFocus.value
+  if (!step) return runs
+  return runs.filter((r) => r.kind === step.run)
+})
+const inspectRelRuns = computed(() => {
+  const runs = selectedRel.value?.runs || []
+  const step = relDispatchFocus.value
+  if (!step) return runs
+  return runs.filter((r) => r.kind === step.run)
+})
+const reqSlots = computed(() => (schedule.value || []).filter((s) => s.requirement_id === selectedReq.value?.id))
+const TERMINAL_OK = new Set(['done', 'failed', 'partial_fail'])
+const reqStepRunDone = computed(() => {
+  if (!viewingReqCurrent.value || reqStep.value?.kind !== 'dispatch') return false
+  const latest = [...(selectedReq.value?.runs || [])].reverse().find((r) => r.kind === reqStep.value.run)
+  const task = latest && taskOf(latest.task_id)
+  return Boolean(task && TERMINAL_OK.has(displayTaskStatus(task)))
+})
+const relStepRunDone = computed(() => {
+  if (!viewingRelCurrent.value || relStep.value?.kind !== 'dispatch') return false
+  const latest = [...(selectedRel.value?.runs || [])].reverse().find((r) => r.kind === relStep.value.run)
+  const task = latest && taskOf(latest.task_id)
+  return Boolean(task && TERMINAL_OK.has(displayTaskStatus(task)))
+})
+
+const wf = computed(() => ensurePipelineDispatch(resolveWorkflow(workflow.value), envSnap.value.pipeline, envSnap.value.summaries))
 const reqSteps = computed(() => trackSteps(wf.value, 'req'))
 const relSteps = computed(() => trackSteps(wf.value, 'rel'))
 const reqDispatchSteps = computed(() => dispatchSteps(wf.value, 'req'))
 const relDispatchSteps = computed(() => dispatchSteps(wf.value, 'rel'))
-const reqDetailTabs = computed(() => detailTabsFor(wf.value, 'req'))
-const relDetailTabs = computed(() => detailTabsFor(wf.value, 'rel'))
 const reqStep = computed(() => findStep(wf.value, 'req', selectedReq.value?.gate))
 const relStep = computed(() => findStep(wf.value, 'rel', selectedRel.value?.gate))
 const reqKindIs = (...kinds) => kinds.includes(reqStep.value?.kind)
 const relKindIs = (...kinds) => kinds.includes(relStep.value?.kind)
 const reqCanEditCover = computed(() => reqKindIs('understand', 'cover'))
 const relCanEditScope = computed(() => relKindIs('scope'))
-const reqCanSign = computed(() => {
-  if (reqKindIs('human_verdict')) return true
-  const n = nextStep(wf.value, 'req', selectedReq.value?.gate)
-  return reqKindIs('dispatch') && n?.kind === 'human_verdict'
-})
-const relCanVerdict = computed(() => {
-  if (relKindIs('human_verdict')) return true
-  const n = nextStep(wf.value, 'rel', selectedRel.value?.gate)
-  return relKindIs('dispatch') && n?.kind === 'human_verdict'
-})
+const detailEditing = ref(false)
+const reqEditing = computed(() => detailEditing.value && reqCanEditCover.value)
+const relEditing = computed(() => detailEditing.value && relCanEditScope.value)
+const canEditTicket = computed(() => (board.value === 'req' ? reqCanEditCover.value : relCanEditScope.value))
+const reqCanSign = computed(() => viewingReqCurrent.value && reqKindIs('human_verdict'))
+const relCanVerdict = computed(() => viewingRelCurrent.value && relKindIs('human_verdict'))
 const reqNext = computed(() => nextStep(wf.value, 'req', selectedReq.value?.gate))
 const relNext = computed(() => nextStep(wf.value, 'rel', selectedRel.value?.gate))
 
@@ -211,7 +286,104 @@ const watchStatus = computed(() => bmWatchStatus({
 
 const selectedReq = computed(() => requirements.value.find((r) => r.id === selectedId.value) || null)
 const selectedRel = computed(() => releases.value.find((r) => r.id === selectedId.value) || null)
-const selected = computed(() => (board.value === 'rel' ? selectedRel.value : selectedReq.value))
+const reqCoverStep = computed(() => reqSteps.value.find((s) => s.kind === 'cover') || null)
+const reachedCover = computed(() => {
+  const req = selectedReq.value
+  const cover = reqCoverStep.value
+  if (!req || !cover) return false
+  return hasReached(wf.value, 'req', req.gate, cover.id)
+})
+const mindRows = computed(() => flattenMindmap(selectedReq.value?.mindmap))
+const mindPointCount = computed(() => mindRows.value.filter((r) => r.isPoint).length)
+const draftCaseRows = computed(() => selectedReq.value?.draft_cases || [])
+const mindmapBackfill = computed(() => selectedReq.value?.mindmap_backfill || [])
+const coveredPointCount = computed(() => coverageStats(selectedReq.value).covered)
+const mindHistory = computed(() => coverHistory(selectedReq.value, 'draft_mindmap'))
+const caseHistory = computed(() => coverHistory(selectedReq.value, 'draft_cases'))
+const workflowBusy = computed(() => ticking.value || assisting.value)
+const coverCheck = computed(() => coverReady(selectedReq.value))
+const canLeaveCover = computed(() => !workflowBusy.value && coverCheck.value.ok)
+const journeyLine = (row) => {
+  const parts = [row?.entry, ...(row?.via || []), row?.page].map((x) => String(x || '').trim()).filter(Boolean)
+  const like = String(row?.page_like || '').trim()
+  return `${parts.join(' → ') || '未写入口'}${like ? `（${like}）` : ''}`
+}
+const featureLine = (row) => {
+  const name = String(row?.name || '').trim()
+  const how = String(row?.how || '').trim()
+  return how ? `${name}：${how}` : name
+}
+const surfaceLine = (row) => {
+  const feats = (row?.features || []).filter(Boolean).join('、')
+  return `${row?.name || row?.kind || '端'}${feats ? ` · ${feats}` : ''}`
+}
+const reqReading = computed(() => {
+  const und = selectedReq.value?.understanding || {}
+  return {
+    journeys: und.journeys || [],
+    newFeatures: und.new_features || [],
+    keepFeatures: und.keep_features || [],
+    exceptions: und.exceptions || [],
+    surfaces: und.surfaces || [],
+  }
+})
+const hasReqReading = computed(() => (
+  reqReading.value.journeys.length
+  || reqReading.value.newFeatures.length
+  || reqReading.value.keepFeatures.length
+  || reqReading.value.exceptions.length
+  || reqReading.value.surfaces.length
+))
+const liveReqTasks = computed(() => {
+  const ids = new Set((selectedReq.value?.runs || []).map((r) => r.task_id).filter(Boolean))
+  return (props.tasks || []).filter((t) => ids.has(t.taskId) && ['queued', 'running'].includes(displayTaskStatus(t)))
+})
+const workBanner = computed(() => {
+  if (reviewingPatch.value) return { title: '正在确认图谱', detail: '骨架写入中，确认图谱不等于评审通过。' }
+  if (ticking.value) return { title: tickLabel.value || '正在跑流程工作流', detail: '脑图和用例写完后会出现在「用例准备」。' }
+  if (assisting.value) return { title: `正在跑「${jobMeta(assistJob.value).label}」`, detail: '跑完后这一步的内容会更新。' }
+  if (liveReqTasks.value.length) {
+    const t = liveReqTasks.value[0]
+    return {
+      title: `${liveReqTasks.value.length} 个任务执行中`,
+      detail: `${statusLabel(t.status, t)} · ${shortTaskId(t.taskId)} · ${taskCountLabel(t)}`,
+    }
+  }
+  return null
+})
+const showTicketEdit = computed(() => {
+  if (board.value === 'req') return viewingReqCurrent.value && reqKindIs('understand', 'cover')
+  return viewingRelCurrent.value && relKindIs('scope')
+})
+const ticketEditLabel = computed(() => {
+  if (board.value === 'rel') return '改纳入范围'
+  if (reqKindIs('cover')) return '改测试点'
+  return '改验收标准'
+})
+const showScheduleBtn = computed(() => (
+  (board.value === 'req' && viewingReqCurrent.value && reqKindIs('dispatch'))
+  || (board.value === 'rel' && viewingRelCurrent.value && relKindIs('dispatch'))
+))
+const showTicket = computed(() => {
+  if (board.value === 'sch') return false
+  if (board.value === 'req') return Boolean(selectedReq.value)
+  if (board.value === 'rel') return Boolean(selectedRel.value)
+  return false
+})
+const reqPendingPatches = computed(() => {
+  const req = selectedReq.value
+  if (!req) return []
+  return (atlasPatches.value || []).filter((p) => (
+    p.status === 'pending' && String(p.source?.req_id || '') === req.id
+  ))
+})
+const reqImpact = computed(() => (
+  selectedReq.value ? reqVersionImpact(selectedReq.value, releases.value, appAtlas.value) : null
+))
+const reviewingPatch = ref(false)
+const rejectOpen = ref(false)
+const rejectNote = ref('')
+const rejectTarget = ref(null)
 
 const reqRows = computed(() => {
   let list = requirements.value
@@ -279,16 +451,8 @@ const compactReqs = () => requirements.value.map((r) => ({
   },
 }))
 
-const reqAssistJob = computed(() => {
-  if (detailTab.value === 'cases') return 'map_cases'
-  if (detailTab.value === 'report') return 'draft_sign'
-  return kindAssistJob(reqStep.value?.kind, 'req')
-})
-const relAssistJob = computed(() => {
-  if (detailTab.value === 'scope') return 'pick_regression'
-  if (detailTab.value === 'report') return 'draft_gate'
-  return kindAssistJob(relStep.value?.kind, 'rel')
-})
+const reqAssistJob = computed(() => kindAssistJob(inspectReqStep.value?.kind, 'req'))
+const relAssistJob = computed(() => kindAssistJob(inspectRelStep.value?.kind, 'rel'))
 
 const reqMapHash = computed(() => (
   selectedReq.value
@@ -343,7 +507,7 @@ const emptyText = computed(() => {
       ? '没有符合筛选的版本单'
       : '先建版本、定开测日期，再把需求挂进来。没验收的需求可以挂上，但不能当成发版通过的依据。'
   }
-  return requirements.value.length ? '没有符合筛选的需求单' : '需求可随时进单。贴正文或填编号对照飞书；功能测试仍按需求在测试环境跑。'
+  return requirements.value.length ? '没有符合筛选的需求单' : '需求可随时进单。贴正文或填外部编号；功能测试仍按需求在测试环境跑。'
 })
 
 const pillStyle = computed(() => {
@@ -360,15 +524,18 @@ const caseName = (id) => {
 }
 
 const setBoard = (next) => {
+  selectedId.value = ''
+  inspectGateId.value = ''
+  detailEditing.value = false
   board.value = next
   gateFilter.value = 'all'
   page.value = 1
-  if (next === 'sch') selectedId.value = ''
-  if (next === 'req' && selectedRel.value) selectedId.value = ''
-  if (next === 'rel' && selectedReq.value) selectedId.value = ''
-  if (next === 'req' || next === 'rel') {
-    syncDetailTab(next, next === 'rel' ? selectedRel.value?.gate : selectedReq.value?.gate)
-  }
+}
+
+const closeTicket = () => {
+  selectedId.value = ''
+  inspectGateId.value = ''
+  detailEditing.value = false
 }
 
 const scheduleCurrent = async (kind) => {
@@ -384,9 +551,66 @@ const scheduleCurrent = async (kind) => {
 
 const selectRow = (row) => {
   if (!row?.id) return
+  detailEditing.value = false
   selectedId.value = row.id
+  inspectGateId.value = row.gate || ''
   syncDetailTab(board.value === 'rel' ? 'rel' : 'req', row.gate)
 }
+
+const reviewPatch = async (patch, action, extra = {}) => {
+  if (!props.appId || !patch?.id || reviewingPatch.value) return
+  reviewingPatch.value = true
+  const prev = atlasPatches.value
+  if (action === 'accept' || action === 'reject') {
+    atlasPatches.value = (atlasPatches.value || []).map((p) => (
+      p.id === patch.id ? { ...p, status: action === 'accept' ? 'accepted' : 'rejected' } : p
+    ))
+  }
+  try {
+    const res = await reviewAtlasPatch(props.appId, {
+      patch_id: patch.id,
+      action,
+      after: extra.after || undefined,
+      run_pipeline: false,
+      note: extra.note || '',
+      rerun: extra.rerun !== false && action === 'reject',
+    })
+    if (res?.data?.qa_process) apply(res.data.qa_process)
+    if (action === 'reject') {
+      ElMessage.success(extra.rerun !== false ? '已驳回，正在按你的说明重跑分析' : '已驳回这次变更')
+    } else {
+      ElMessage.success('图谱已确认。点「评审通过」才会进入用例准备、写脑图和用例。')
+    }
+  } catch (e) {
+    atlasPatches.value = prev
+    ElMessage.error(e?.response?.data?.detail || e?.message || '审核失败')
+  } finally {
+    reviewingPatch.value = false
+  }
+}
+
+const onAcceptPatch = ({ patch, after }) => reviewPatch(patch, 'accept', { after })
+const openReject = (patch) => {
+  rejectTarget.value = patch
+  rejectNote.value = ''
+  rejectOpen.value = true
+}
+const submitReject = async () => {
+  const note = String(rejectNote.value || '').trim()
+  if (!note) {
+    ElMessage.warning('请写明为什么驳回，以及你认为该怎么理解这条需求')
+    return
+  }
+  const patch = rejectTarget.value
+  rejectOpen.value = false
+  await reviewPatch(patch, 'reject', { note, rerun: true })
+}
+
+const titlesOf = (ids) => (ids || []).map((id) => {
+  const req = requirements.value.find((r) => r.id === id)
+  return req?.title || id
+}).join('、') || '—'
+const caseLabelsOf = (ids) => (ids || []).map((id) => caseName(id)).join('、') || '—'
 
 const rowClass = ({ row }) => (row.id === selectedId.value ? 'is-current' : '')
 
@@ -411,69 +635,91 @@ const openCreate = () => {
 }
 
 const submitCreate = async () => {
+  if (creatingSubmit.value) return
   if (creatingRel.value) {
     if (!draft.title.trim()) { ElMessage.warning('请填写版本名称'); return }
-    const rel = createRelease({
-      title: draft.title,
-      requirement_ids: [...draft.requirement_ids],
-      workflow: wf.value,
-    })
-    rel.plan = {
-      test_start: fromDateStart(draft.test_start),
-      test_end: fromDateEnd(draft.test_end || draft.test_start),
-      online_at: fromDateStart(draft.online_at),
+    creatingSubmit.value = true
+    try {
+      const rel = createRelease({
+        title: draft.title,
+        requirement_ids: [...draft.requirement_ids],
+        workflow: wf.value,
+      })
+      rel.plan = {
+        test_start: fromDateStart(draft.test_start),
+        test_end: fromDateEnd(draft.test_end || draft.test_start),
+        online_at: fromDateStart(draft.online_at),
+      }
+      const caseSet = new Set()
+      for (const id of rel.requirement_ids) {
+        const req = requirements.value.find((r) => r.id === id)
+        linkedCaseIds(req).forEach((cid) => caseSet.add(cid))
+      }
+      const smoke = (props.suites || []).find((s) => /冒烟|smoke/i.test(s.name || ''))
+      if (smoke) suiteCaseIds(smoke, props.cases).forEach((cid) => caseSet.add(cid))
+      const prev = sortReleases(releases.value).slice(-1)[0]
+      const seed = prev?.atlas || appAtlas.value
+      rel.atlas = seed && typeof seed === 'object' ? JSON.parse(JSON.stringify(seed)) : { modules: [] }
+      rel.atlas_at = seed ? (prev?.atlas_at || '') : ''
+      rel.case_ids = [...caseSet]
+      await upsertRel(rel)
+      await addPlanSlots({ releaseId: rel.id })
+      selectedId.value = rel.id
+      createOpen.value = false
+      ElMessage.success('版本已创建。需求可以后补。没验收的不能当成发版通过的依据。')
+    } catch (e) {
+      ElMessage.error(e?.response?.data?.detail || e?.message || '创建版本失败')
+    } finally {
+      creatingSubmit.value = false
     }
-    const caseSet = new Set()
-    for (const id of rel.requirement_ids) {
-      const req = requirements.value.find((r) => r.id === id)
-      linkedCaseIds(req).forEach((cid) => caseSet.add(cid))
-    }
-    const smoke = (props.suites || []).find((s) => /冒烟|smoke/i.test(s.name || ''))
-    if (smoke) suiteCaseIds(smoke, props.cases).forEach((cid) => caseSet.add(cid))
-    rel.case_ids = [...caseSet]
-    await upsertRel(rel)
-    await addPlanSlots({ releaseId: rel.id })
-    selectedId.value = rel.id
-    createOpen.value = false
-    ElMessage.success('版本已创建。需求可以后补。没验收的不能当成发版通过的依据。')
     return
   }
   if (!draft.title.trim()) { ElMessage.warning('请填写需求名称'); return }
-  const req = createRequirement({
-    title: draft.title,
-    external_id: draft.external_id,
-    source_url: draft.source_url,
-    source_text: draft.source_text,
-    workflow: wf.value,
-  })
-  req.plan = {
-    test_start: '',
-    test_end: '',
-    review_at: '',
-    online_at: '',
-  }
-  const exact = casesForRequirement(props.cases, req)
-  const matched = matchCaseIds(req.understanding, props.cases, req)
-  req.case_ids = [...new Set([...(draft.case_ids || []), ...exact, ...matched])]
-  await upsertReq(req)
-  if (draft.release_id) {
-    const rel = releases.value.find((r) => r.id === draft.release_id)
-    if (rel) {
-      await upsertRel({
-        ...rel,
-        requirement_ids: [...new Set([...(rel.requirement_ids || []), req.id])],
-      })
+  creatingSubmit.value = true
+  const hungReleaseId = draft.release_id
+  const hasSource = Boolean(draft.source_text.trim())
+  try {
+    const req = createRequirement({
+      title: draft.title,
+      external_id: draft.external_id,
+      source_url: draft.source_url,
+      source_text: draft.source_text,
+      workflow: wf.value,
+    })
+    req.plan = {
+      test_start: '',
+      test_end: '',
+      review_at: '',
+      online_at: '',
     }
+    const exact = casesForRequirement(props.cases, req)
+    const matched = matchCaseIds(req.understanding, props.cases, req)
+    req.case_ids = [...new Set([...(draft.case_ids || []), ...exact, ...matched])]
+    await upsertReq(req)
+    createOpen.value = false
+    board.value = 'req'
+    selectedId.value = req.id
+    if (hungReleaseId) {
+      const rel = releases.value.find((r) => r.id === hungReleaseId)
+      if (rel) {
+        await upsertRel({
+          ...rel,
+          requirement_ids: [...new Set([...(rel.requirement_ids || []), req.id])],
+        })
+      }
+    }
+    const hung = Boolean(hungReleaseId && releases.value.some((r) => r.id === hungReleaseId))
+    ElMessage.success(
+      hasSource
+        ? (hung ? '需求已创建并挂到版本，正在后台分析' : '需求已创建，正在后台分析')
+        : (hung ? '需求已挂到版本。评审通过前不能开功能测试。' : '需求已建好。可再挂到版本；评审通过前不能开功能测试。'),
+    )
+    runTick(req.id, '正在分析需求、建议应用图谱')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '创建需求失败')
+  } finally {
+    creatingSubmit.value = false
   }
-  board.value = 'req'
-  selectedId.value = req.id
-  createOpen.value = false
-  const hung = draft.release_id && releases.value.some((r) => r.id === draft.release_id)
-  ElMessage.success(
-    draft.source_text.trim()
-      ? (hung ? '已列出验收标准并挂到版本，请确认是否理解对' : '已列出验收标准，请确认是否理解对')
-      : (hung ? '需求已挂到版本。评审通过前不能开功能测试。' : '需求已建好。可再挂到版本；评审通过前不能开功能测试。'),
-  )
 }
 
 const addPlanSlots = async ({ requirementId = '', releaseId = '' }) => {
@@ -517,6 +763,7 @@ const onOpenReq = (id) => {
   board.value = 'req'
   selectedId.value = id
   const req = requirements.value.find((r) => r.id === id)
+  inspectGateId.value = req?.gate || ''
   syncDetailTab('req', req?.gate)
 }
 const onOpenRel = (id) => {
@@ -552,6 +799,7 @@ const runAssistNow = async (job, kind, { force = false } = {}) => {
   const cur = latestArtifact(entity, job)
   if (!force && cur?.input_hash === hash && ['draft', 'accepted'].includes(cur.status)) return cur
   assisting.value = true
+  assistJob.value = job
   let art = null
   try {
     try {
@@ -589,6 +837,21 @@ const runAssistNow = async (job, kind, { force = false } = {}) => {
     return art
   } finally {
     assisting.value = false
+    assistJob.value = ''
+  }
+}
+
+const runTick = async (reqId, label = '正在跑流程工作流', extra = {}) => {
+  if (!props.appId || !reqId) return
+  ticking.value = true
+  tickLabel.value = label
+  try {
+    const res = await tickQaProcess(props.appId, { requirement_id: reqId, ...extra })
+    if (res?.data?.qa_process) apply(res.data.qa_process)
+  } catch (_) { /* 规则拆点仍在本地 */ }
+  finally {
+    ticking.value = false
+    tickLabel.value = ''
   }
 }
 
@@ -630,6 +893,7 @@ const dispatchWander = (kind) => {
       coverage: 'once',
       requirementId: req.id,
       envProfile: step?.env || 'test',
+      generatedCases: generatedCasesOf(req),
     })
     return
   }
@@ -640,6 +904,7 @@ const dispatchWander = (kind) => {
     caseIds: ids,
     kind: 'release_regression',
     coverage: 'once',
+    generatedCases: generatedCasesOf(null, rel),
     releaseId: rel.id,
     envProfile: step?.env || 'pre',
   })
@@ -680,6 +945,10 @@ const reextract = async () => {
 const confirmUnderstanding = async () => {
   const req = selectedReq.value
   if (!req) return
+  if (workflowBusy.value) {
+    ElMessage.warning('工作流还在跑，请等写完再进入下一步')
+    return
+  }
   const next = reqNext.value
   if (!next) return
   const check = canAdvanceReq(req, next.id, wf.value)
@@ -711,10 +980,9 @@ const confirmUnderstanding = async () => {
     understanding,
   })
   syncDetailTab('req', next.id)
-  ElMessage.success('评审通过')
-  if (next.kind === 'cover' || kindAssistJob(next.kind, 'req') === 'map_cases') {
-    await runAssist('map_cases', 'req')
-  }
+  inspectGateId.value = next.id
+  ElMessage.success('评审通过，正在写测试脑图和用例')
+  await runTick(req.id, '正在写测试脑图和用例')
 }
 
 const refreshCoverage = async () => {
@@ -730,8 +998,8 @@ const refreshCoverage = async () => {
   })
   ElMessage.success(
     exact.length
-      ? `飞书需求编号命中 ${exact.length} 条；测试点不会自动算覆盖，请分到点上`
-      : (ids.length ? `已对照飞书，挂上 ${ids.length} 条（请分到测试点）` : '没有自动匹配到用例，请手选'),
+      ? `需求编号命中 ${exact.length} 条用例；测试点不会自动算覆盖，请分到点上`
+      : (ids.length ? `已对照用例库，挂上 ${ids.length} 条（请分到测试点）` : '没有自动匹配到用例，请手选'),
   )
   await runAssist('map_cases', 'req', { force: true })
 }
@@ -763,10 +1031,53 @@ const waivePoint = async (point) => {
   } catch { /* cancel */ }
 }
 
+const retryCover = async (job) => {
+  const req = selectedReq.value
+  if (!req || workflowBusy.value) return
+  const isMind = job === 'draft_mindmap'
+  try {
+    const { value } = await ElMessageBox.prompt(
+      isMind
+        ? '指出漏掉的能力、入口、端（含运营平台/Web）、异常兜底。有评论会先重做需求理解再写脑图。'
+        : '指出漏掉的场景、路径和断言。有评论会先重做需求理解再写用例。',
+      isMind ? '重试测试脑图' : '重试用例',
+      {
+        confirmButtonText: '开始重试',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: isMind
+          ? '例如：传图定制是上传本地图下单；创意定制走 agent 对话；入口在我的→定制模版页；漏了运营平台的模型管理和定制专区；缺上传失败兜底'
+          : '例如：传图失败兜底、创意定制仍走对话、运营平台模型管理未覆盖',
+        inputValidator: () => true,
+      },
+    )
+    const note = String(value || '').trim()
+    await runTick(req.id, note
+      ? (isMind ? '正在按评论重做需求理解、脑图和用例' : '正在按评论重做需求理解和用例')
+      : (isMind ? '正在重试测试脑图' : '正在重试用例'), {
+      jobs: note ? ['analyze_req', job] : [job],
+      user_note: note,
+      force: true,
+    })
+    ElMessage.success(isMind
+      ? (note ? '已按评论重做需求理解、脑图和用例，请核对入口、新能力和运营平台。' : '脑图已重试，请核对测试点；若用例对不上请再重试用例。')
+      : '用例已重试，请核对覆盖。')
+  } catch { /* cancel */ }
+}
+
+const historyRows = (row) => {
+  if (row?.job === 'draft_cases') return row.payload?.cases || []
+  return flattenMindmap(row?.payload)
+}
+
 const enterNextReq = async () => {
   const req = selectedReq.value
   const next = reqNext.value
   if (!req || !next) return
+  if (workflowBusy.value) {
+    ElMessage.warning('工作流还在跑，请等写完再进入下一步')
+    return
+  }
   const check = canAdvanceReq(req, next.id, wf.value)
   if (!check.ok) { ElMessage.warning(check.reason); return }
   await patchReq({ gate: next.id })
@@ -779,6 +1090,10 @@ const enterNextRel = async () => {
   const rel = selectedRel.value
   const next = relNext.value
   if (!rel || !next) return
+  if (workflowBusy.value) {
+    ElMessage.warning('工作流还在跑，请等写完再进入下一步')
+    return
+  }
   const check = canAdvanceRel(rel, next.id, wf.value)
   if (!check.ok) { ElMessage.warning(check.reason); return }
   await patchRel({ gate: next.id })
@@ -818,19 +1133,21 @@ const signOff = async (verdict) => {
 
 const deleteReq = async (row) => {
   try {
-    await ElMessageBox.confirm(`删除需求「${row.title}」？不会删飞书用例。`, '删除', { type: 'warning' })
+    await ElMessageBox.confirm(`删除需求「${row.title}」？会一并去掉本需求下的用例草稿。`, '删除', { type: 'warning' })
   } catch { return }
   await removeReq(row.id)
   if (selectedId.value === row.id) selectedId.value = ''
 }
 
-const smokeIds = (req) => {
-  const smoke = (props.suites || []).find((s) => /冒烟|smoke/i.test(s.name || ''))
-  if (smoke) {
-    const ids = suiteCaseIds(smoke, props.cases)
-    if (ids.length) return ids
+const smokeIds = (req) => linkedCaseIds(req)
+
+const generatedCasesOf = (req, rel = null) => {
+  if (req) return generatedCasesFromProcess([req])
+  if (rel) {
+    const ids = new Set(rel.requirement_ids || [])
+    return generatedCasesFromProcess((requirements.value || []).filter((r) => ids.has(r.id)))
   }
-  return linkedCaseIds(req).slice(0, 5)
+  return []
 }
 
 const dispatchReqStep = (step) => {
@@ -843,7 +1160,7 @@ const dispatchReqStep = (step) => {
   const kind = step.run || 'req_test'
   const caseIds = kind === 'req_admit' ? smokeIds(req) : linkedCaseIds(req)
   if (!caseIds.length) {
-    ElMessage.warning('没有可跑的用例。请先挂上飞书用例，或去用例库补表。')
+    ElMessage.warning('没有可跑的用例。先在用例准备里等本需求生成用例，或按模块勾选后再下发。')
     return
   }
   if (!ensureEnvReady(step.env || RUN_KINDS[kind]?.env || 'test')) return
@@ -853,6 +1170,7 @@ const dispatchReqStep = (step) => {
     coverage: RUN_KINDS[kind]?.coverage || 'once',
     requirementId: req.id,
     envProfile: step.env || RUN_KINDS[kind]?.env || 'test',
+    generatedCases: generatedCasesOf(req),
   })
 }
 
@@ -924,58 +1242,18 @@ const closeRel = async () => {
   ElMessage.success('版本单已关闭')
 }
 
-const onReqGateClick = async (g) => {
-  const req = selectedReq.value
-  if (!req) return
+const onReqGateClick = (g) => {
+  if (!selectedReq.value || !g?.id) return
+  inspectGateId.value = g.id
   const tab = kindTab(g.kind)
   if (tab) detailTab.value = tab
-  if (g.id === req.gate || gatePassed('req', req.gate, g.id, wf.value)) return
-  if (!isNextGate('req', req.gate, g.id, wf.value)) {
-    ElMessage.warning('请按阶段一步一步走')
-    return
-  }
-  const current = reqStep.value
-  if (current?.kind === 'human_verdict') {
-    ElMessage.info('测试验收必须在「测试验收」里由测试同学判定，不能自动通过')
-    detailTab.value = 'report'
-    return
-  }
-  if (current?.kind === 'understand') return confirmUnderstanding()
-  if (current?.kind === 'cover') return enterNextReq()
-  if (current?.kind === 'scope') {
-    return g.kind === 'dispatch' ? confirmScope() : enterNextReq()
-  }
-  if (current?.kind === 'checkpoint') return completeCheckpoint('req')
-  return enterNextReq()
 }
 
-const onRelGateClick = async (g) => {
-  const rel = selectedRel.value
-  if (!rel) return
+const onRelGateClick = (g) => {
+  if (!selectedRel.value || !g?.id) return
+  inspectGateId.value = g.id
   const tab = kindTab(g.kind)
   if (tab) detailTab.value = tab
-  if (g.id === rel.gate || gatePassed('rel', rel.gate, g.id, wf.value)) return
-  if (!isNextGate('rel', rel.gate, g.id, wf.value)) {
-    ElMessage.warning('请按阶段一步一步走')
-    return
-  }
-  const current = relStep.value
-  if (current?.kind === 'human_verdict') {
-    ElMessage.info('发版必须在「发版评审」里由测试同学判定，不能自动通过')
-    detailTab.value = 'report'
-    return
-  }
-  const check = canAdvanceRel(rel, g.id, wf.value)
-  if (!check.ok) {
-    ElMessage.warning(check.reason)
-    if (g.kind === 'dispatch' && current?.kind === 'human_verdict') detailTab.value = 'report'
-    return
-  }
-  if (current?.kind === 'scope') {
-    return g.kind === 'dispatch' ? confirmScope() : lockScope()
-  }
-  if (current?.kind === 'checkpoint') return completeCheckpoint('rel')
-  return enterNextRel()
 }
 
 const deleteRel = async (row) => {
@@ -1005,10 +1283,11 @@ const dispatchRelStep = (step) => {
     coverage: 'once',
     releaseId: rel.id,
     envProfile: step.env || RUN_KINDS[kind]?.env || 'pre',
+    generatedCases: generatedCasesOf(null, rel),
   })
 }
 
-defineExpose({ attachRun })
+defineExpose({ attachRun, openCreate })
 
 const addAc = () => {
   const req = selectedReq.value
@@ -1067,46 +1346,15 @@ watch(() => draft.external_id, (id) => {
   if (ids.length && !(draft.case_ids || []).length) draft.case_ids = ids
 })
 
-const TERMINAL_OK = new Set(['done', 'failed', 'partial_fail'])
-const advancedRunKeys = new Set()
-const maybeAdvanceFromTasks = () => {
-  for (const req of requirements.value) {
-    const step = findStep(wf.value, 'req', req.gate)
-    if (step?.kind !== 'dispatch' || !step.auto_advance) continue
-    const latest = [...(req.runs || [])].reverse().find((r) => r.kind === step.run)
-    const task = latest && taskOf(latest.task_id)
-    if (!task || !TERMINAL_OK.has(displayTaskStatus(task))) continue
-    const nxt = nextStep(wf.value, 'req', step.id)
-    if (!nxt) continue
-    const key = `${req.id}:${latest.task_id}:${nxt.id}`
-    if (advancedRunKeys.has(key)) continue
-    advancedRunKeys.add(key)
-    const job = kindAssistJob(nxt.kind, 'req')
-    const arts = job ? attachDraft({ ...req, gate: nxt.id }, 'req', job) : req.ai_artifacts
-    upsertReq({ ...req, gate: nxt.id, ai_artifacts: arts })
-  }
-  for (const rel of releases.value) {
-    const step = findStep(wf.value, 'rel', rel.gate)
-    if (step?.kind !== 'dispatch' || !step.auto_advance) continue
-    const latest = [...(rel.runs || [])].reverse().find((r) => r.kind === step.run)
-    const task = latest && taskOf(latest.task_id)
-    if (!task || !TERMINAL_OK.has(displayTaskStatus(task))) continue
-    const nxt = nextStep(wf.value, 'rel', step.id)
-    if (!nxt) continue
-    const key = `${rel.id}:${latest.task_id}:${nxt.id}`
-    if (advancedRunKeys.has(key)) continue
-    advancedRunKeys.add(key)
-    const job = kindAssistJob(nxt.kind, 'rel')
-    const arts = job ? attachDraft({ ...rel, gate: nxt.id }, 'rel', job) : rel.ai_artifacts
-    upsertRel({ ...rel, gate: nxt.id, ai_artifacts: arts })
-  }
-}
+watch(selectedId, () => {
+  detailEditing.value = false
+})
 
-watch(() => props.tasks, maybeAdvanceFromTasks, { deep: true })
-
-watch([detailTab, selectedId, board], () => {
-  if (board.value === 'req' && reqAssistJob.value) runAssist(reqAssistJob.value, 'req')
-  if (board.value === 'rel' && relAssistJob.value) runAssist(relAssistJob.value, 'rel')
+watch(() => inspectReqStep.value?.id, (id) => {
+  if (!id || board.value !== 'req') return
+  const tab = kindTab(inspectReqStep.value?.kind)
+  if (tab) detailTab.value = tab
+  stageJobId.value = inspectJobTabs.value[0]?.id || ''
 })
 
 onMounted(async () => {
@@ -1118,19 +1366,22 @@ watch(() => props.projectId, loadEnvSnap)
 
 <template>
   <div class="settings-panel qa-process-panel" v-loading="loading">
+    <template v-if="!showTicket">
     <header class="settings-page-header">
       <div>
-        <h2 class="settings-page-title">测试流程</h2>
+        <h2 class="settings-page-title">{{ hideNav ? listPageTitle : '测试单据' }}</h2>
         <p class="settings-page-desc">
-          本应用 {{ inventory.reqs }} 条需求 · 飞书用例 {{ inventory.cases }} 条（{{ inventory.withReqCol }} 条填了需求ID）· 已挂到需求 {{ inventory.linked }} 条。
-          排期只标哪几天测哪个版本/需求；设备在下发任务时再选。测试验收和发版评审必须测试同学判定。
-          阶段和跑测环境在「配置 → 流程模板」里改。
+          <template v-if="hideNav">{{ listPageDesc }}</template>
+          <template v-else>
+            {{ inventory.reqs }} 条需求 · 用例 {{ inventory.cases }} 条。
+            点需求单进入阶段；点节点只查看，不会改状态。
+          </template>
         </p>
       </div>
       <div class="settings-summary-pill" :style="pillStyle">{{ watchStatus.label }}</div>
     </header>
 
-    <div class="settings-tabbar">
+    <div v-if="!hideNav" class="settings-tabbar">
       <button type="button" class="settings-tab" :class="{ active: board === 'rel' }" @click="setBoard('rel')">
         <strong>{{ wf.tracks.rel.label }}</strong>
         <span>定开测日期 · 预发回归 · 发版评审</span>
@@ -1141,28 +1392,9 @@ watch(() => props.projectId, loadEnvSnap)
       </button>
       <button type="button" class="settings-tab" :class="{ active: board === 'sch' }" @click="setBoard('sch')">
         <strong>测试排期</strong>
-        <span>版本开测 · 需求提审上线</span>
+        <span>只预约日期，下发去执行批次</span>
       </button>
     </div>
-
-    <section v-if="board === 'rel'" class="settings-info-card qa-order-card">
-      <div class="settings-kicker">版本测试</div>
-      <p>先建版本、纳入本版需求，再圈历史功能回归。没在各环境测完的需求不能当成发版通过的依据。</p>
-      <p>
-        回归下发按流程阶段挂的环境，去「配置 → 环境配置」取渠道标识。
-        <el-button link type="primary" size="small" @click="emit('go-tab', 'config:flow')">改流程模板</el-button>
-        <el-button link type="primary" size="small" @click="emit('go-tab', 'config:env')">改环境配置</el-button>
-      </p>
-    </section>
-
-    <section v-if="board === 'req'" class="settings-info-card qa-order-card">
-      <div class="settings-kicker">需求测试</div>
-      <p>
-        每个需求按上线顺序在全部环境跑完（冒烟 + 功能测试），再挂进版本。
-        <el-button link type="primary" size="small" @click="emit('go-tab', 'config:flow')">改流程模板</el-button>
-        <el-button link type="primary" size="small" @click="emit('go-tab', 'config:env')">改环境配置</el-button>
-      </p>
-    </section>
 
     <QaScheduleBoard
       v-if="board === 'sch'"
@@ -1177,11 +1409,9 @@ watch(() => props.projectId, loadEnvSnap)
       @remove="onRemoveSlot"
       @open-req="onOpenReq"
       @open-rel="onOpenRel"
-      @dispatch-run="(seed) => emit('dispatch-run', seed)"
     />
 
-    <div v-else class="qa-split" :class="{ 'has-detail': !!selected }">
-      <section class="settings-table-card is-fill qa-list">
+    <section v-else class="settings-table-card is-fill qa-list">
         <div class="col-head">
           <h3>{{ board === 'rel' ? '版本单' : '需求单' }}</h3>
           <div class="col-actions">
@@ -1266,8 +1496,13 @@ watch(() => props.projectId, loadEnvSnap)
           v-model:current-page="page"
         />
       </section>
+    </template>
 
-      <section v-if="selectedReq && board === 'req'" class="settings-card qa-detail">
+      <section v-else-if="selectedReq && board === 'req'" class="settings-card qa-detail is-page">
+        <div class="ticket-chrome">
+        <div class="ticket-back">
+          <el-button link type="primary" @click="closeTicket">← 返回需求单</el-button>
+        </div>
         <div class="detail-head">
           <div>
             <h3>{{ selectedReq.title }}</h3>
@@ -1278,7 +1513,9 @@ watch(() => props.projectId, loadEnvSnap)
             </p>
           </div>
           <div class="head-actions">
-            <el-button size="small" @click="scheduleCurrent('req_test')">排测试</el-button>
+            <el-button v-if="showTicketEdit && !detailEditing" size="small" @click="detailEditing = true">{{ ticketEditLabel }}</el-button>
+            <el-button v-else-if="detailEditing" size="small" type="primary" @click="detailEditing = false">完成修改</el-button>
+            <el-button v-if="showScheduleBtn" size="small" @click="scheduleCurrent('req_test')">排测试</el-button>
             <el-button size="small" text type="danger" @click="deleteReq(selectedReq)">删除</el-button>
           </div>
         </div>
@@ -1288,40 +1525,81 @@ watch(() => props.projectId, loadEnvSnap)
           track="req"
           :steps="reqSteps"
           :current-id="selectedReq.gate"
+          :selected-id="inspectGateId || selectedReq.gate"
           :env-summaries="envSnap.summaries"
           @select="onReqGateClick"
         />
-        <p class="gate-explain">{{ gateHint('req', selectedReq.gate, wf) }}</p>
-        <div v-if="reqAssistJob" class="assist-bar" :class="{ 'is-stale': reqAssistArt?.status === 'stale' }">
-          <span class="assist-suggest">{{ reqAssistArt?.suggest || '点「给建议」出草稿，采纳前不会改阶段或用例。' }}</span>
-          <el-tag v-if="reqAssistArt?.status === 'stale'" size="small" type="warning">过期</el-tag>
-          <el-button link type="primary" size="small" :loading="assisting" @click="runAssist(reqAssistJob, 'req', { force: true })">给建议</el-button>
+        <p class="stage-line">
+          <strong>{{ inspectReqStep?.label }}</strong>
+          <span>{{ inspectReqStep?.hint || gateHint('req', inspectReqStep?.id || selectedReq.gate, wf) }}</span>
+          <span v-if="!viewingReqCurrent" class="muted">查看中 · 当前停在「{{ reqStep?.label }}」</span>
+        </p>
+        <div v-if="workBanner" class="work-banner">
+          <strong>{{ workBanner.title }}</strong>
+          <span>{{ workBanner.detail }}</span>
+        </div>
+        <p v-else-if="reqAssistArt?.suggest" class="assist-inline">{{ reqAssistArt.suggest }}</p>
+        <p v-if="detailEditing" class="edit-banner">正在改这一步的内容，改完点右上角「完成修改」。</p>
         </div>
 
-        <div class="qa-seg">
-          <button
-            v-for="tab in reqDetailTabs"
-            :key="tab.id"
-            type="button"
-            :class="{ active: detailTab === tab.id }"
-            @click="detailTab = tab.id"
-          >{{ tab.label }}</button>
+        <div class="ticket-main">
+        <div v-if="viewingReqCurrent && reqKindIs('understand')" class="gate-bar">
+          <div>
+            <strong>需求评审</strong>
+            <span>上面的「确认图谱」只改骨架。评审通过才会进入用例准备，开始写脑图和用例。</span>
+          </div>
+          <div class="gate-actions">
+            <el-button :disabled="workflowBusy" @click="reextract">需求有改动</el-button>
+            <el-button type="primary" :disabled="workflowBusy" :loading="workflowBusy" @click="confirmUnderstanding">评审通过，进入用例准备</el-button>
+          </div>
         </div>
-
         <div v-if="detailTab === 'understand'" class="detail-body">
-          <p class="hint">根据需求正文列出验收标准和测试点，评审通过后才算读懂。文档一改就点「需求有改动」。</p>
+          <div v-if="showJobTabs" class="stage-tabs">
+            <button
+              v-for="j in inspectJobTabs"
+              :key="j.id"
+              type="button"
+              class="stage-tab"
+              :class="{ on: activeJobId === j.id }"
+              @click="stageJobId = j.id"
+            >
+              {{ j.label }}
+            </button>
+          </div>
+          <template v-if="showJobPanel('propose_atlas')">
+            <AtlasChangeReview
+              v-for="patch in reqPendingPatches"
+              :key="patch.id"
+              :patch="patch"
+              :requirements="requirements"
+              :impact-label="reqImpact?.label || ''"
+              :reviewing="reviewingPatch"
+              @accept="onAcceptPatch"
+              @reject="openReject"
+            />
+            <p v-if="showJobTabs && !reqPendingPatches.length" class="muted">没有待确认的图谱变更。骨架没动时这里是空的。</p>
+          </template>
+          <template v-if="showJobPanel('analyze_req')">
+          <p v-if="showJobTabs && reqPendingPatches.length && activeJobId === 'analyze_req'" class="cover-note">
+            还有 {{ reqPendingPatches.length }} 条图谱变更待确认，切到「图谱变更」处理。
+          </p>
           <div class="field">
             <label>验收标准</label>
-            <div v-for="(line, idx) in (selectedReq.understanding?.ac || [])" :key="idx" class="ac-row">
-              <el-input
-                :model-value="line"
-                size="small"
-                placeholder="可判定的通过条件"
-                :disabled="selectedReq.understanding?.confirmed && !reqKindIs('understand')"
-                @update:model-value="(v) => setAc(idx, v)"
-              />
-            </div>
-            <el-button v-if="reqKindIs('understand')" size="small" text @click="addAc">加一条</el-button>
+            <ul v-if="!reqEditing && (selectedReq.understanding?.ac || []).length" class="ac-list">
+              <li v-for="(line, idx) in (selectedReq.understanding?.ac || [])" :key="idx">{{ line || '—' }}</li>
+            </ul>
+            <p v-if="!reqEditing && !(selectedReq.understanding?.ac || []).length" class="muted">还没有验收标准</p>
+            <template v-else-if="reqEditing">
+              <div v-for="(line, idx) in (selectedReq.understanding?.ac || [])" :key="idx" class="ac-row">
+                <el-input
+                  :model-value="line"
+                  size="small"
+                  placeholder="可判定的通过条件"
+                  @update:model-value="(v) => setAc(idx, v)"
+                />
+              </div>
+              <el-button v-if="reqKindIs('understand')" size="small" text @click="addAc">加一条</el-button>
+            </template>
           </div>
           <div class="field">
             <label>影响面</label>
@@ -1330,121 +1608,172 @@ watch(() => props.projectId, loadEnvSnap)
               <template v-if="selectedReq.understanding?.impact?.notes"> · {{ selectedReq.understanding.impact.notes }}</template>
             </p>
           </div>
-          <div class="actions">
-            <el-button size="small" @click="reextract">需求有改动</el-button>
-            <el-button
-              v-if="reqKindIs('understand')"
-              size="small"
-              type="primary"
-              @click="confirmUnderstanding"
-            >评审通过</el-button>
+          <div v-if="hasReqReading" class="field read-recap">
+            <label>文档理解</label>
+            <p v-for="(row, idx) in reqReading.journeys" :key="`j-${idx}`">入口 {{ journeyLine(row) }}</p>
+            <p v-if="reqReading.newFeatures.length">新增 {{ reqReading.newFeatures.map(featureLine).join('；') }}</p>
+            <p v-if="reqReading.keepFeatures.length">维持 {{ reqReading.keepFeatures.map(featureLine).join('；') }}</p>
+            <p v-if="reqReading.surfaces.length">端 {{ reqReading.surfaces.map(surfaceLine).join('；') }}</p>
+            <p v-if="reqReading.exceptions.length">兜底 {{ reqReading.exceptions.map((x) => x.scene || x.need || '').filter(Boolean).join('；') }}</p>
           </div>
+          </template>
         </div>
 
-        <div v-else-if="detailTab === 'cases'" class="detail-body">
-          <p class="hint">
-            测试点要挂上飞书用例。系统不写用例步骤。缺口可去用例库补，或标记本版本不测。
-            <el-button link type="primary" size="small" @click="emit('go-tab', 'cases')">打开用例库</el-button>
-          </p>
-          <p v-if="exactCaseIds.length" class="hint">
-            飞书「需求ID」列命中 {{ exactCaseIds.length }} 条，已进本需求用例池；不会自动算测试点覆盖，请分到点上。
-          </p>
-          <div class="metrics compact">
-            <div class="metric"><div class="k">测试点</div><div class="v">{{ reqStats?.total || 0 }}</div></div>
-            <div class="metric"><div class="k">已覆盖</div><div class="v ok">{{ reqStats?.covered || 0 }}</div></div>
-            <div class="metric"><div class="k">缺口</div><div class="v" :class="{ bad: reqStats?.gaps }">{{ reqStats?.gaps || 0 }}</div></div>
+        <div v-else-if="detailTab === 'cases'" class="detail-body cover-body">
+          <div v-if="!reachedCover" class="locked-step">
+            <strong>还没到用例准备</strong>
+            <p>当前停在「{{ reqStep?.label }}」。评审通过后才会写测试脑图和本需求用例。</p>
           </div>
-          <el-table :data="selectedReq.understanding?.points || []" border stripe size="small" empty-text="先完成需求评审">
-            <el-table-column label="类型" width="72" prop="kind" />
-            <el-table-column label="测试点" min-width="160">
-              <template #default="{ row }">
-                <el-input
-                  v-if="reqCanEditCover"
-                  :model-value="row.text"
-                  size="small"
-                  @update:model-value="(v) => setPointText(row.id, v)"
-                />
-                <span v-else>{{ row.text }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="飞书用例" min-width="180">
-              <template #default="{ row }">
-                <el-select
-                  :model-value="row.case_ids || []"
-                  multiple
-                  collapse-tags
-                  collapse-tags-tooltip
-                  filterable
-                  size="small"
-                  style="width: 100%"
-                  :disabled="!reqCanEditCover"
-                  @change="(ids) => setPointCases(row.id, ids)"
-                >
-                  <el-option v-for="c in caseOptions" :key="c.id" :label="c.label" :value="c.id" />
-                </el-select>
-                <span v-if="row.waived" class="muted">不测：{{ row.waive_reason }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="建议用例" min-width="160">
-              <template #default="{ row }">
-                <template v-if="mapForPoint(row.id)?.suggest?.length">
-                  <span class="suggest-ids">{{ mapForPoint(row.id).suggest.map((s) => s.case_id).join('、') }}</span>
-                  <el-button
-                    v-if="reqCanEditCover"
-                    link
-                    type="primary"
-                    size="small"
-                    @click="acceptMap(row.id)"
-                  >采纳</el-button>
-                </template>
-                <span v-else-if="gapForPoint(row.id)" class="hint warn">{{ gapForPoint(row.id).reason }}</span>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="108" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  v-if="!row.waived && reqCanEditCover"
-                  link
-                  type="warning"
-                  size="small"
-                  @click="waivePoint(row)"
-                >不测</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="actions">
-            <el-button size="small" @click="addPoint">加测试点</el-button>
-            <el-button size="small" @click="refreshCoverage">对照飞书</el-button>
-            <el-button size="small" :loading="assisting" @click="runAssist('map_cases', 'req', { force: true })">给建议</el-button>
-            <el-button
-              v-if="reqKindIs('cover')"
-              size="small"
-              type="primary"
-              @click="enterNextReq"
-            >进入下一步</el-button>
-          </div>
+          <template v-else>
+            <div v-if="viewingReqCurrent && reqKindIs('cover')" class="gate-bar">
+              <div>
+                <strong>用例准备</strong>
+                <span v-if="workflowBusy">脑图和用例还在写，写完才能进入下一步。</span>
+                <span v-else-if="!coverCheck.ok">{{ coverCheck.reason }}</span>
+                <span v-else>一个测试点要按正向、异常、边界等情况展开成多条用例；写用例时会反推脑图缺不缺点。条数不必等于测试点数。</span>
+              </div>
+              <el-button
+                type="primary"
+                :disabled="!canLeaveCover"
+                :loading="workflowBusy"
+                @click="enterNextReq"
+              >{{ workflowBusy ? '正在写，请等待' : '用例备齐，进入下一步' }}</el-button>
+            </div>
+            <div v-if="showJobTabs" class="stage-tabs">
+              <button
+                v-for="j in inspectJobTabs"
+                :key="j.id"
+                type="button"
+                class="stage-tab"
+                :class="{ on: activeJobId === j.id }"
+                @click="stageJobId = j.id"
+              >
+                {{ j.label }}
+              </button>
+            </div>
+            <section v-if="hasReqReading && showJobPanel('draft_mindmap')" class="cover-block read-recap">
+              <h4>文档理解</h4>
+              <p v-for="(row, idx) in reqReading.journeys" :key="`cj-${idx}`">入口 {{ journeyLine(row) }}</p>
+              <p v-if="reqReading.newFeatures.length">新增 {{ reqReading.newFeatures.map(featureLine).join('；') }}</p>
+              <p v-if="reqReading.keepFeatures.length">维持 {{ reqReading.keepFeatures.map(featureLine).join('；') }}</p>
+              <p v-if="reqReading.surfaces.length">端 {{ reqReading.surfaces.map(surfaceLine).join('；') }}</p>
+              <p v-if="reqReading.exceptions.length">兜底 {{ reqReading.exceptions.map((x) => x.scene || x.need || '').filter(Boolean).join('；') }}</p>
+            </section>
+            <section v-if="showJobPanel('draft_mindmap')" class="cover-block">
+              <div class="cover-head">
+                <h4>测试脑图 · {{ mindPointCount }} 个测试点</h4>
+                <el-button size="small" :disabled="workflowBusy" @click="retryCover('draft_mindmap')">重试脑图</el-button>
+              </div>
+              <p v-if="ticking && !mindRows.length" class="muted">正在写脑图…</p>
+              <p v-else-if="!mindRows.length" class="muted">还没有脑图。可点右上角重试。</p>
+              <ul v-else class="mind-list">
+                <li v-for="(row, idx) in mindRows" :key="idx" :style="{ paddingLeft: `${row.depth * 16}px` }">
+                  <em v-if="row.isPoint">测试点</em>
+                  {{ row.name }}
+                  <span v-if="row.detail" class="muted"> · {{ row.detail }}</span>
+                </li>
+              </ul>
+              <details v-if="mindHistory.length" class="cover-log">
+                <summary>生成记录 · {{ mindHistory.length }}</summary>
+                <ol>
+                  <li v-for="row in mindHistory" :key="row.id">
+                    <strong>{{ row.kind === 'retry' ? '重试' : '生成' }}</strong>
+                    {{ formatShortTime(row.at) }}
+                    · {{ row.summary || '—' }}
+                    <span v-if="row.engine" class="muted"> · {{ row.engine }}</span>
+                    <p v-if="row.note" class="cover-note">评论：{{ row.note }}</p>
+                    <details v-if="historyRows(row).length" class="cover-log-inner">
+                      <summary>查看这一版</summary>
+                      <ul class="mind-list">
+                        <li v-for="(item, idx) in historyRows(row)" :key="idx" :style="{ paddingLeft: `${(item.depth || 0) * 16}px` }">
+                          <em v-if="item.isLeaf">测试点</em>
+                          {{ item.name }}
+                        </li>
+                      </ul>
+                    </details>
+                  </li>
+                </ol>
+              </details>
+            </section>
+            <section v-if="showJobPanel('draft_cases')" class="cover-block">
+              <div class="cover-head">
+                <h4>本需求生成的用例 · {{ draftCaseRows.length }}</h4>
+                <el-button size="small" :disabled="workflowBusy" @click="retryCover('draft_cases')">重试用例</el-button>
+              </div>
+              <p class="muted">已覆盖 {{ coveredPointCount }}/{{ mindPointCount || 0 }} 个测试点。一个点可有多条用例。</p>
+              <p v-if="mindmapBackfill.length" class="cover-note">写用例时反推补了 {{ mindmapBackfill.length }} 个脑图测试点。</p>
+              <p v-if="ticking && !draftCaseRows.length" class="muted">正在写用例…</p>
+              <el-table v-else :data="draftCaseRows" border stripe size="small" empty-text="还没有生成用例，可点右上角重试">
+                <el-table-column label="编号" width="120" prop="case_id" />
+                <el-table-column label="情况" width="72">
+                  <template #default="{ row }">{{ row.aspect || '正向' }}</template>
+                </el-table-column>
+                <el-table-column label="名称" min-width="160" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.name || row.title || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="模块" min-width="160" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.module || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="前置" min-width="140" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.precondition || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="步骤" min-width="200" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.steps || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="预期" min-width="160" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.expected || '—' }}</template>
+                </el-table-column>
+              </el-table>
+              <details v-if="caseHistory.length" class="cover-log">
+                <summary>生成记录 · {{ caseHistory.length }}</summary>
+                <ol>
+                  <li v-for="row in caseHistory" :key="row.id">
+                    <strong>{{ row.kind === 'retry' ? '重试' : '生成' }}</strong>
+                    {{ formatShortTime(row.at) }}
+                    · {{ row.summary || '—' }}
+                    <span v-if="row.engine" class="muted"> · {{ row.engine }}</span>
+                    <p v-if="row.note" class="cover-note">评论：{{ row.note }}</p>
+                    <details v-if="historyRows(row).length" class="cover-log-inner">
+                      <summary>查看这一版</summary>
+                      <ul class="mind-list">
+                        <li v-for="(item, idx) in historyRows(row)" :key="idx">
+                          {{ item.case_id || '' }} {{ item.name || item.title || '用例' }}
+                        </li>
+                      </ul>
+                    </details>
+                  </li>
+                </ol>
+              </details>
+            </section>
+          </template>
         </div>
 
-        <div v-else-if="detailTab === 'run'" class="detail-body">
-          <p class="hint">下发走现有执行器。评审没过不能开功能测试。每条用例跑一轮。</p>
-          <div class="actions">
-            <el-button
-              v-for="s in reqDispatchSteps"
-              :key="s.id"
-              size="small"
-              :type="reqStep?.id === s.id ? 'primary' : undefined"
-              :disabled="!canDispatchReqStep(s)"
-              @click="dispatchReqStep(s)"
-            >{{ dispatchLabel(s) }}</el-button>
-            <el-button
-              v-if="reqKindIs('dispatch') && reqNext && reqNext.kind !== 'archive'"
-              size="small"
-              :type="reqNext?.kind === 'human_verdict' ? 'primary' : undefined"
-              @click="enterNextReq"
-            >{{ reqNext?.kind === 'human_verdict' ? '提交验收' : `进入${reqNext?.label || '下一步'}` }}</el-button>
+        <div v-else-if="detailTab === 'run'" class="detail-body has-table">
+          <p v-if="reqStepRunDone && reqNext" class="stage-line warn">
+            本步任务已结束，要进入「{{ reqNext.label }}」请点下面的按钮，不会自动跳。
+          </p>
+          <div v-if="reqDispatchFocus || (viewingReqCurrent && reqKindIs('dispatch'))" class="gate-bar">
+            <div>
+              <strong>{{ inspectReqStep?.label }}</strong>
+              <span>这一步才下发真机。排期不在这里管。</span>
+            </div>
+            <div class="gate-actions">
+              <el-button
+                v-if="reqDispatchFocus"
+                type="primary"
+                :disabled="!canDispatchReqStep(reqDispatchFocus)"
+                @click="dispatchReqStep(reqDispatchFocus)"
+              >{{ dispatchLabel(reqDispatchFocus) }}</el-button>
+              <el-button
+                v-if="viewingReqCurrent && reqKindIs('dispatch') && reqNext && reqNext.kind !== 'archive'"
+                :type="reqNext?.kind === 'human_verdict' ? 'primary' : undefined"
+                :disabled="workflowBusy"
+                @click="enterNextReq"
+              >{{ reqNext?.kind === 'human_verdict' ? '提交验收' : `进入${reqNext?.label || '下一步'}` }}</el-button>
+            </div>
           </div>
-          <el-table :data="selectedReq.runs || []" border stripe size="small" empty-text="还没有下发过">
+          <div class="table-pane">
+          <el-table :data="inspectReqRuns" border stripe size="small" height="100%" empty-text="这一步还没有下发过">
             <el-table-column label="类型" width="100">
               <template #default="{ row }">{{ RUN_KINDS[row.kind]?.label || row.kind }}</template>
             </el-table-column>
@@ -1468,17 +1797,22 @@ watch(() => props.projectId, loadEnvSnap)
               <template #default="{ row }">{{ formatShortTime(row.at) }}</template>
             </el-table-column>
           </el-table>
+          </div>
         </div>
 
         <div v-else-if="detailTab === 'checkpoint'" class="detail-body">
-          <p class="hint">{{ reqStep?.hint || '这一步只做人工确认，不跑自动化。' }}</p>
-          <div v-if="reqKindIs('checkpoint')" class="actions">
+          <p class="hint">{{ inspectReqStep?.hint || '这一步只做人工确认，不跑自动化。' }}</p>
+          <div v-if="viewingReqCurrent && reqKindIs('checkpoint')" class="actions">
             <el-button size="small" type="primary" @click="completeCheckpoint('req')">完成，进入下一步</el-button>
           </div>
         </div>
 
+        <div v-else-if="inspectReqStep?.kind === 'archive'" class="detail-body">
+          <p>本需求已结束。点前面的节点只能回看，不会再改状态。</p>
+        </div>
+
         <div v-else class="detail-body">
-          <p class="hint">对照验收标准给建议。通过还是不通过，必须测试同学判定。</p>
+          <p class="hint">对照验收标准给建议。通过还是不通过，必须测试同学在当前阶段判定。</p>
           <div class="metrics compact">
             <div class="metric"><div class="k">建议</div><div class="v">{{ reqReport?.suggest || '—' }}</div></div>
             <div class="metric"><div class="k">通过</div><div class="v ok">{{ reqReport?.passed || 0 }}</div></div>
@@ -1500,24 +1834,37 @@ watch(() => props.projectId, loadEnvSnap)
               <el-table-column label="标题" min-width="140" prop="title" show-overflow-tooltip />
             </el-table>
           </div>
-          <div v-if="reqCanSign" class="actions">
-            <el-button size="small" type="primary" @click="signOff('pass')">验收通过</el-button>
-            <el-button size="small" @click="signOff('risk')">带风险验收</el-button>
-            <el-button size="small" @click="signOff('reject')">退回重测</el-button>
-            <el-button v-if="reqRerunIds.length" size="small" @click="dispatchWander('req')">重跑走神 {{ reqRerunIds.length }} 条</el-button>
+          <div v-if="reqCanSign" class="gate-bar">
+            <div>
+              <strong>测试验收</strong>
+              <span>结论必须人点，不会自动过。</span>
+            </div>
+            <div class="gate-actions">
+              <el-button type="primary" @click="signOff('pass')">验收通过</el-button>
+              <el-button @click="signOff('risk')">带风险验收</el-button>
+              <el-button @click="signOff('reject')">退回重测</el-button>
+            </div>
           </div>
           <p v-else-if="selectedReq.signoff" class="muted">已{{ selectedReq.signoff.verdict === 'risk' ? '带风险验收' : '验收通过' }} · {{ formatShortTime(selectedReq.signoff.at) }}</p>
+          <el-button v-if="reqCanSign && reqRerunIds.length" size="small" @click="dispatchWander('req')">重跑走神 {{ reqRerunIds.length }} 条</el-button>
+        </div>
         </div>
       </section>
 
-      <section v-else-if="selectedRel && board === 'rel'" class="settings-card qa-detail">
+      <section v-else-if="selectedRel && board === 'rel'" class="settings-card qa-detail is-page">
+        <div class="ticket-chrome">
+        <div class="ticket-back">
+          <el-button link type="primary" @click="closeTicket">← 返回版本单</el-button>
+        </div>
         <div class="detail-head">
           <div>
             <h3>{{ selectedRel.title }}</h3>
             <p class="muted">{{ (selectedRel.requirement_ids || []).length }} 条需求 · {{ (selectedRel.case_ids || []).length }} 条回归用例</p>
           </div>
           <div class="head-actions">
-            <el-button size="small" @click="scheduleCurrent('rel_test')">排开测</el-button>
+            <el-button v-if="showTicketEdit && !detailEditing" size="small" @click="detailEditing = true">{{ ticketEditLabel }}</el-button>
+            <el-button v-else-if="detailEditing" size="small" type="primary" @click="detailEditing = false">完成修改</el-button>
+            <el-button v-if="showScheduleBtn" size="small" @click="scheduleCurrent('rel_test')">排开测</el-button>
             <el-button size="small" text type="danger" @click="deleteRel(selectedRel)">删除</el-button>
           </div>
         </div>
@@ -1526,36 +1873,29 @@ watch(() => props.projectId, loadEnvSnap)
           track="rel"
           :steps="relSteps"
           :current-id="selectedRel.gate"
+          :selected-id="inspectGateId || selectedRel.gate"
           :env-summaries="envSnap.summaries"
           @select="onRelGateClick"
         />
-        <p class="gate-explain">{{ gateHint('rel', selectedRel.gate, wf) }}</p>
-        <div v-if="relAssistJob" class="assist-bar" :class="{ 'is-stale': relAssistArt?.status === 'stale' }">
-          <span class="assist-suggest">{{ relAssistArt?.suggest || '点「给建议」出草稿，采纳前不会改阶段或回归范围。' }}</span>
-          <el-tag v-if="relAssistArt?.status === 'stale'" size="small" type="warning">过期</el-tag>
-          <el-button link type="primary" size="small" :loading="assisting" @click="runAssist(relAssistJob, 'rel', { force: true })">给建议</el-button>
-        </div>
-        <div class="qa-seg">
-          <button
-            v-for="tab in relDetailTabs"
-            :key="tab.id"
-            type="button"
-            :class="{ active: detailTab === tab.id }"
-            @click="detailTab = tab.id"
-          >{{ tab.label }}</button>
+        <p class="stage-line">
+          <strong>{{ inspectRelStep?.label }}</strong>
+          <span>{{ inspectRelStep?.hint || gateHint('rel', inspectRelStep?.id || selectedRel.gate, wf) }}</span>
+          <span v-if="!viewingRelCurrent" class="muted">查看中 · 当前停在「{{ relStep?.label }}」</span>
+        </p>
+        <p v-if="relAssistArt?.suggest" class="assist-inline">{{ relAssistArt.suggest }}</p>
         </div>
 
+        <div class="ticket-main">
         <div v-if="detailTab === 'scope'" class="detail-body">
-          <p class="hint">只看已评审通过的验收摘要，不精读每篇需求。需求可以随时挂进来；没验收的默认不能当成发版通过的依据。</p>
           <div class="field">
             <label>本版本需求</label>
             <el-select
+              v-if="relEditing"
               :model-value="selectedRel.requirement_ids"
               multiple
               filterable
               collapse-tags
               style="width: 100%"
-              :disabled="!relCanEditScope"
               @change="(ids) => patchRel({ requirement_ids: ids })"
             >
               <el-option
@@ -1565,21 +1905,23 @@ watch(() => props.projectId, loadEnvSnap)
                 :value="r.id"
               />
             </el-select>
+            <p v-else class="muted">{{ titlesOf(selectedRel.requirement_ids) }}</p>
           </div>
           <div class="field">
             <label>回归用例</label>
             <el-select
+              v-if="relEditing"
               :model-value="selectedRel.case_ids"
               multiple
               filterable
               collapse-tags
               collapse-tags-tooltip
               style="width: 100%"
-              :disabled="!relCanEditScope"
               @change="(ids) => patchRel({ case_ids: ids })"
             >
               <el-option v-for="c in caseOptions" :key="c.id" :label="c.label" :value="c.id" />
             </el-select>
+            <p v-else class="muted">{{ caseLabelsOf(selectedRel.case_ids) }}</p>
           </div>
           <p v-if="relPickArt?.payload" class="hint">
             建议回归 {{ (relPickArt.payload.pass_ids || []).length }} 条
@@ -1594,36 +1936,40 @@ watch(() => props.projectId, loadEnvSnap)
               :loading="assisting"
               @click="acceptPassPack"
             >采纳建议回归</el-button>
-            <el-button v-if="relKindIs('scope') && relNext?.kind === 'scope'" size="small" type="primary" @click="lockScope">进入回归范围</el-button>
-            <el-button v-if="relKindIs('scope') && relNext?.kind === 'dispatch'" size="small" type="primary" @click="confirmScope">确认回归范围</el-button>
+            <el-button v-if="viewingRelCurrent && relKindIs('scope') && relNext?.kind === 'scope'" size="small" type="primary" @click="lockScope">进入回归范围</el-button>
+            <el-button v-if="viewingRelCurrent && relKindIs('scope') && relNext?.kind === 'dispatch'" size="small" type="primary" @click="confirmScope">确认回归范围</el-button>
             <el-button
-              v-if="relKindIs('scope') && relNext && relNext.kind !== 'scope' && relNext.kind !== 'dispatch'"
+              v-if="viewingRelCurrent && relKindIs('scope') && relNext && relNext.kind !== 'scope' && relNext.kind !== 'dispatch'"
               size="small"
               type="primary"
+              :disabled="workflowBusy"
               @click="enterNextRel"
             >进入{{ relNext.label }}</el-button>
           </div>
         </div>
 
-        <div v-else-if="detailTab === 'run'" class="detail-body">
-          <p class="hint">按本步配置的环境和种类下发。每条用例跑一轮。生产冒烟套件要小，失败当线上问题处理。</p>
+        <div v-else-if="detailTab === 'run'" class="detail-body has-table">
+          <p v-if="relStepRunDone && relNext" class="stage-line warn">
+            本步任务已结束，要进入「{{ relNext.label }}」请点下面的按钮，不会自动跳。
+          </p>
           <div class="actions">
             <el-button
-              v-for="s in relDispatchSteps"
-              :key="s.id"
+              v-if="relDispatchFocus"
               size="small"
-              :type="relStep?.id === s.id ? 'primary' : undefined"
-              :disabled="!canDispatchRelStep(s)"
-              @click="dispatchRelStep(s)"
-            >{{ dispatchLabel(s) }}</el-button>
+              type="primary"
+              :disabled="!canDispatchRelStep(relDispatchFocus)"
+              @click="dispatchRelStep(relDispatchFocus)"
+            >{{ dispatchLabel(relDispatchFocus) }}</el-button>
             <el-button
-              v-if="relKindIs('dispatch') && relNext && relNext.kind !== 'archive'"
+              v-if="viewingRelCurrent && relKindIs('dispatch') && relNext && relNext.kind !== 'archive'"
               size="small"
+              :disabled="workflowBusy"
               @click="enterNextRel"
             >{{ relNext?.kind === 'human_verdict' ? '回归结束，进入发版评审' : `进入${relNext?.label || '下一步'}` }}</el-button>
-            <el-button v-if="relKindIs('dispatch') && relNext?.kind === 'archive'" size="small" @click="closeRel">关闭版本</el-button>
+            <el-button v-if="viewingRelCurrent && relKindIs('dispatch') && relNext?.kind === 'archive'" size="small" @click="closeRel">关闭版本</el-button>
           </div>
-          <el-table :data="selectedRel.runs || []" border stripe size="small" empty-text="还没有下发过">
+          <div class="table-pane">
+          <el-table :data="inspectRelRuns" border stripe size="small" height="100%" empty-text="这一步还没有下发过">
             <el-table-column label="类型" width="110">
               <template #default="{ row }">{{ RUN_KINDS[row.kind]?.label || row.kind }}</template>
             </el-table-column>
@@ -1644,13 +1990,18 @@ watch(() => props.projectId, loadEnvSnap)
               <template #default="{ row }">{{ taskOf(row.task_id) ? taskCountLabel(taskOf(row.task_id)) : '—' }}</template>
             </el-table-column>
           </el-table>
+          </div>
         </div>
 
         <div v-else-if="detailTab === 'checkpoint'" class="detail-body">
-          <p class="hint">{{ relStep?.hint || '这一步只做人工确认，不跑自动化。' }}</p>
-          <div v-if="relKindIs('checkpoint')" class="actions">
+          <p class="hint">{{ inspectRelStep?.hint || '这一步只做人工确认，不跑自动化。' }}</p>
+          <div v-if="viewingRelCurrent && relKindIs('checkpoint')" class="actions">
             <el-button size="small" type="primary" @click="completeCheckpoint('rel')">完成，进入下一步</el-button>
           </div>
+        </div>
+
+        <div v-else-if="inspectRelStep?.kind === 'archive'" class="detail-body">
+          <p>本版本单已结束。点前面的节点只能回看，不会再改状态。</p>
         </div>
 
         <div v-else class="detail-body">
@@ -1680,8 +2031,8 @@ watch(() => props.projectId, loadEnvSnap)
             结论 {{ selectedRel.verdict.verdict }} · {{ formatShortTime(selectedRel.verdict.at) }}
           </p>
         </div>
+        </div>
       </section>
-    </div>
 
     <el-dialog
       v-model="createOpen"
@@ -1691,6 +2042,8 @@ watch(() => props.projectId, loadEnvSnap)
       align-center
       append-to-body
       destroy-on-close
+      :close-on-click-modal="!creatingSubmit"
+      :close-on-press-escape="!creatingSubmit"
     >
       <el-form v-if="!creatingRel" class="qa-create-form" label-position="top">
         <el-form-item label="需求名称" required>
@@ -1708,7 +2061,7 @@ watch(() => props.projectId, loadEnvSnap)
           <p v-if="!releases.length" class="hint">还没有版本。可先建需求，之后再挂。</p>
         </el-form-item>
         <el-form-item label="外部编号">
-          <el-input v-model="draft.external_id" placeholder="飞书 / Jira ID，可空" />
+          <el-input v-model="draft.external_id" placeholder="外部编号，可空" />
         </el-form-item>
         <el-form-item label="原文链接">
           <el-input v-model="draft.source_url" placeholder="https://" />
@@ -1718,11 +2071,11 @@ watch(() => props.projectId, loadEnvSnap)
             v-model="draft.source_text"
             type="textarea"
             :rows="3"
-            placeholder="粘贴飞书 / Jira 描述。会列出验收标准、影响面、测试点。"
+            placeholder="粘贴需求描述。会列出验收标准、影响面、测试点。"
           />
         </el-form-item>
-        <el-form-item label="飞书用例（可选）">
-          <el-select v-model="draft.case_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="可空；填编号后按需求 ID 自动勾">
+        <el-form-item label="关联用例（可选）">
+          <el-select v-model="draft.case_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="可空；可按编号勾选用例库">
             <el-option v-for="c in caseOptions" :key="c.id" :label="c.label" :value="c.id" />
           </el-select>
         </el-form-item>
@@ -1750,10 +2103,31 @@ watch(() => props.projectId, loadEnvSnap)
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitCreate">
+        <el-button :disabled="creatingSubmit" @click="createOpen = false">取消</el-button>
+        <el-button type="primary" :loading="creatingSubmit" :disabled="creatingSubmit" @click="submitCreate">
           {{ creatingRel ? '创建版本' : '创建需求' }}
         </el-button>
+      </template>
+    </el-dialog>
+    <el-dialog
+      v-model="rejectOpen"
+      title="驳回并重新分析"
+      width="520px"
+      class="mo-fit-dialog"
+      align-center
+      append-to-body
+      destroy-on-close
+    >
+      <p class="hint">写明为什么这份影响范围不对，以及你认为原来的功能和这次改动分别是什么。会按你的说明重跑需求分析师。</p>
+      <el-input
+        v-model="rejectNote"
+        type="textarea"
+        :rows="5"
+        placeholder="例如：这是定制页已有工具链路的优化，不是新模块；改动主要在 App 提交，Web 只看结果，需要一条端到端。"
+      />
+      <template #footer>
+        <el-button @click="rejectOpen = false">取消</el-button>
+        <el-button type="primary" :loading="reviewingPatch" @click="submitReject">驳回并重跑</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1772,10 +2146,10 @@ watch(() => props.projectId, loadEnvSnap)
 .qa-process-panel .settings-page-header,
 .qa-process-panel .settings-tabbar,
 .qa-process-panel .qa-order-card { flex-shrink: 0; }
-.qa-order-card { margin: 0 0 12px; padding: 12px 14px; }
-.qa-order-card p { margin: 4px 0 0; font-size: 13px; color: #374151; line-height: 1.5; }
+.qa-order-card { margin: 0 0 8px; }
 .qa-process-panel .settings-page-header { margin-bottom: 8px; }
 .qa-process-panel .settings-tabbar { margin-bottom: 12px; flex-wrap: wrap; }
+.qa-process-panel .job-tabs { margin-bottom: 0; }
 .qa-process-panel :deep(.settings-tab) { min-width: 148px; padding: 10px 14px 12px; }
 .qa-process-panel > :deep(.sch-board) {
   flex: 1;
@@ -1785,21 +2159,8 @@ watch(() => props.projectId, loadEnvSnap)
   flex: 1;
   min-height: 0;
 }
-.qa-split {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 12px;
-  align-items: stretch;
-  box-sizing: border-box;
-}
-.qa-split.has-detail {
-  grid-template-columns: minmax(280px, 42%) minmax(0, 1fr);
-}
 .qa-process-panel .qa-list {
+  flex: 1;
   min-height: 0;
   height: auto;
   display: flex;
@@ -1808,6 +2169,228 @@ watch(() => props.projectId, loadEnvSnap)
   padding: 12px 14px 14px;
   box-sizing: border-box;
 }
+.qa-detail.is-page {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.ticket-chrome {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 14px;
+  margin: -12px -14px 0;
+  background: #f3f4f8;
+  border-bottom: 1px solid #e5e7eb;
+}
+.ticket-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 16px 4px 12px;
+}
+.work-banner,
+.edit-banner,
+.gate-bar,
+.locked-step {
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.work-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 13px;
+}
+.edit-banner {
+  margin: 0;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+}
+.gate-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 16px;
+  background: #111827;
+  color: #f9fafb;
+}
+.gate-bar strong { display: block; font-size: 15px; margin-bottom: 4px; }
+.gate-bar span { font-size: 12px; color: #d1d5db; }
+.gate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.locked-step {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  color: #475569;
+}
+.locked-step strong { display: block; margin-bottom: 6px; color: #111827; }
+.cover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.job-tabs { margin: 0; flex-shrink: 0; }
+.stage-tabs {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.stage-tab {
+  border: none;
+  background: transparent;
+  padding: 8px 16px;
+  font-size: 15px;
+  font-weight: 650;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+}
+.stage-tab:hover { color: #111827; }
+.stage-tab.on {
+  color: #4f46e5;
+  box-shadow: inset 0 -2px 0 #4f46e5;
+}
+.cover-block h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.cover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 8px;
+}
+.cover-log {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+}
+.cover-log summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #334155;
+}
+.cover-log ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.cover-log li + li {
+  margin-top: 8px;
+}
+.cover-log-inner {
+  margin-top: 6px;
+}
+.cover-note {
+  margin: 4px 0 0;
+  color: #92400e;
+}
+.read-recap p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #334155;
+}
+.read-recap p:last-child { margin-bottom: 0; }
+.mind-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.mind-list em {
+  margin-right: 6px;
+  color: #6366f1;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+}
+.stage-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.stage-line strong { color: #111827; }
+.stage-line.warn { color: #92400e; }
+.assist-inline {
+  margin: 0;
+  color: #4338ca;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.linked-work {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
+}
+.linked-work h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.slot-lines {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  color: #4b5563;
+  font-size: 13px;
+}
+.ticket-back { margin-bottom: 0; }
+.table-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.detail-body.has-table {
+  overflow: hidden;
+}
+.detail-body.has-table .metrics {
+  flex-shrink: 0;
+}
+.detail-body .actions {
+  flex-shrink: 0;
+  padding-top: 4px;
+  background: #fff;
+}
+.step-jobs-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.step-jobs-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: #374151;
+}
+.step-jobs-list li strong { color: #111827; }
 .qa-list .gate-filters {
   max-width: none;
   width: 100%;
@@ -1868,6 +2451,29 @@ watch(() => props.projectId, loadEnvSnap)
 .hint.warn { color: #b45309; }
 .gate-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .gate-explain { margin: 0; font-size: 12px; color: #6b7280; line-height: 1.5; }
+.step-jobs {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e3e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.step-jobs ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.step-jobs li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: #374151;
+}
+.step-jobs li strong { color: #111827; }
 .assist-bar {
   display: flex;
   align-items: flex-start;
@@ -1909,6 +2515,7 @@ watch(() => props.projectId, loadEnvSnap)
   background: #eef2ff;
   width: fit-content;
   max-width: 100%;
+  flex-shrink: 0;
 }
 .qa-seg.gate-filters {
   width: 100%;
@@ -1927,7 +2534,14 @@ watch(() => props.projectId, loadEnvSnap)
   background: #fff;
   color: #4338ca;
 }
-.detail-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .field label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 6px; }
 .ac-row { margin-bottom: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1947,7 +2561,4 @@ watch(() => props.projectId, loadEnvSnap)
 .metric .v.bad { color: #dc2626; }
 .metric .v.warn { color: #d97706; }
 .ac-list { margin: 0; padding-left: 18px; color: #374151; font-size: 13px; }
-@media (max-width: 960px) {
-  .qa-split.has-detail { grid-template-columns: minmax(0, 1fr); }
-}
 </style>

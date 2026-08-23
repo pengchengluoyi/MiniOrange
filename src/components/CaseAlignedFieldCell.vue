@@ -8,10 +8,16 @@ const props = defineProps({
 })
 
 const pairs = computed(() => alignCaseStepExpected(props.row))
+const plain = computed(() => pairs.value
+  .map((p) => {
+    const text = props.field === 'step' ? p.step : p.expected
+    return text ? `${p.num}. ${text}` : `${p.num}. —`
+  })
+  .join('\n'))
 </script>
 
 <template>
-  <div v-if="pairs.length" class="case-aligned-cell">
+  <div v-if="pairs.length" class="case-aligned-cell is-clamp" :title="plain">
     <div v-for="p in pairs" :key="p.num" class="case-aligned-line">
       <template v-if="field === 'step' ? p.step : p.expected">
         <span class="case-line-no">{{ p.num }}.</span>
@@ -27,18 +33,22 @@ const pairs = computed(() => alignCaseStepExpected(props.row))
 .case-aligned-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 2px 0;
+  gap: 2px;
+  padding: 0;
   white-space: normal;
-  line-height: 1.5;
+  line-height: 1.4;
   font-size: 12px;
   color: #374151;
+}
+.case-aligned-cell.is-clamp {
+  max-height: calc(1.4em * 3);
+  overflow: hidden;
 }
 .case-aligned-line {
   display: flex;
   align-items: flex-start;
   gap: 4px;
-  min-height: 1.5em;
+  line-height: 1.4;
   word-break: break-word;
 }
 .case-line-no {

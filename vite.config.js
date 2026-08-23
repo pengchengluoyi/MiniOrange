@@ -6,6 +6,21 @@ import path from 'node:path'
 import vue from '@vitejs/plugin-vue'
 import electron from 'vite-plugin-electron'
 
+const API_PROXY_TARGET = 'http://127.0.0.1:10104'
+const API_HTTP_PREFIXES = [
+  '/auth', '/device', '/sys', '/static', '/settings', '/app-automation', '/webhooks',
+  '/feishu', '/project', '/task', '/workflow', '/workflow_run', '/ability',
+  '/schedule', '/packs', '/api', '/hitl', '/case-runner', '/app_graph',
+  '/logs', '/file', '/get_api', '/upload',
+]
+
+function apiProxy() {
+  return {
+    '/ws': { target: API_PROXY_TARGET, changeOrigin: true, ws: true },
+    ...Object.fromEntries(API_HTTP_PREFIXES.map((prefix) => [prefix, { target: API_PROXY_TARGET, changeOrigin: true }])),
+  }
+}
+
 function copyElectronDiscovery() {
   return {
     name: 'copy-electron-discovery',
@@ -53,6 +68,14 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
+  },
+  server: {
+    port: 5173,
+    proxy: apiProxy(),
+  },
+  preview: {
+    port: 4173,
+    proxy: apiProxy(),
   },
   // 🔥🔥 关键修复：排除解码器库，防止 Vite 破坏 Worker 文件路径
   optimizeDeps: {

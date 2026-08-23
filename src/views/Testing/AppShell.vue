@@ -1,12 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   runCaseRunner,
   listCaseRunnerDevices,
 } from '@/api/caseRunner'
-import { getFeishuCasesCached } from '@/api/feishuRegression'
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
 import { listAIProviders } from '@/api/settings'
 import { getProjects } from '@/api/workReport'
@@ -14,7 +13,10 @@ import WorkShell from '@/layouts/WorkShell.vue'
 import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import KnowledgePanel from '@/views/Settings/KnowledgePanel.vue'
-import FeishuRegressionPanel from '@/views/Settings/FeishuRegressionPanel.vue'
+import CasesWorkbench from '@/views/Testing/CasesWorkbench.vue'
+import AssetsPage from '@/views/Testing/AssetsPage.vue'
+import DispatchPage from '@/views/Settings/DispatchPage.vue'
+import DispatchJobPage from '@/views/Settings/DispatchJobPage.vue'
 import QaProcessPanel from '@/views/Testing/QaProcessPanel.vue'
 import { filterExecutableDevices, formatDeviceMeta, formatDeviceTag } from '@/utils/testingDevices'
 import {
@@ -40,7 +42,8 @@ import {
 } from '@/utils/testingTasks'
 import { fetchTaskDetail, fetchTasksForApp, useTestingTaskList } from '@/composables/useTestingTasks'
 import { envLabel } from '@/constants/envProfiles'
-import { parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
+import { groupCasesByModuleTree, parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
+import { generatedCasesFromProcess, mergeRunCases } from '@/utils/qaProcess'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
 
@@ -51,13 +54,80 @@ const appId = computed(() => String(route.params.appId || ''))
 const appName = computed(() => String(route.query.appName || '应用'))
 const projectName = computed(() => String(route.query.projectName || ''))
 const projectId = computed(() => String(route.query.projectId || ''))
-const VALID_TABS = ['process', 'tasks', 'cases', 'knowledge', 'config']
-const resolveTab = (t) => VALID_TABS.includes(t) ? t : 'tasks'
+const VALID_TABS = ['process', 'tasks', 'dispatch', 'cases', 'knowledge', 'assets', 'config']
+const TESTING_NAV = [
+  {
+    id: 'process',
+    label: '单据',
+    icon: '📌',
+    color: '#3b82f6',
+    children: [
+      { id: 'req', label: '需求测试' },
+      { id: 'rel', label: '版本测试' },
+      { id: 'sch', label: '本应用排期' },
+    ],
+  },
+  {
+    id: 'tasks',
+    label: '任务',
+    icon: '📋',
+    color: '#6366f1',
+    children: [
+      { id: 'runs', label: '执行批次' },
+      { id: 'calls', label: '调用记录' },
+    ],
+  },
+  {
+    id: 'cases',
+    label: '用例',
+    icon: '📖',
+    color: '#22c55e',
+    children: [
+      { id: 'atlas', label: '应用图谱' },
+      { id: 'mindmap', label: '脑图' },
+      { id: 'library', label: '用例库' },
+    ],
+  },
+  {
+    id: 'knowledge',
+    label: '知识',
+    icon: '💡',
+    color: '#f59e0b',
+    children: [
+      { id: 'pending', label: '待审核' },
+      { id: 'all', label: '已通过' },
+    ],
+  },
+  {
+    id: 'assets',
+    label: '测试账号',
+    icon: '🪪',
+    color: '#8b5cf6',
+    children: [
+      { id: 'accounts', label: '号池' },
+      { id: 'trial', label: '试跑筛号' },
+    ],
+  },
+  {
+    id: 'config',
+    label: '配置',
+    icon: '⚙️',
+    color: '#64748b',
+    children: [
+      { id: 'env', label: '环境配置', color: '#3b82f6' },
+      { id: 'flow-req', label: '需求阶段模板', color: '#6366f1' },
+      { id: 'flow-rel', label: '版本阶段模板', color: '#0d9488' },
+      { id: 'workflow', label: '角色编排', color: '#f59e0b' },
+      { id: 'figma', label: '设计稿', color: '#ec4899' },
+    ],
+  },
+]
+const resolveTab = (t) => VALID_TABS.includes(t) ? t : 'process'
 /** 本地 tab / task：点击立刻切面；再与路由对齐 */
 const tab = ref(resolveTab(route.query.tab))
 const selectedTaskId = ref(String(route.query.task || ''))
 const configSection = computed(() => String(route.query.configSection || 'env'))
-const resolveBoard = (b) => (b === 'req' || b === 'sch' ? b : 'rel')
+const resolveBoard = (b) => (b === 'rel' || b === 'sch' ? b : 'req')
 const processBoard = ref(resolveBoard(route.query.board))
 const processId = ref(String(route.query.pid || ''))
 const processPanel = ref(null)
@@ -92,8 +162,8 @@ const loading = ref(false)
 const { tasks, upsert } = useTestingTaskList(appId)
 const pollTimer = ref(null)
 const projects = ref([])
-/** 详情打开时默认折叠中间任务栏；用户可临时展开换任务 */
-const taskRailOpen = ref(false)
+/** 详情和列表并排，避免切任务还要先展开列表 */
+const taskRailOpen = ref(true)
 
 const devices = ref([])
 const providers = ref([])
@@ -108,8 +178,113 @@ const selectedSuiteId = ref('')
 
 const selectedTask = computed(() => tasks.value.find((t) => t.taskId === selectedTaskId.value) || null)
 const hasDetail = computed(() => !!selectedTaskId.value && tab.value === 'tasks')
+const showTopBar = computed(() => appsInProject.value.length > 1 && !(tab.value === 'tasks' && hasDetail.value))
+const dispatchCallId = computed(() => String(route.query.call || ''))
 const showTaskRail = computed(() => tab.value === 'tasks' && (!hasDetail.value || taskRailOpen.value))
-const tabLabel = computed(() => ({ process: '流程', tasks: '任务', cases: '用例', knowledge: '知识', config: '配置' }[tab.value] || '任务'))
+const activeSub = computed(() => {
+  if (tab.value === 'process') return processBoard.value
+  if (tab.value === 'cases') {
+    const raw = String(route.query.view || 'atlas')
+    if (raw === 'features' || raw === 'changes') return 'atlas'
+    if (raw === 'reqs') return 'mindmap'
+    return raw
+  }
+  if (tab.value === 'assets') return String(route.query.section || 'accounts')
+  if (tab.value === 'dispatch') return String(route.query.dview || 'pipeline')
+  if (tab.value === 'knowledge') return String(route.query.kview || 'pending')
+  if (tab.value === 'config') {
+    const s = String(configSection.value || 'env')
+    if (s === 'flow') return 'flow-req'
+    return s
+  }
+  return ''
+})
+const itemOpen = ref({
+  process: tab.value === 'process',
+  tasks: tab.value === 'tasks' || tab.value === 'dispatch',
+  cases: tab.value === 'cases',
+  knowledge: tab.value === 'knowledge',
+  assets: tab.value === 'assets',
+  config: tab.value === 'config',
+})
+const searchOpen = ref(false)
+const searchQ = ref('')
+const workspaceLabel = computed(() => projectName.value || appName.value || '项目')
+const workspaceInitial = computed(() => String(workspaceLabel.value).replace(/\s+/g, '').slice(0, 1) || '项')
+const searchHits = computed(() => {
+  const q = searchQ.value.trim().toLowerCase()
+  const rows = []
+  for (const n of TESTING_NAV) {
+    rows.push({ tab: n.id, sub: '', label: n.label })
+    for (const c of n.children || []) rows.push({ tab: n.id, sub: c.id, label: `${n.label} / ${c.label}` })
+  }
+  rows.push({ tab: 'cases', sub: 'library', label: '用例库' })
+  rows.push({ tab: 'process', sub: '', label: '流程' })
+  rows.push({ tab: 'assets', sub: '', label: '资产' })
+  for (const t of tasks.value || []) {
+    const title = taskTitle(t)
+    if (title) rows.push({ tab: 'tasks', sub: '', task: t.taskId, label: `执行批次 / ${title}` })
+  }
+  if (!q) return rows.filter((r) => !r.task)
+  return rows.filter((r) => r.label.toLowerCase().includes(q))
+})
+const navItemOn = (item) => {
+  if (item.id === 'tasks') return tab.value === 'tasks' || tab.value === 'dispatch'
+  return tab.value === item.id
+}
+const childOn = (item, child) => {
+  if (item.id === 'tasks') {
+    if (child.id === 'runs') return tab.value === 'tasks'
+    if (child.id === 'calls') return tab.value === 'dispatch'
+  }
+  return tab.value === item.id && activeSub.value === child.id
+}
+const toggleNavItem = (item) => {
+  if (!item.children?.length) {
+    setTab(item.id)
+    return
+  }
+  itemOpen.value[item.id] = !itemOpen.value[item.id]
+  if (itemOpen.value[item.id]) {
+    if (item.id === 'tasks') setTab(tab.value === 'dispatch' ? 'dispatch' : 'tasks')
+    else setTab(item.id)
+  }
+}
+const onNavChild = async (item, child) => {
+  if (item.id === 'tasks') {
+    await setTab(child.id === 'calls' ? 'dispatch' : 'tasks')
+    return
+  }
+  if (tab.value !== item.id) await setTab(item.id)
+  onSub(child.id)
+}
+const goSearchHit = async (row) => {
+  searchOpen.value = false
+  searchQ.value = ''
+  if (row.task) {
+    await onOpenTask(row.task)
+    return
+  }
+  await setTab(row.tab)
+  if (row.sub) onSub(row.sub)
+}
+const onShellSearch = () => {
+  searchOpen.value = true
+}
+const canCreate = computed(() => tab.value === 'process' || tab.value === 'tasks')
+const createTitle = computed(() => (tab.value === 'process' ? '新建需求' : '新建执行'))
+const onShellCreate = () => {
+  if (tab.value === 'process') {
+    processPanel.value?.openCreate?.()
+    return
+  }
+  if (tab.value === 'tasks') openNewRun()
+}
+watch(tab, (id) => {
+  if (id === 'dispatch') itemOpen.value.tasks = true
+  const hit = TESTING_NAV.find((n) => n.id === id)
+  if (hit?.children?.length) itemOpen.value[id] = true
+})
 const runDialogTitle = computed(() => {
   const kind = runSeed.value?.kind
   if (kind === 'req_admit') return '下发提测冒烟'
@@ -163,13 +338,30 @@ const taskEmptyText = computed(() => (tasks.value.length ? '没有符合筛选�
 const formatTaskTime = (row) => (row?.startedAt || '').replace('T', ' ').slice(5, 16) || '—'
 
 const filteredCases = computed(() => {
+  const rid = runSeed.value?.requirementId
+  let list = cases.value || []
+  if (rid) {
+    list = list.filter((c) => c.source !== 'generated' || String(c.requirement_id) === String(rid))
+  }
   const q = caseQuery.value.trim().toLowerCase()
-  if (!q) return cases.value
-  return (cases.value || []).filter((c) => {
-    const blob = `${c.case_id || ''} ${c.name || c.title || ''} ${c.platform || ''}`
+  if (!q) return list
+  return list.filter((c) => {
+    const blob = `${c.case_id || ''} ${c.name || c.title || ''} ${c.module || ''} ${c.platform || ''}`
     return blob.toLowerCase().includes(q)
   })
 })
+const moduleTreeRef = ref()
+const caseTree = computed(() => groupCasesByModuleTree(filteredCases.value))
+const syncTreeChecks = () => {
+  nextTick(() => {
+    moduleTreeRef.value?.setCheckedKeys((selectedCaseIds.value || []).filter(Boolean))
+  })
+}
+const onModuleTreeCheck = () => {
+  const nodes = moduleTreeRef.value?.getCheckedNodes(true) || []
+  selectedCaseIds.value = nodes.map((n) => n.case_id || (n.isCase ? n.id : '')).filter(Boolean)
+  selectedSuiteId.value = ''
+}
 
 const selectedDeviceKinds = computed(() => {
   const set = new Set(selectedDevices.value.map((d) => devicePlatformKind(d)).filter(Boolean))
@@ -231,54 +423,102 @@ const replaceQuery = (patch) => {
   return router.replace({ name: 'TestingApp', params: { appId: appId.value }, query: next })
 }
 
-const goTestingHome = () => router.push({ name: 'TestingHome' })
-
 const clearTask = () => {
-  taskRailOpen.value = false
+  taskRailOpen.value = true
   selectedTaskId.value = ''
   tab.value = 'tasks'
   replaceQuery({ ...baseQuery(), tab: 'tasks', task: undefined })
 }
 
+const clearDispatchCall = () => {
+  replaceQuery({ ...baseQuery(), tab: 'dispatch', call: undefined })
+}
+
 const onGoTab = (next) => {
   const raw = String(next || '')
   if (raw.startsWith('config')) {
-    const section = raw.includes(':') ? raw.split(':')[1] : 'env'
+    let section = raw.includes(':') ? raw.split(':')[1] : 'env'
+    if (section === 'flow') section = 'flow-req'
     setConfigSection(section || 'env')
     return
   }
   setTab(raw)
 }
 
+const onOpenReq = (id) => {
+  processBoard.value = 'req'
+  processId.value = String(id || '')
+  setTab('process')
+  replaceQuery({ ...baseQuery(), tab: 'process', board: 'req', pid: processId.value, task: undefined })
+}
+
+const onSub = (id) => {
+  if (tab.value === 'process') {
+    onProcessBoard(id)
+    return
+  }
+  if (tab.value === 'cases') {
+    replaceQuery({
+      ...baseQuery(),
+      tab: 'cases',
+      view: id,
+      task: undefined,
+      refsrc: id === 'library' ? route.query.refsrc : undefined,
+    })
+    return
+  }
+  if (tab.value === 'assets') {
+    replaceQuery({ ...baseQuery(), tab: 'assets', section: id, task: undefined })
+    return
+  }
+  if (tab.value === 'dispatch') {
+    replaceQuery({ ...baseQuery(), tab: 'dispatch', dview: id, task: undefined })
+    return
+  }
+  if (tab.value === 'knowledge') {
+    replaceQuery({ ...baseQuery(), tab: 'knowledge', kview: id, task: undefined })
+    return
+  }
+  if (tab.value === 'config') setConfigSection(id)
+}
+
 const setTab = async (next) => {
   const resolved = resolveTab(next)
-  // 先改本地状态 → 主区立刻切换（不等路由）
+  const keepTask = resolved === 'tasks' && tab.value === 'tasks' ? selectedTaskId.value : ''
   tab.value = resolved
-  selectedTaskId.value = ''
-  taskRailOpen.value = false
+  selectedTaskId.value = keepTask
+  taskRailOpen.value = true
   const q = {
     appName: appName.value || undefined,
     projectName: projectName.value || undefined,
     projectId: projectId.value || undefined,
     tab: resolved,
+    task: keepTask || undefined,
   }
   if (resolved === 'config') {
-    q.configSection = String(route.query.configSection || configSection.value || 'env')
+    const raw = String(route.query.configSection || configSection.value || 'env')
+    q.configSection = raw === 'flow' ? 'flow-req' : raw
   }
   if (resolved === 'process') {
     q.board = processBoard.value
     q.pid = processId.value || undefined
     loadDevices()
   }
+  if (resolved === 'cases') {
+    const rawView = String(route.query.view || 'atlas')
+    q.view = (rawView === 'sync' || rawView === 'feishu') ? 'library' : rawView
+  }
+  if (resolved === 'assets') q.section = String(route.query.section || 'accounts')
+  if (resolved === 'dispatch') q.dview = String(route.query.dview || 'pipeline')
+  if (resolved === 'knowledge') q.kview = String(route.query.kview || 'pending')
   Object.keys(q).forEach((k) => {
     if (q[k] === undefined || q[k] === null || q[k] === '') delete q[k]
   })
   try {
     await router.replace({ name: 'TestingApp', params: { appId: appId.value }, query: q })
   } catch (_) { /* ignore dup nav */ }
-  // 防止并发 replaceQuery 把旧 tab/task 写回
   tab.value = resolved
-  selectedTaskId.value = ''
+  selectedTaskId.value = keepTask
 }
 
 const onProcessBoard = (v) => {
@@ -314,7 +554,7 @@ const setConfigSection = (key) => {
 
 const selectTask = (task) => {
   if (!task?.taskId) return
-  taskRailOpen.value = false
+  taskRailOpen.value = true
   tab.value = 'tasks'
   selectedTaskId.value = task.taskId
   replaceQuery({ ...baseQuery(), tab: 'tasks', task: task.taskId, configSection: undefined })
@@ -436,8 +676,9 @@ const loadCases = async () => {
   if (!appId.value) return
   casesLoading.value = true
   try {
-    const r = await getFeishuCasesCached(appId.value, false)
-    cases.value = r?.data?.cases || []
+    const autoRes = await getAppAutomationConfig(appId.value).catch(() => null)
+    const reqs = autoRes?.data?.automation?.qa_process?.requirements || []
+    cases.value = generatedCasesFromProcess(reqs)
   } catch (_) {
     cases.value = []
   } finally {
@@ -504,7 +745,7 @@ const consumeOpenRun = async () => {
   const suiteId = String(route.query.suite || '')
   tab.value = 'tasks'
   await Promise.all([
-    cases.value.length ? Promise.resolve() : loadCases(),
+    loadCases(),
     loadDevices(),
     loadSuites(),
   ])
@@ -544,17 +785,25 @@ const consumeOpenRun = async () => {
   })
 }
 
+const mergeSeedCases = (seed) => {
+  if (seed?.generatedCases?.length) {
+    cases.value = mergeRunCases(cases.value, seed.generatedCases)
+  }
+}
+
 const openNewRun = async (seed = null) => {
   const real = seed && Array.isArray(seed.caseIds) ? seed : null
   runSeed.value = real && real.caseIds.length ? real : null
   selectedSuiteId.value = ''
   selectedCaseIds.value = runSeed.value ? [...runSeed.value.caseIds] : []
+  mergeSeedCases(runSeed.value)
   newRunVisible.value = true
   await Promise.all([
-    cases.value.length ? Promise.resolve() : loadCases(),
+    loadCases(),
     loadDevices(),
     loadSuites(),
   ])
+  mergeSeedCases(runSeed.value)
   if (runSeed.value?.caseIds?.length) selectedCaseIds.value = [...runSeed.value.caseIds]
   if (runSeed.value?.sns?.length) {
     const allowed = runSeed.value.sns.filter((sn) => devices.value.some((d) => d.sn === sn))
@@ -619,33 +868,16 @@ const submitRun = async () => {
         kind: runSeed.value.kind,
         taskId: batch,
       })
-      const seed = runSeed.value
       runSeed.value = null
-      ElMessage.success('已下发，流程单已挂上该任务')
+      ElMessage.success('已下发，单据已挂上该批次')
       await loadTasks()
-      tab.value = 'process'
-      if (seed.releaseId) {
-        processBoard.value = 'rel'
-        processId.value = seed.releaseId
-      } else if (seed.requirementId) {
-        processBoard.value = 'req'
-        processId.value = seed.requirementId
-      }
-      replaceQuery({
-        ...baseQuery(),
-        tab: 'process',
-        board: processBoard.value,
-        pid: processId.value || undefined,
-        task: undefined,
-      })
+      selectTask({ taskId: batch })
       return
     }
     runSeed.value = null
     ElMessage.success('已启动任务')
     await loadTasks()
-    tab.value = 'tasks'
-    selectedTaskId.value = batch
-    replaceQuery({ ...baseQuery(), tab: 'tasks', task: batch })
+    selectTask({ taskId: batch })
   } catch (e) {
     const busy = parseBusyConflict(e)
     if (busy.isReserved) {
@@ -680,9 +912,9 @@ const refreshLive = async () => {
 }
 
 onMounted(async () => {
-  // Redirect legacy ?tab=config&configSection=regression → ?tab=cases
-  if (route.query.tab === 'config' && (route.query.configSection === 'regression' || route.query.configSection === 'icons')) {
-    const nextTab = route.query.configSection === 'regression' ? 'cases' : 'config'
+  // Redirect legacy config sections that used to host Feishu case sync.
+  if (route.query.tab === 'config' && ['regression', 'icons', 'cases', 'feishu-legacy'].includes(String(route.query.configSection || ''))) {
+    const nextTab = route.query.configSection === 'icons' ? 'config' : 'cases'
     tab.value = nextTab
     replaceQuery({ ...baseQuery(), tab: nextTab, configSection: nextTab === 'config' ? 'env' : undefined })
   }
@@ -730,88 +962,75 @@ watch(() => runForm.value.sns, (sns) => {
 }, { deep: true })
 
 watch(newRunVisible, (open) => {
+  if (open) syncTreeChecks()
   if (!open && !submitting.value) runSeed.value = null
+})
+watch(selectedCaseIds, () => {
+  if (newRunVisible.value) syncTreeChecks()
 })
 </script>
 
 <template>
-  <WorkShell mode="testing">
+  <WorkShell mode="testing" :create-title="createTitle" :show-create="canCreate" @search="onShellSearch" @create="onShellCreate">
     <template #sidebar>
-      <div class="side-current">
-        <strong>{{ appName }}</strong>
-        <small>{{ projectName || '未命名项目' }}</small>
-      </div>
+      <el-dropdown trigger="click" @command="onProjectChange">
+        <button type="button" class="nav-workspace">
+          <span class="nav-workspace-avatar">{{ workspaceInitial }}</span>
+          <div>
+            <strong>{{ workspaceLabel }}</strong>
+            <small>{{ appName }}</small>
+          </div>
+          <span class="nav-workspace-caret">▾</span>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="p in projects" :key="p.id" :command="p.id">{{ p.name }}</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
 
-      <nav class="side-actions" aria-label="应用快捷操作">
-        <button
-          type="button"
-          class="side-action"
-          :class="{ on: tab === 'process' }"
-          @click.prevent.stop="setTab('process')"
-        >
-          <span class="side-action-icon">📌</span>
-          流程
-        </button>
-        <button
-          type="button"
-          class="side-action"
-          :class="{ on: tab === 'tasks' }"
-          @click.prevent.stop="setTab('tasks')"
-        >
-          <span class="side-action-icon">📋</span>
-          任务
-        </button>
-        <button
-          type="button"
-          class="side-action"
-          :class="{ on: tab === 'cases' }"
-          @click.prevent.stop="setTab('cases')"
-        >
-          <span class="side-action-icon">📖</span>
-          用例
-        </button>
-        <button
-          type="button"
-          class="side-action"
-          :class="{ on: tab === 'knowledge' }"
-          @click.prevent.stop="setTab('knowledge')"
-        >
-          <span class="side-action-icon">💡</span>
-          知识
-        </button>
-        <button
-          type="button"
-          class="side-action"
-          :class="{ on: tab === 'config' }"
-          @click.prevent.stop="setTab('config')"
-        >
-          <span class="side-action-icon">⚙️</span>
-          配置
-        </button>
+      <nav class="side-actions" aria-label="项目导航">
+        <template v-for="item in TESTING_NAV" :key="item.id">
+          <div :class="{ 'nav-config-block': item.id === 'config' }">
+            <button
+              type="button"
+              class="nav-item"
+              :class="{ on: navItemOn(item) }"
+              @click="toggleNavItem(item)"
+            >
+              <span class="nav-dot" :style="{ background: item.color || '#64748b' }">{{ item.icon || item.label.slice(0, 1) }}</span>
+              {{ item.label }}
+              <i
+                v-if="item.children?.length"
+                class="nav-caret nav-item-caret"
+                :class="{ 'is-closed': !itemOpen[item.id] }"
+              />
+            </button>
+            <div v-if="item.children?.length && itemOpen[item.id]" class="nav-children">
+              <button
+                v-for="child in item.children"
+                :key="child.id"
+                type="button"
+                class="nav-child"
+                :class="{ on: childOn(item, child) }"
+                @click="onNavChild(item, child)"
+              >
+                {{ child.label }}
+              </button>
+            </div>
+          </div>
+        </template>
       </nav>
     </template>
 
     <div class="testing-workspace">
-      <header class="ws-top">
-        <nav class="crumbs" aria-label="面包屑">
-          <button type="button" class="crumb link" @click="goTestingHome">全部应用</button>
-          <span class="sep">/</span>
+      <header v-if="showTopBar" class="ws-top">
+        <div class="ws-actions">
           <el-select
-            class="crumb-select"
-            :model-value="projectId"
-            placeholder="项目"
-            size="small"
-            filterable
-            style="width: 140px"
-            @change="onProjectChange"
-          >
-            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
-          <span class="sep">/</span>
-          <el-select
+            v-if="appsInProject.length > 1"
             class="crumb-select"
             :model-value="appId"
-            placeholder="应用"
+            placeholder="筛选端"
             size="small"
             filterable
             style="width: 160px"
@@ -819,10 +1038,6 @@ watch(newRunVisible, (open) => {
           >
             <el-option v-for="a in appsInProject" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
-          <span class="page-title">{{ tabLabel }}</span>
-        </nav>
-
-        <div class="ws-actions">
           <template v-if="tab === 'tasks' && hasDetail">
             <el-button text @click="toggleTaskRail">
               {{ taskRailOpen ? '折叠任务列表' : '展开任务列表' }}
@@ -841,8 +1056,8 @@ watch(newRunVisible, (open) => {
         <div class="settings-panel task-list-page">
           <header class="settings-page-header">
             <div>
-              <h2 class="settings-page-title">任务列表</h2>
-              <p class="settings-page-desc">按状态、设备、时间筛选执行记录，点击一行打开详情。</p>
+              <h2 class="settings-page-title">执行批次</h2>
+              <p class="settings-page-desc">一次下发是一批。按状态、设备、时间筛选，点击一行打开详情。</p>
             </div>
             <div
               class="settings-summary-pill"
@@ -851,7 +1066,7 @@ watch(newRunVisible, (open) => {
           </header>
           <section class="settings-table-card is-fill">
             <div class="col-head">
-              <h3>全部任务</h3>
+              <h3>全部批次</h3>
               <div class="col-actions">
                 <el-select v-model="taskFilter" size="small" class="filter-item">
                   <el-option label="全部状态" value="all" />
@@ -1026,13 +1241,34 @@ watch(newRunVisible, (open) => {
             :app-id="appId"
             :seed="selectedTask"
             @open-task="onOpenTask"
-          />
+          >
+            <template #actions>
+              <el-select
+                v-if="appsInProject.length > 1"
+                class="crumb-select"
+                :model-value="appId"
+                placeholder="筛选端"
+                size="small"
+                filterable
+                style="width: 140px"
+                @change="onAppChange"
+              >
+                <el-option v-for="a in appsInProject" :key="a.id" :label="a.name" :value="a.id" />
+              </el-select>
+              <el-button text @click="toggleTaskRail">
+                {{ taskRailOpen ? '折叠任务列表' : '展开任务列表' }}
+              </el-button>
+              <el-button text @click="clearTask">收起详情</el-button>
+              <el-button v-if="!showTaskRail" type="primary" @click="openNewRun">新建执行</el-button>
+            </template>
+          </TaskDetailPane>
         </section>
       </div>
 
       <div v-else-if="tab === 'process'" class="ws-config fill">
         <QaProcessPanel
           ref="processPanel"
+          hide-nav
           :app-id="appId"
           :app-name="appName"
           :cases="cases"
@@ -1050,22 +1286,40 @@ watch(newRunVisible, (open) => {
         />
       </div>
 
+      <div v-else-if="tab === 'dispatch'" class="ws-config fill">
+        <DispatchJobPage
+          v-if="dispatchCallId"
+          embedded
+          :call-id="dispatchCallId"
+          :app-id="appId"
+          @back="clearDispatchCall"
+        />
+        <DispatchPage v-else embedded hide-nav :app-id="appId" :view="activeSub" />
+      </div>
+
       <div v-else-if="tab === 'cases'" class="ws-config fill">
-        <FeishuRegressionPanel
+        <CasesWorkbench
+          hide-nav
           :app-id="appId"
           :app-name="appName"
           :project-id="projectId"
           :project-name="projectName"
+          @open-req="onOpenReq"
         />
       </div>
 
       <div v-else-if="tab === 'knowledge'" class="ws-config fill">
-        <KnowledgePanel embedded app-only :app-id="appId" :app-name="appName" />
+        <KnowledgePanel embedded hide-nav app-only :app-id="appId" :app-name="appName" :review-filter="activeSub" />
+      </div>
+
+      <div v-else-if="tab === 'assets'" class="ws-config fill">
+        <AssetsPage hide-nav :project-id="projectId" :project-name="projectName" :section="activeSub" />
       </div>
 
       <div v-else class="ws-config">
         <AppConfigPage
           embedded
+          hide-nav
           :embed-app-id="appId"
           :embed-app-name="appName"
           :embed-project-id="projectId"
@@ -1073,11 +1327,34 @@ watch(newRunVisible, (open) => {
           :embed-section="configSection"
           :hide-sections="['regression', 'logic', 'cases', 'feishu-legacy', 'icons']"
           @update:embed-section="setConfigSection"
+          @go-tab="onGoTab"
         />
       </div>
     </div>
 
-    <el-dialog v-model="newRunVisible" :title="runDialogTitle" width="640px" append-to-body class="new-run-dialog">
+    <el-dialog v-model="searchOpen" title="搜索" width="420px" class="mo-fit-dialog" align-center append-to-body @opened="() => {}">
+      <el-input
+        v-model="searchQ"
+        placeholder="流程、用例、配置…"
+        clearable
+        autofocus
+        @keyup.enter="searchHits[0] && goSearchHit(searchHits[0])"
+      />
+      <div class="search-hits">
+        <button
+          v-for="row in searchHits"
+          :key="`${row.tab}-${row.sub}`"
+          type="button"
+          class="search-hit"
+          @click="goSearchHit(row)"
+        >
+          {{ row.label }}
+        </button>
+        <p v-if="!searchHits.length" class="muted">没有匹配的入口</p>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="newRunVisible" :title="runDialogTitle" width="720px" append-to-body align-center class="new-run-dialog mo-fit-dialog">
       <div class="form">
         <div class="field">
           <label>设备（可多选，仅在线可执行）</label>
@@ -1180,28 +1457,33 @@ watch(newRunVisible, (open) => {
         </div>
         <div class="field">
           <div class="case-head">
-            <label>用例（可多选）{{ selectedCaseIds.length ? ` · 已选 ${selectedCaseIds.length}` : '' }}</label>
+            <label>按模块勾选用例{{ selectedCaseIds.length ? ` · 已选 ${selectedCaseIds.length}` : '' }}</label>
             <span class="case-head-actions">
               <el-button size="small" text @click="selectAllVisibleCases">全选当前列表</el-button>
               <el-button size="small" text :disabled="!selectedCaseIds.length" @click="clearSelectedCases">清空</el-button>
             </span>
           </div>
+          <p class="hint">用例来自流程草稿，按需求挂在「本需求生成」下。勾选父模块会带上它下面全部用例。</p>
           <el-input
             v-if="cases.length > 8"
             v-model="caseQuery"
             size="small"
             clearable
-            placeholder="搜索编号或名称"
+            placeholder="搜索编号、名称或模块"
             class="case-search"
           />
           <div class="cases">
-            <el-checkbox-group v-model="selectedCaseIds">
-              <el-checkbox v-for="c in filteredCases" :key="c.case_id" :value="c.case_id" class="case">
-                {{ c.case_id }} · {{ c.name || c.title || '' }}
-                <small v-if="c.platform" class="case-plat">{{ c.platform }}</small>
-              </el-checkbox>
-            </el-checkbox-group>
-            <el-empty v-if="!cases.length && !casesLoading" description="未拉到用例，请先在配置 → 用例来源中抓取" :image-size="50" />
+            <el-tree
+              v-if="caseTree.length"
+              ref="moduleTreeRef"
+              :data="caseTree"
+              node-key="id"
+              show-checkbox
+              default-expand-all
+              :props="{ label: 'label', children: 'children' }"
+              @check="onModuleTreeCheck"
+            />
+            <el-empty v-else-if="!cases.length && !casesLoading" description="还没有用例。评审通过后会在流程里生成。" :image-size="50" />
             <p v-else-if="caseQuery && !filteredCases.length" class="hint">没有匹配的用例</p>
           </div>
         </div>
@@ -1212,7 +1494,6 @@ watch(newRunVisible, (open) => {
         </p>
         <div class="field opts">
           <el-checkbox v-model="runForm.use_persisted_baseline">沿用上次成功路径</el-checkbox>
-          <el-checkbox v-model="runForm.use_cache">不重新拉飞书表格</el-checkbox>
         </div>
       </div>
       <template #footer>
@@ -1226,25 +1507,47 @@ watch(newRunVisible, (open) => {
 </template>
 
 <style scoped>
-.side-current {
-  padding: 12px 10px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.side-current strong { font-size: 13px; color: #111827; }
-.side-current small { font-size: 11px; color: #94a3b8; }
 .side-actions {
   position: relative;
   z-index: 40;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 4px 8px;
+  gap: 0;
+  padding: 0 0 8px;
   pointer-events: auto;
   -webkit-app-region: no-drag;
-  flex-shrink: 0;
+  min-height: 0;
 }
+.nav-config-block {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+:deep(.el-dropdown) {
+  width: 100%;
+  display: block;
+}
+.search-hits {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-hit {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #111827;
+}
+.search-hit:hover { background: #f3f4f6; }
+.muted { font-size: 12px; color: #94a3b8; }
 .side-action {
   width: 100%;
   border: 1px solid transparent;
@@ -1311,14 +1614,14 @@ watch(newRunVisible, (open) => {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  padding: 14px 18px 16px;
+  padding: 8px 10px 10px;
   box-sizing: border-box;
   overflow: hidden;
 }
 .ws-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 12px;
@@ -1342,7 +1645,6 @@ watch(newRunVisible, (open) => {
 .crumb.muted { color: #6b7280; cursor: default; }
 .crumb.mono { font-family: ui-monospace, monospace; }
 .page-title {
-  margin-left: 8px;
   font-size: 14px;
   font-weight: 700;
   color: #111827;
@@ -1463,7 +1765,7 @@ watch(newRunVisible, (open) => {
   border: 1px solid #e3e8f0;
   border-radius: 16px;
   background: #fff;
-  padding: 12px 16px;
+  padding: 10px 12px 8px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
   box-sizing: border-box;
 }
@@ -1476,6 +1778,12 @@ watch(newRunVisible, (open) => {
   flex: 1;
   min-height: 0;
   height: 100%;
+}
+.ws-config.fill :deep(.settings-table-card) {
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
 }
 .coverage-pick {
   display: grid;
@@ -1516,7 +1824,7 @@ watch(newRunVisible, (open) => {
 .case-head label { margin-bottom: 0; }
 .case-head-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .case-plat { margin-left: 6px; color: #94a3b8; font-size: 11px; }
-.cases { max-height: 240px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+.cases { max-height: 320px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
 .case { display: block; margin: 0 0 6px; }
 .opts { display: flex; gap: 16px; flex-wrap: wrap; }
 .suite-pick { display: flex; align-items: center; gap: 8px; }

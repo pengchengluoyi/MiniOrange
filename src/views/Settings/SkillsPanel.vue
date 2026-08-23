@@ -207,7 +207,7 @@ onMounted(load)
 
     <!-- Server：分组简洁列表 -->
     <template v-else>
-      <p v-if="!keyword.trim()" class="server-hint">以下由 Copilot / 飞书回归自动调用，无需手写 nodeCode。</p>
+      <p v-if="!keyword.trim()" class="server-hint">以下由 Copilot / 回归执行自动调用，无需手写 nodeCode。</p>
 
       <div v-if="!filteredServerGroups.length && !loading" class="empty">无匹配</div>
 

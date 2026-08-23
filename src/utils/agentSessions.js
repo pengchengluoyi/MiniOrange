@@ -1,4 +1,7 @@
+import { listAgentSessions, saveAgentSessions } from '@/api/auth'
+
 const STORAGE_KEY = 'miniorange_agent_sessions'
+let pushTimer = null
 
 export const readAgentSessions = () => {
   try {
@@ -11,8 +14,52 @@ export const readAgentSessions = () => {
   }
 }
 
+const mergeSessions = (localRows = [], remoteRows = []) => {
+  const map = new Map()
+  for (const row of [...remoteRows, ...localRows]) {
+    if (!row?.id) continue
+    const prev = map.get(row.id)
+    if (!prev || new Date(row.updatedAt || 0) >= new Date(prev.updatedAt || 0)) {
+      map.set(row.id, row)
+    }
+  }
+  return [...map.values()].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))
+}
+
 export const writeAgentSessions = (sessions) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions))
+  if (pushTimer) clearTimeout(pushTimer)
+  pushTimer = setTimeout(() => {
+    saveAgentSessions(sessions).catch(() => { /* 未登录或离线时只留本机 */ })
+  }, 400)
+}
+
+const pickRemoteSessions = (res) => {
+  if (Array.isArray(res?.data?.sessions)) return res.data.sessions
+  if (Array.isArray(res?.sessions)) return res.sessions
+  if (Array.isArray(res?.data)) return res.data
+  return []
+}
+
+export const pullAgentSessions = async () => {
+  try {
+    const remote = pickRemoteSessions(await listAgentSessions())
+    if (!remote.length) {
+      const local = readAgentSessions()
+      if (local.length) await saveAgentSessions(local).catch(() => {})
+      return local
+    }
+    const merged = mergeSessions(readAgentSessions(), remote)
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged))
+    } catch (e) {
+      console.warn('cache agent sessions failed', e)
+    }
+    return merged
+  } catch (e) {
+    console.warn('pull agent sessions failed', e)
+    return readAgentSessions()
+  }
 }
 
 export const createAgentSession = () => {

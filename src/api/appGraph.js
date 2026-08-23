@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { getBaseUrl } from '@/utils/config'
 
 // --- App Graph API (适配 Python rAppGraph.py) ---
 
@@ -57,14 +58,11 @@ export const addEmptyNode = (data) => {
   })
 }
 
-// 7. 上传截图
-// 注意：后端需要提供对应的 /upload/image 接口，或者在 rAppGraph.py 中添加
 export const uploadSnapshot = (blob) => {
   const formData = new FormData()
-  // 文件名带上时间戳
   formData.append('file', blob, `snapshot-${Date.now()}.png`)
   return request({
-    url: '/upload/image', // 请确保后端有此接口，或修改为实际上传接口
+    url: '/file/upload',
     method: 'post',
     data: formData,
     headers: {
@@ -73,12 +71,9 @@ export const uploadSnapshot = (blob) => {
   })
 }
 
-// 8. 获取图片完整 URL
 export const getImageUrl = (path) => {
   if (!path) return ''
   if (path.startsWith('http') || path.startsWith('blob:')) return path
-  
-  // 假设后端静态资源映射为 /uploads/
-  // 请根据实际后端 StaticFiles 配置调整
-  return `${import.meta.env.VITE_API_BASE_URL || ''}/uploads/${path}`
+  const rel = path.startsWith('/') ? path : `/file/${path}`
+  return `${getBaseUrl()}${rel}`
 }

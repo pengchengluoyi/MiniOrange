@@ -11,15 +11,22 @@ function stripNumberPrefix(s) {
 /** 执行结果行与缓存用例行字段名不一致时统一结构 */
 export function normalizeCaseRow(row) {
   const r = row || {}
+  const stepList = Array.isArray(r.steps) ? r.steps : (Array.isArray(r.step_lines) ? r.step_lines : [])
+  const expectedList = Array.isArray(r.expected) ? r.expected : (Array.isArray(r.expected_lines) ? r.expected_lines : [])
+  const stepsRaw = r.steps_raw
+    || (typeof r.steps === 'string' ? r.steps : '')
+    || (typeof r.step === 'string' ? r.step : '')
+  const expectedRaw = r.expected_raw
+    || (typeof r.expected === 'string' ? r.expected : '')
   return {
     ...r,
-    steps: r.steps || r.step_lines || [],
-    expected: r.expected || r.expected_lines || [],
+    steps: stepList,
+    expected: expectedList,
     step_nums: r.step_nums || [],
     expected_nums: r.expected_nums || [],
     expected_by_step: r.expected_by_step || {},
-    steps_raw: r.steps_raw || '',
-    expected_raw: r.expected_raw || '',
+    steps_raw: stepsRaw,
+    expected_raw: expectedRaw,
     precondition: r.precondition || r.precondition_raw || '',
   }
 }
@@ -63,7 +70,9 @@ export function caseFieldLines(row, { listKey, rawKey, numsKey }) {
     }
     return list.map((text, i) => ({ num: i + 1, text: stripNumberPrefix(text) }))
   }
-  const raw = normalized?.[rawKey] ?? ''
+  const raw = normalized?.[rawKey]
+    || (typeof list === 'string' ? list : '')
+    || ''
   const parts = splitNumberedLines(raw)
   return parts.map((text, i) => ({ num: i + 1, text }))
 }

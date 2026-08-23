@@ -11,6 +11,9 @@ import '@vue-flow/core/dist/theme-default.css'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import './global-loading.css'
+import './styles/overlay.css'
+import { installOverlayDefaults } from './utils/overlay'
+import PayloadView from './components/PayloadView.vue'
 
 // 初始化服务配置
 initServiceConfig().then((host) => {
@@ -23,4 +26,6 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router) // 🔥 新增：挂载路由
 app.use(ElementPlus)
+app.component('PayloadView', PayloadView)
+installOverlayDefaults()
 app.mount('#app')

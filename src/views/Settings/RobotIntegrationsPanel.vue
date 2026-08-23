@@ -8,6 +8,10 @@ import {
   deleteRobotIntegration,
 } from '@/api/settings'
 
+const props = defineProps({
+  platform: { type: String, default: '' },
+})
+
 const loading = ref(false)
 const saving = ref(false)
 const bots = ref([])
@@ -23,15 +27,19 @@ const platforms = [
     name: '飞书',
     status: '已支持',
     color: '#2563eb',
-    desc: '读取多维表格/电子表格，用于回归用例、报告通知和执行结果同步。',
+    desc: '群通知和收发消息。对话 / 提缺陷的 prompt 在角色里改。用例存在 MiniOrange。',
     fields: [
       { key: 'app_id', label: 'App ID', placeholder: 'cli_xxxxxxxx', required: true },
       { key: 'app_secret', label: 'App Secret', placeholder: '应用凭证 Secret', required: true, secret: true },
+      { key: 'verification_token', label: 'Verification Token', placeholder: '事件订阅 Verification Token，可选', secret: true },
+      { key: 'encrypt_key', label: 'Encrypt Key', placeholder: '事件订阅 Encrypt Key，开启加密时必填', secret: true },
     ],
     docs: [
       '进入飞书开放平台，创建企业自建应用。',
       '复制 App ID 和 App Secret 填入这里。',
-      '按实际用途申请表格读取、消息发送等权限，并发布应用。',
+      '要在群里对话：权限加 im:message，事件订阅 im.message.receive_v1。',
+      '事件订阅方式选「使用长连接接收事件」。先开着 MiniOrange 再在飞书后台保存。',
+      '不要把 http://127.0.0.1:10104 填成请求网址，飞书云访问不到你的电脑。',
     ],
   },
   {
@@ -86,6 +94,13 @@ const platforms = [
 ]
 
 const selectedPlatformMeta = computed(() => platforms.find((p) => p.id === selectedPlatform.value) || platforms[0])
+const compact = computed(() => Boolean(props.platform))
+const visiblePlatforms = computed(() => (
+  props.platform ? platforms.filter((p) => p.id === props.platform) : platforms
+))
+const visibleBots = computed(() => (
+  props.platform ? bots.value.filter((b) => b.platform === props.platform) : bots.value
+))
 
 const platformCount = (platform) => bots.value.filter((b) => b.platform === platform).length
 
@@ -101,7 +116,7 @@ const load = async () => {
   }
 }
 
-const openCreate = (platform = 'lark') => {
+const openCreate = (platform = props.platform || 'lark') => {
   editingId.value = ''
   selectedPlatform.value = platform
   form.value = { name: '', credentials: {} }
@@ -168,14 +183,17 @@ const remove = async (row) => {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  if (props.platform) selectedPlatform.value = props.platform
+  load()
+})
 </script>
 
 <template>
   <div class="robot-panel">
-    <div class="platform-grid">
+    <div v-if="!compact" class="platform-grid">
       <article
-        v-for="p in platforms"
+        v-for="p in visiblePlatforms"
         :key="p.id"
         class="platform-card"
         :style="{ '--brand': p.color }"
@@ -202,11 +220,17 @@ onMounted(load)
 
     <section class="table-card">
       <div class="table-title">
-        <h3>已配置机器人</h3>
-        <span>当前可用于用例读取与消息通知</span>
+        <div>
+          <h3>已配置{{ compact ? selectedPlatformMeta.name : '机器人' }}</h3>
+          <span>{{ compact ? '凭证给本插件的能力共用' : '当前用于消息通知，不读取外部用例表' }}</span>
+        </div>
+        <button v-if="compact" type="button" class="settings-action-pill" @click="openCreate()">
+          添加 {{ selectedPlatformMeta.name }}
+          <span class="settings-action-arrow">→</span>
+        </button>
       </div>
-      <el-table v-loading="loading" :data="bots" empty-text="暂无机器人，请先选择上方平台添加">
-        <el-table-column label="平台" width="110">
+      <el-table v-loading="loading" :data="visibleBots" empty-text="暂无凭证，请先添加">
+        <el-table-column v-if="!compact" label="平台" width="110">
           <template #default="{ row }">{{ platformName(row.platform) }}</template>
         </el-table-column>
         <el-table-column prop="name" label="名称" min-width="140" />
@@ -361,6 +385,10 @@ onMounted(load)
 }
 
 .table-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 12px;
 }
 </style>

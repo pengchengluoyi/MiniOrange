@@ -45,6 +45,9 @@ export const deleteKnowledgeItem = (id) =>
 export const reviewKnowledgeItem = (id, data) =>
   request({ url: `/settings/knowledge/${encodeURIComponent(id)}/review`, method: 'post', data })
 
+export const autoReviewKnowledge = (appId = '') =>
+  request({ url: '/settings/knowledge/auto-review', method: 'post', data: { app_id: appId || '' }, timeout: 180000 })
+
 export const analyzeFailureKnowledge = (data) =>
   request({ url: '/settings/knowledge/analyze-failure', method: 'post', data })
 
@@ -63,6 +66,39 @@ export const saveFigmaSettings = (data) =>
 export const testFigmaToken = (accessToken = '') =>
   request({ url: '/settings/figma/test', method: 'post', data: { access_token: accessToken } })
 
+export const getMailSettings = () =>
+  request({ url: '/settings/mail', method: 'get' })
+
+export const saveMailSettings = (data) =>
+  request({ url: '/settings/mail', method: 'put', data })
+
+export const testMailSettings = (to = '') =>
+  request({ url: '/settings/mail/test', method: 'post', data: { to }, timeout: 25000 })
+
+export const listPlugins = () =>
+  request({ url: '/settings/plugins', method: 'get' })
+
+export const getPlugin = (pluginId) =>
+  request({ url: `/settings/plugins/${pluginId}`, method: 'get' })
+
+export const savePlugin = (pluginId, data) =>
+  request({ url: `/settings/plugins/${pluginId}`, method: 'put', data })
+
+export const chatPlugin = (pluginId, data) =>
+  request({ url: `/settings/plugins/${pluginId}/chat`, method: 'post', data, timeout: 120000 })
+
+export const syncFeishuListener = () =>
+  request({ url: '/settings/plugins/feishu/listener/sync', method: 'post', timeout: 20000 })
+
+export const testZentaoPlugin = (data = {}) =>
+  request({ url: '/settings/plugins/zentao/test', method: 'post', data, timeout: 20000 })
+
+export const fetchZentaoToken = (data = {}) =>
+  request({ url: '/settings/plugins/zentao/token', method: 'post', data, timeout: 20000 })
+
+export const testZentaoBug = (data = {}) =>
+  request({ url: '/settings/plugins/zentao/bugs/test', method: 'post', data, timeout: 20000 })
+
 export const getSkillsCatalog = () =>
   request({ url: '/settings/skills', method: 'get' })
 
@@ -80,6 +116,21 @@ export const saveAIUsage = (data) =>
 
 export const getAIPlanPrompt = () =>
   request({ url: '/settings/ai/plan-prompt', method: 'get' })
+
+export const listAIRoles = () =>
+  request({ url: '/settings/ai/roles', method: 'get' })
+
+export const chatAIRole = (data) =>
+  request({ url: '/settings/ai/roles/chat', method: 'post', data, timeout: 120000 })
+
+export const saveRolePrompt = (roleId, data) =>
+  request({ url: `/settings/ai/roles/${roleId}/prompt`, method: 'put', data })
+
+export const listDispatchCalls = (params = {}) =>
+  request({ url: '/settings/dispatch', method: 'get', params })
+
+export const getDispatchCall = (id) =>
+  request({ url: `/settings/dispatch/${id}`, method: 'get' })
 
 /** 系统设置 - ClawNode 日志存储目录 */
 export const getClawnodeLogsDir = () =>

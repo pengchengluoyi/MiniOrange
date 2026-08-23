@@ -7,7 +7,7 @@ import { VueFlow, MarkerType, Handle, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { addMessageListener, removeMessageListener, sendWsRequest } from '@/api/mWebSocket'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
-import { getNodeStatus, updateConfig } from '@/api/system'
+import { getNodeStatus, getRuntimeStatusHttp, updateConfig } from '@/api/system'
 import { getDeviceList, sendCommand, setDevicePassword } from '@/api/device'
 import { getBaseUrl, savePairedGateway, getPairedGatewayDisplay } from '@/utils/config'
 import { dedupeDevicesForUi, applyStableDeviceOrder, applyOnlineStatusGrace } from '@/utils/devices'
@@ -595,10 +595,26 @@ const handleScrcpy = (row) => {
 const discoverGateways = async () => {
   discoveringGateways.value = true
   try {
-    discoveredGateways.value = await window.electronAPI?.discoverGateways?.() || []
-    selectedGateway.value = discoveredGateways.value[0] || null
+    let rows = []
+    if (window.electronAPI?.discoverGateways) {
+      rows = await window.electronAPI.discoverGateways() || []
+    }
+    if (!rows.length) {
+      const rt = runtime.value || (await getRuntimeStatusHttp())?.data
+      rows = (rt?.endpoints || []).map((item) => ({
+        displayName: item.name || item.url,
+        url: item.url,
+        host: item.lanHost || item.localIp || item.name,
+        wsUrl: item.wsUrl,
+        httpUrl: item.url,
+        instanceId: item.instanceId || item.name,
+        online: item.online,
+      }))
+    }
+    discoveredGateways.value = rows
+    selectedGateway.value = rows[0] || null
     gatewayDialogVisible.value = true
-    if (!discoveredGateways.value.length) {
+    if (!rows.length) {
       ElMessage.warning('未发现局域网网关，请确认 MiniOrangeServer 已启动')
     }
   } catch (e) {
@@ -731,17 +747,19 @@ const confirmPairGateway = async () => {
   }
   pairingGateway.value = true
   try {
-    const token = localStorage.getItem('ws_token') || ''
-    const result = await window.electronAPI?.pairGateway?.({
-      host: gateway.host,
-      wsUrl: gateway.wsUrl,
-      httpUrl: gateway.httpUrl,
-      gatewayId: gateway.instanceId,
-      displayName: gateway.displayName,
-    })
-    if (!result?.success) {
-      ElMessage.error('网关不可达，请检查网络或服务端状态')
-      return
+    const token = localStorage.getItem('ws_token') || localStorage.getItem('token') || ''
+    if (window.electronAPI?.pairGateway) {
+      const result = await window.electronAPI.pairGateway({
+        host: gateway.host,
+        wsUrl: gateway.wsUrl,
+        httpUrl: gateway.httpUrl,
+        gatewayId: gateway.instanceId,
+        displayName: gateway.displayName,
+      })
+      if (!result?.success) {
+        ElMessage.error('网关不可达，请检查网络或服务端状态')
+        return
+      }
     }
     savePairedGateway({
       host: gateway.host,
@@ -776,16 +794,30 @@ const fetchDeviceList = async () => {
   }
 }
 
+const fetchRuntime = async () => {
+  if (window.electronAPI?.getRuntimeStatus) {
+    try {
+      return await window.electronAPI.getRuntimeStatus()
+    } catch (_) { /* 网页或 IPC 失败时走 HTTP */ }
+  }
+  const res = await getRuntimeStatusHttp()
+  return res?.data || null
+}
+
+const isWebClient = computed(() => !window.electronAPI)
+const clientOrigin = computed(() => getBaseUrl() || (typeof window !== 'undefined' ? window.location.origin : ''))
+
 const load = async ({ silent = false } = {}) => {
   if (!silent) loading.value = true
   try {
-    const [runtimeRes, nodeRes, deviceRes] = await Promise.allSettled([
-      window.electronAPI?.getRuntimeStatus?.(),
+    const [runtimeRes, nodeRes] = await Promise.allSettled([
+      fetchRuntime(),
       getNodeStatus(),
       fetchDeviceList(),
     ])
     runtime.value = runtimeRes.status === 'fulfilled' ? runtimeRes.value : null
-    nodeStatus.value = nodeRes.status === 'fulfilled' ? nodeRes.value?.data : null
+    const wsNode = nodeRes.status === 'fulfilled' ? nodeRes.value?.data : null
+    nodeStatus.value = wsNode || runtime.value?.node || null
     lastUpdated.value = new Date().toLocaleTimeString()
   } catch (e) {
     ElMessage.error(e?.message || '状态刷新失败')
@@ -838,10 +870,11 @@ onUnmounted(() => {
           <el-icon class="status-icon electron"><Monitor /></el-icon>
           <div>
             <div class="status-title-row">
-              <h3>Electron 应用</h3>
-              <el-tag :type="statusType(runtime?.electron?.online)" size="small">{{ statusText(runtime?.electron?.online) }}</el-tag>
+              <h3>{{ isWebClient ? '网页' : 'Electron 应用' }}</h3>
+              <el-tag :type="statusType(isWebClient || runtime?.electron?.online)" size="small">{{ statusText(isWebClient || runtime?.electron?.online) }}</el-tag>
             </div>
-            <p>PID {{ runtime?.electron?.pid || '—' }} · v{{ runtime?.electron?.version || '—' }} · {{ runtime?.electron?.platform || '—' }}</p>
+            <p v-if="isWebClient">浏览器访问本机 Server · {{ clientOrigin }}</p>
+            <p v-else>PID {{ runtime?.electron?.pid || '—' }} · v{{ runtime?.electron?.version || '—' }} · {{ runtime?.electron?.platform || '—' }}</p>
           </div>
         </article>
 

@@ -1,6 +1,7 @@
 // src/utils/request.js
 import axios from 'axios'
-import { getBaseUrl } from '@/utils/config'
+import { getBaseUrl, usesWebProxy } from '@/utils/config'
+import { disconnectWebSocket } from '@/api/mWebSocket'
 
 let determinedBaseUrl = null
 let checkPromise = null
@@ -28,14 +29,9 @@ const service = axios.create({
 // --- 请求拦截器 ---
 service.interceptors.request.use(
   async config => {
-    // 如果已经确定了可用地址，直接使用
-    if (determinedBaseUrl) {
-      config.baseURL = determinedBaseUrl
-      return config
-    }
-
-    // 如果没有配置环境变量，且还没探测过，则进行探测
-    if (!import.meta.env.VITE_API_URL) {
+    if (usesWebProxy()) {
+      determinedBaseUrl = ''
+    } else if (!determinedBaseUrl && !import.meta.env.VITE_API_URL) {
       if (!checkPromise) {
         checkPromise = (async () => {
           const candidates = [
@@ -47,7 +43,6 @@ service.interceptors.request.use(
             'https://miniorange.local:10104',
           ]
 
-          // 自动探测当前域名 (适配 miniorange-xxx.local 这种 mDNS 访问场景)
           const hostname = window.location.hostname
           if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
             candidates.push(`https://${hostname}:10104`)
@@ -55,18 +50,18 @@ service.interceptors.request.use(
           }
 
           for (const url of candidates) {
-            console.log(`[API] Probing ${url}...`)
-            if (await checkUrl(url)) {
-                console.log(`[API] Found active server: ${url}`)
-                return url
-            }
+            if (await checkUrl(url)) return url
           }
-          console.warn('[API] No active server found, falling back to default.')
-          return getBaseUrl() // 兜底
+          return getBaseUrl()
         })()
       }
       determinedBaseUrl = await checkPromise
-      config.baseURL = determinedBaseUrl
+    }
+    if (determinedBaseUrl) config.baseURL = determinedBaseUrl
+    const token = localStorage.getItem('token')
+    if (token) {
+      config.headers = config.headers || {}
+      config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },
@@ -82,7 +77,20 @@ service.interceptors.response.use(
     return res
   },
   error => {
-    console.error('请求错误:', error) // for debug
+    console.error('请求错误:', error)
+    const status = error?.response?.status
+    const url = String(error?.config?.url || '')
+    const skipAuth = /\/auth\/(login|register|send-code|status)/.test(url)
+    if (status === 401 && !skipAuth) {
+      try {
+        localStorage.removeItem('token')
+        localStorage.removeItem('ws_token')
+      } catch (_) { /* ignore */ }
+      disconnectWebSocket()
+      if (typeof window !== 'undefined' && !String(window.location.hash || '').includes('/login')) {
+        window.location.hash = '#/login'
+      }
+    }
     return Promise.reject(error)
   }
 )

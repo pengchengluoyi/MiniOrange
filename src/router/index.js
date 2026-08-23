@@ -1,18 +1,13 @@
 // src/router/index.js
 import {createRouter, createWebHashHistory} from 'vue-router'
-import { getNodeStatus } from '@/api/system'
+import { getAuthStatus } from '@/api/auth'
 import { useAppStore } from '@/store/appStore'
 import { ElMessageBox } from 'element-plus'
 import { clearTitlebar } from '@/composables/useTitlebar'
-import ResourceList from '../views/ResourceList.vue'
-import WorkflowEditor from '../views/WorkflowEditor/index.vue'
 import Schedule from '../views/Schedule/index.vue'
-import Timeline from '../views/Timeline/index.vue'
 import Login from '../views/Login/index.vue'
 
 // 懒加载组件
-const TaskDetailMap = () => import('../views/WorkReport/components/TaskDetailMap.vue')
-const CaseResult = () => import('../views/WorkReport/components/CaseResult.vue')
 const CaseEditor = () => import('../views/WorkReport/components/CaseEditor.vue')
 const Dialogue = () => import('../views/Dialogue/index.vue')
 const AgentHistory = () => import('../views/AgentHistory/index.vue')
@@ -27,6 +22,12 @@ const SettingsDeviceDetail = () => import('../views/Settings/DeviceDetailPage.vu
 const SettingsProjectEnv = () => import('../views/Settings/ProjectEnvPage.vue')
 const SettingsAppConfig = () => import('../views/Settings/AppConfigPage.vue')
 const SettingsSystem = () => import('../views/Settings/SystemPage.vue')
+const SettingsAccounts = () => import('../views/Settings/AccountsPage.vue')
+const SettingsRoles = () => import('../views/Settings/RolesPage.vue')
+const SettingsDispatch = () => import('../views/Settings/DispatchPage.vue')
+const SettingsDispatchJob = () => import('../views/Settings/DispatchJobPage.vue')
+const SettingsPlugins = () => import('../views/Settings/PluginsPage.vue')
+const SettingsPluginDetail = () => import('../views/Settings/PluginDetailPage.vue')
 const routes = [
     {
         path: '/login',
@@ -48,12 +49,18 @@ const routes = [
             { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },
             { path: 'runtime/device/:sn', name: 'SettingsDeviceDetail', component: SettingsDeviceDetail, meta: { title: '设备详情' } },
             { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
-            { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: 'Skills' } },
-            { path: 'packs', name: 'SettingsPacks', component: SettingsPacks, meta: { title: '扩展' } },
-            { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥配置' } },
+            { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: '能力目录' } },
+            { path: 'roles', name: 'SettingsRoles', component: SettingsRoles, meta: { title: '角色' } },
+            { path: 'dispatch', name: 'SettingsDispatch', component: SettingsDispatch, meta: { title: '调用记录' } },
+            { path: 'dispatch/:callId', name: 'SettingsDispatchJob', component: SettingsDispatchJob, meta: { title: '调用详情' } },
+            { path: 'plugins', name: 'SettingsPlugins', component: SettingsPlugins, meta: { title: '插件' } },
+            { path: 'plugins/:pluginId', name: 'SettingsPluginDetail', component: SettingsPluginDetail, meta: { title: '插件' } },
+            { path: 'packs', name: 'SettingsPacks', component: SettingsPacks, meta: { title: '扩展包' } },
+            { path: 'keys', name: 'SettingsKeys', component: SettingsKeys, meta: { title: '密钥与发信' } },
             { path: 'system', name: 'SettingsSystem', component: SettingsSystem, meta: { title: '系统设置' } },
+            { path: 'accounts', name: 'SettingsAccounts', component: SettingsAccounts, meta: { title: '登录账号' } },
             { path: 'ai', redirect: { name: 'SettingsKeys', query: { tab: 'model-keys' } } },
-            { path: 'feishu', redirect: { name: 'SettingsKeys', query: { tab: 'robots' } } },
+            { path: 'feishu', redirect: { name: 'SettingsPluginDetail', params: { pluginId: 'feishu' } } },
             { path: 'knowledge', name: 'SettingsKnowledge', redirect: { name: 'TestingHome' } },
             { path: 'projects', redirect: { name: 'TestingHome' } },
             { path: 'apps', redirect: { name: 'TestingHome' } },
@@ -63,7 +70,7 @@ const routes = [
                 redirect: (to) => ({
                     name: 'TestingApp',
                     params: { appId: to.params.appId },
-                    query: { ...to.query, tab: 'tasks' },
+                    query: { ...to.query, tab: 'process', board: to.query.board || 'req' },
                 }),
             },
             {
@@ -71,7 +78,7 @@ const routes = [
                 redirect: (to) => ({
                     name: 'TestingApp',
                     params: { appId: to.params.appId },
-                    query: { ...to.query, tab: 'tasks' },
+                    query: { ...to.query, tab: 'process', board: to.query.board || 'req' },
                 }),
             },
             {
@@ -87,7 +94,7 @@ const routes = [
         redirect: (to) => ({
             name: 'TestingApp',
             params: { appId: to.params.appId },
-            query: { ...to.query, tab: 'tasks' },
+            query: { ...to.query, tab: 'cases', view: 'library' },
         }),
     },
     {
@@ -147,14 +154,12 @@ const routes = [
     {
         path: '/report/task/:id',
         name: 'TaskDetail',
-        component: TaskDetailMap,
-        meta: {title: '任务详情', requiresAuth: true}
+        redirect: (to) => ({ name: 'TestingHome', query: { task: to.params.id } }),
     },
     {
         path: '/report/case/:id',
         name: 'CaseResult',
-        component: CaseResult,
-        meta: {title: '用例报告', requiresAuth: true}
+        redirect: { name: 'TestingHome' },
     },
     {
         path: '/report/editor/:appId',
@@ -165,7 +170,7 @@ const routes = [
     {
         path: '/resources',
         name: 'ResourceList',
-        component: ResourceList,
+        redirect: { name: 'TestingHome' },
         meta: { requiresAuth: true }
     },
     {
@@ -176,14 +181,14 @@ const routes = [
     {
         path: '/timeline',
         name: 'Timeline',
-        component: Timeline,
+        redirect: { name: 'SettingsRuntime', query: { view: 'overview' } },
         meta: { title: '时间线', requiresAuth: true }
     },
     {
-        // 修复：添加可选的 :id 参数以支持编辑现有工作流
         path: '/editor/:id?',
         name: 'Editor',
-        component: WorkflowEditor
+        redirect: { name: 'TestingHome' },
+        meta: { title: '工作流编辑', requiresAuth: true },
     }
 ]
 
@@ -223,17 +228,12 @@ router.beforeEach(async (to, from, next) => {
     if (!to.meta.requiresAuth && !to.meta.requiresGuest) return next()
 
     try {
-        // 2. 获取当前角色状态
-        const res = await getNodeStatus()
-        const role = res.data?.role
-
-        // 3. 鉴权逻辑
-        if (role === 'client' && to.meta.requiresAuth) return next('/login')
-        if (role === 'node' && to.meta.requiresGuest) return next('/dialogue')
-        
+        const auth = await getAuthStatus()
+        const loggedIn = !!auth?.data?.logged_in
+        if (to.meta.requiresAuth && !loggedIn) return next('/login')
+        if (to.meta.requiresGuest && loggedIn) return next('/dialogue')
         next()
     } catch (e) {
-        // WS 未连接或超时，默认视为未登录，前往 Login 页处理连接
         if (to.meta.requiresAuth) return next('/login')
         next()
     }

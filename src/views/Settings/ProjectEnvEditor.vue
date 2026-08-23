@@ -59,7 +59,7 @@
               spellcheck="false"
               @update:model-value="(v) => setChannelVal(ch, v)"
             />
-            <p v-if="channelWarn(ch)" class="field-warn">{{ channelWarn(ch) }}</p>
+            <p v-if="inheritHint(ch)" class="field-note">{{ inheritHint(ch) }}</p>
           </div>
           <el-button
             link
@@ -120,6 +120,7 @@ import {
   DEFAULT_CHANNELS,
   emptyProfile,
   normalizeEnvDoc,
+  resolveChannelValue,
   slugEnvKey,
 } from '@/constants/envProfiles'
 import { envUsage } from '@/utils/qaWorkflow'
@@ -160,6 +161,7 @@ const activeUsage = computed(() => envUsage(props.workflow, activeTab.value))
 const activeUsageText = computed(() => activeUsage.value.map((u) => `${u.trackLabel}「${u.stepLabel}」`).join('、'))
 
 const wrapVar = (ch) => `{{app.${ch.id}.${ch.field || 'value'}}}`
+const envOrder = computed(() => environments.value.map((e) => e.key))
 
 const ensureProfile = (key) => {
   if (!profiles[key]) profiles[key] = emptyProfile(channels.value)
@@ -169,39 +171,29 @@ const ensureProfile = (key) => {
   }
 }
 
-const channelVal = (ch) => {
-  ensureProfile(activeTab.value)
-  return profiles[activeTab.value]?.[ch.id]?.[ch.field] || ''
+const localChannelVal = (ch, key = activeTab.value) => {
+  if (!key) return ''
+  ensureProfile(key)
+  return String(profiles[key]?.[ch.id]?.[ch.field] || '').trim()
 }
+
+const inheritHit = (ch) => resolveChannelValue(profiles, envOrder.value, activeTab.value, ch.id, ch.field)
+
+const channelVal = (ch) => inheritHit(ch).value || localChannelVal(ch)
+
 const setChannelVal = (ch, v) => {
   ensureProfile(activeTab.value)
   profiles[activeTab.value][ch.id][ch.field] = v
 }
 
-const channelWarn = (ch) => {
-  if (ch.id !== 'ios') return ''
-  const bundle = String(channelVal(ch) || '').trim()
-  const android = channels.value.find((c) => c.id === 'android')
-  const pkg = android ? String(channelVal(android) || '').trim() : ''
-  if (bundle && pkg && bundle === pkg) return 'iOS Bundle 与安卓包名相同，真机启动会失败'
-  return ''
-}
-
-const validateProfiles = () => {
-  const android = channels.value.find((c) => c.id === 'android')
-  const ios = channels.value.find((c) => c.id === 'ios')
-  if (!android || !ios) return true
-  for (const env of environments.value) {
-    const snap = profiles[env.key] || {}
-    const pkg = String(snap[android.id]?.[android.field] || '').trim()
-    const bundle = String(snap[ios.id]?.[ios.field] || '').trim()
-    if (pkg && bundle && pkg === bundle) {
-      ElMessage.error(`「${env.label}」的 iOS Bundle 不能与安卓包名相同`)
-      activeTab.value = env.key
-      return false
-    }
+const inheritHint = (ch) => {
+  const hit = inheritHit(ch)
+  if (!hit.inherited || !hit.value) return ''
+  const name = environments.value.find((e) => e.key === hit.fromKey)?.label || hit.fromKey
+  if (hit.fromChannel && hit.fromChannel !== ch.id) {
+    return `未单独填写，沿用${hit.fromChannel === 'android' ? '安卓包名' : 'iOS Bundle'}`
   }
-  return true
+  return `未单独填写，与「${name}」相同`
 }
 
 const profileFilled = (key) => {
@@ -281,7 +273,6 @@ const loadProject = async () => {
 
 const save = async ({ quiet = false } = {}) => {
   if (!props.projectId) return false
-  if (!validateProfiles()) return false
   const payload = buildPayload()
   if (payload.environments.length < 1) {
     ElMessage.warning('至少保留一个环境')
@@ -540,6 +531,11 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFille
   margin: 6px 0 0;
   font-size: 12px;
   color: #b45309;
+}
+.field-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #6b7280;
 }
 .field-row {
   display: grid;

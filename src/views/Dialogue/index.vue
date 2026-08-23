@@ -1,20 +1,19 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElIcon, ElButton, ElInput, ElMessage, ElMessageBox } from 'element-plus'
-import { Promotion, MagicStick, User, Setting, SwitchButton, Plus, Fold, Expand, Minus, FullScreen, Close } from '@element-plus/icons-vue'
-import { useDialogueAside } from '@/composables/useDialogueAside'
+import { ElIcon, ElButton, ElInput, ElMessage } from 'element-plus'
+import { Promotion, MagicStick, User } from '@element-plus/icons-vue'
 import { copilotChat, copilotExecute } from '@/api/copilot'
-import { initWebSocket } from '@/api/mWebSocket'
+import { initWebSocket, whenWebSocketReady } from '@/api/mWebSocket'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { getDeviceList } from '@/api/device'
-import { leaveCluster } from '@/api/system'
 import { listAIProviders } from '@/api/settings'
 import { copilotCommands } from '@/logic/CopilotCommands'
-import { createAgentSession, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
+import { createAgentSession, pullAgentSessions, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
 import { getBaseUrl } from '@/utils/config'
 import { selectableExecutionDevices, pickDefaultDeviceSn, applyOnlineStatusGrace, dedupeDevicesForUi } from '@/utils/devices'
-import { lastTestingPath, openSettingsRemembering, rememberAgentPath } from '@/utils/workMode'
+import WorkShell from '@/layouts/WorkShell.vue'
+import PayloadView from '@/components/PayloadView.vue'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res
@@ -26,8 +25,6 @@ function normalizeDeviceList(res) {
 
 const route = useRoute()
 const router = useRouter()
-const { collapsed, toggleAside } = useDialogueAside()
-const isMac = ref(false)
 const messages = ref([])
 const inputValue = ref('')
 const isLoading = ref(false)
@@ -46,7 +43,6 @@ let devicePollTimer = null
 const showSlashMenu = ref(false)
 const slashQuery = ref('')
 const selectedSlashIndex = ref(0)
-const accountMenuOpen = ref(false)
 const modelMenuOpen = ref(false)
 const deviceMenuOpen = ref(false)
 const showScrollToBottom = ref(false)
@@ -70,9 +66,21 @@ const hasUserMessages = computed(() => messages.value.some((item) => item.role =
 const recentAgentSessions = computed(() =>
   [...agentSessions.value]
     .filter((session) => (session.messages || []).some((item) => item.role === 'user' && String(item.content || '').trim()))
-    .sort((a, b) => new Date(b.lastUserMessageAt || b.updatedAt) - new Date(a.lastUserMessageAt || a.updatedAt))
-    .slice(0, 8),
+    .sort((a, b) => new Date(b.lastUserMessageAt || b.updatedAt) - new Date(a.lastUserMessageAt || a.updatedAt)),
 )
+const historyQuery = ref('')
+const historySearchOpen = ref(false)
+const historySearchRef = ref(null)
+const visibleSessions = computed(() => {
+  const q = historyQuery.value.trim().toLowerCase()
+  if (!q) return recentAgentSessions.value
+  return recentAgentSessions.value.filter((s) => String(s.title || '').toLowerCase().includes(q))
+})
+const openHistorySearch = async () => {
+  historySearchOpen.value = true
+  await nextTick()
+  historySearchRef.value?.focus()
+}
 const isDraftAgent = computed(() => !hasUserMessages.value)
 const isBusy = computed(() => !!busyPhase.value || sendInFlight.value)
 const configuredPlanningOptions = computed(() =>
@@ -163,7 +171,6 @@ const closeFloatingMenus = (event) => {
   const target = event.target
   if (!target?.closest?.('.model-picker')) modelMenuOpen.value = false
   if (!target?.closest?.('.device-picker')) deviceMenuOpen.value = false
-  if (!target?.closest?.('.side-footer-wrap')) accountMenuOpen.value = false
 }
 
 const filteredSlash = computed(() => {
@@ -185,15 +192,6 @@ const handleInput = (val) => {
   } else {
     showSlashMenu.value = false
   }
-}
-
-const openSettings = () => {
-  openSettingsRemembering(router, route.fullPath)
-}
-
-const goTesting = () => {
-  rememberAgentPath(route.fullPath)
-  router.push(lastTestingPath().startsWith('/testing') ? lastTestingPath() : '/testing')
 }
 
 const scrollBottom = () => {
@@ -221,8 +219,8 @@ const persistSession = (options = {}) => {
   refreshAgentSessions()
 }
 
-const refreshAgentSessions = () => {
-  agentSessions.value = readAgentSessions()
+const refreshAgentSessions = (rows) => {
+  agentSessions.value = Array.isArray(rows) ? rows : readAgentSessions()
 }
 
 const startNewAgent = () => {
@@ -301,8 +299,8 @@ const loadDevices = async () => {
     } catch (wsErr) {
       console.warn('WS device list failed, try HTTP', wsErr)
       initWebSocket()
-      await new Promise((r) => setTimeout(r, 800))
       try {
+        await whenWebSocketReady(2500)
         const res = await wsGetDeviceList()
         list = normalizeDeviceList(res)
       } catch {
@@ -342,31 +340,6 @@ const loadAIProviders = async () => {
     }
   } catch (e) {
     console.warn('load AI providers failed', e)
-  }
-}
-
-const handleLogout = async () => {
-  accountMenuOpen.value = false
-  try {
-    await ElMessageBox.confirm('确定要退出登录并解除当前执行器绑定吗？设备服务将重启并断开连接。', '退出登录', {
-      confirmButtonText: 'Log Out',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-
-    try {
-      await leaveCluster()
-      ElMessage.success('已退出登录，正在重置连接...')
-    } catch (e) {
-      console.warn('退出登录请求可能因服务重启而中断:', e)
-    } finally {
-      localStorage.removeItem('ws_token')
-      localStorage.removeItem('token')
-      router.replace('/login')
-      setTimeout(() => window.location.reload(), 1000)
-    }
-  } catch (e) {
-    // 用户取消确认。
   }
 }
 
@@ -494,8 +467,6 @@ const modelResponsePayload = computed(() => {
     normalized_steps: run.aiDebug?.normalized_steps || run.steps || [],
   }
 })
-
-const modelResponseText = computed(() => JSON.stringify(modelResponsePayload.value, null, 2))
 
 const runPlan = async (plan) => {
   if (plan.navigate?.name) {
@@ -633,9 +604,9 @@ const handleKeydown = (e) => {
 }
 
 onMounted(async () => {
-  isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
   document.addEventListener('click', closeFloatingMenus)
   rememberAgentPath(route.fullPath)
+  refreshAgentSessions(await pullAgentSessions())
   await loadAIProviders()
   await loadDevices()
   restoreSession()
@@ -647,40 +618,23 @@ onUnmounted(() => {
   if (devicePollTimer) clearInterval(devicePollTimer)
 })
 
-const handleMinimize = () => window.electronAPI?.minimize()
-const handleMaximize = () => window.electronAPI?.maximize()
-const handleClose = () => window.electronAPI?.close()
 </script>
 
 <template>
-  <div class="dialogue-layout">
-    <div class="dialogue-sidebar-col" :class="{ collapsed }">
-      <div class="aside-chrome">
-        <div v-if="isMac" class="mac-traffic-zone" aria-hidden="true" />
-        <button
-          type="button"
-          class="aside-collapse-btn"
-          :title="collapsed ? '展开侧栏' : '收起侧栏'"
-          @click="toggleAside"
-        >
-          <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
-        </button>
-      </div>
-
-      <aside v-show="!collapsed" class="dialogue-aside">
-        <div class="brand">MiniOrange</div>
-      <button type="button" class="new-agent-side-btn" @click="startNewAgent">
-        <el-icon><Plus /></el-icon>
-        <span>New Agent</span>
-      </button>
-      <div class="mode-switch" role="tablist" aria-label="工作面">
-        <button type="button" class="on" aria-selected="true">Agent</button>
-        <button type="button" @click="goTesting">测试</button>
-      </div>
+  <WorkShell mode="agent" create-title="新建对话" @search="openHistorySearch" @create="startNewAgent">
+    <template #sidebar>
       <section class="agent-records">
         <div class="records-label">对话记录</div>
+        <input
+          v-if="historySearchOpen"
+          ref="historySearchRef"
+          v-model="historyQuery"
+          class="history-search"
+          type="search"
+          placeholder="搜索对话"
+        />
         <button
-          v-for="session in recentAgentSessions"
+          v-for="session in visibleSessions"
           :key="session.id"
           type="button"
           class="record-item"
@@ -689,46 +643,14 @@ const handleClose = () => window.electronAPI?.close()
         >
           <span class="record-dot"></span>
           <span class="record-main">
-            <strong>{{ session.title || 'New Agent' }}</strong>
+            <strong>{{ session.title || '新对话' }}</strong>
             <small>{{ formatSessionTime(session.lastUserMessageAt || session.updatedAt) }}</small>
           </span>
         </button>
-        <div v-if="!recentAgentSessions.length" class="record-empty">暂无对话记录</div>
+        <div v-if="!visibleSessions.length" class="record-empty">{{ historyQuery ? '没有匹配的对话' : '暂无对话记录' }}</div>
       </section>
-      <div class="side-footer-wrap">
-        <div v-if="accountMenuOpen" class="account-popover">
-          <button type="button" class="settings-menu-item danger" @click="handleLogout">
-            <el-icon><SwitchButton /></el-icon>
-            <span>Log Out</span>
-          </button>
-        </div>
-        <div class="side-footer">
-          <button
-            type="button"
-            class="account-mini"
-            :class="{ active: accountMenuOpen }"
-            @click="accountMenuOpen = !accountMenuOpen"
-          >
-            <div>
-              <strong>MiniOrange</strong>
-              <span>{{ devices.length }} 台设备</span>
-            </div>
-            <span class="account-status" :class="{ active: devices.length }">{{ devices.length ? 'Active' : 'Idle' }}</span>
-          </button>
-          <button
-            type="button"
-            class="settings-footer-btn"
-            title="设置"
-            @click="openSettings"
-          >
-            <el-icon><Setting /></el-icon>
-          </button>
-        </div>
-      </div>
-      </aside>
-    </div>
-
-    <main class="dialogue-main">
+    </template>
+    <div class="dialogue-main-body">
       <div class="chat-panel" ref="chatRef" :class="{ 'is-draft': isDraftAgent }" @scroll="handleChatScroll">
         <div v-if="isDraftAgent" class="draft-hero">
           <div class="draft-orb">
@@ -989,7 +911,6 @@ const handleClose = () => window.electronAPI?.close()
           <el-button v-else type="primary" circle :icon="Promotion" :disabled="!inputValue" @click="sendMessage" />
         </div>
       </footer>
-    </main>
     <el-drawer
       :model-value="!!modelResponseRun"
       size="420px"
@@ -1011,22 +932,11 @@ const handleClose = () => window.electronAPI?.close()
           <span v-if="modelResponseRun?.planner?.model">{{ modelResponseRun.planner.model }}</span>
           <span v-if="modelResponseRun?.device?.sn">{{ modelResponseRun.device.sn }}</span>
         </div>
-        <pre class="response-json">{{ modelResponseText }}</pre>
+        <PayloadView :value="modelResponsePayload" />
       </div>
     </el-drawer>
-
-    <div v-if="!isMac" class="dialogue-win-controls">
-      <div class="control-btn minimize" @click="handleMinimize">
-        <el-icon><Minus /></el-icon>
-      </div>
-      <div class="control-btn maximize" @click="handleMaximize">
-        <el-icon><FullScreen /></el-icon>
-      </div>
-      <div class="control-btn close" @click="handleClose">
-        <el-icon><Close /></el-icon>
-      </div>
     </div>
-  </div>
+  </WorkShell>
 </template>
 
 <style scoped>
@@ -1044,19 +954,21 @@ const handleClose = () => window.electronAPI?.close()
 }
 
 .dialogue-sidebar-col {
-  width: 200px;
+  width: 248px;
   flex-shrink: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.85);
+  background: #f7f8fa;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
-  transition: width 0.2s ease;
+  transition: width 0.22s ease, border-color 0.22s ease;
 }
 
-.dialogue-sidebar-col.collapsed {
-  width: 72px;
+.dialogue-layout.is-collapsed .dialogue-sidebar-col {
+  width: 0;
+  border-right-color: transparent;
+  pointer-events: none;
 }
 
 .aside-chrome {
@@ -1064,10 +976,9 @@ const handleClose = () => window.electronAPI?.close()
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0 10px 0 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  background: rgba(255, 255, 255, 0.95);
+  background: transparent;
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -1078,37 +989,47 @@ const handleClose = () => window.electronAPI?.close()
   flex-shrink: 0;
 }
 
-.aside-collapse-btn {
-  width: 32px;
-  height: 32px;
+.chrome-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.chrome-btn {
+  width: 34px;
+  height: 34px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
-  color: #6b7280;
+  color: #4b5563;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  -webkit-app-region: no-drag;
 }
 
-.dialogue-sidebar-col.collapsed .aside-chrome {
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: center;
-  gap: 2px;
-  padding: 8px 0 4px;
-}
-
-.dialogue-sidebar-col.collapsed .mac-traffic-zone {
-  width: 56px;
-  height: 14px;
-}
-
-.aside-collapse-btn:hover {
-  background: #f3f4f6;
+.chrome-btn:hover {
+  background: #eceef2;
   color: #111827;
+}
+
+.chrome-btn.is-on {
+  color: #4f46e5;
+  background: #eef2ff;
+}
+
+.main-chrome {
+  height: var(--dialogue-chrome-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px 0 0;
+  background: #f0f2f5;
+  -webkit-app-region: drag;
+  user-select: none;
 }
 
 .dialogue-aside {
@@ -1256,7 +1177,22 @@ const handleClose = () => window.electronAPI?.close()
   color: #94a3b8;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+}
+
+.history-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  outline: none;
+}
+
+.history-search:focus {
+  border-color: #c7d2fe;
 }
 
 .record-item {
@@ -1543,6 +1479,16 @@ const handleClose = () => window.electronAPI?.close()
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.dialogue-main-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 16px 24px 24px;
   box-sizing: border-box;
 }

@@ -22,7 +22,6 @@ const statusOf = (step, idx) => {
   if (cur < 0) return idx === 0 ? 'on' : 'todo'
   if (idx < cur) return 'done'
   if (idx === cur) return 'on'
-  if (idx === cur + 1) return 'next'
   return 'todo'
 }
 
@@ -59,7 +58,7 @@ const onNode = (step) => emit('select', step)
           class="qa-pipe-node"
           :class="[
             statusOf(step, idx),
-            { selected: selectedId === step.id || currentId === step.id },
+            { selected: selectedId && selectedId === step.id },
           ]"
           :title="step.hint || kindMeta(step.kind).label"
           @click="onNode(step)"
@@ -131,7 +130,12 @@ const onNode = (step) => emit('select', step)
   border-color: #c7d2fe;
   color: #4338ca;
 }
-.qa-pipe-node.on,
+.qa-pipe-node.on {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  box-shadow: 0 0 0 1px #fcd34d;
+}
 .qa-pipe-node.selected {
   border-color: #60a5fa;
   background: #eff6ff;
@@ -154,8 +158,8 @@ const onNode = (step) => emit('select', step)
   flex-shrink: 0;
 }
 .qa-pipe-dot.done { background: #22c55e; }
-.qa-pipe-dot.on,
-.qa-pipe-dot.next { background: #f59e0b; }
+.qa-pipe-dot.on { background: #f59e0b; }
+.qa-pipe-dot.next { background: #d1d5db; }
 .qa-pipe-dot.busy { background: #f59e0b; }
 .qa-pipe-dot.idle { background: #d1d5db; }
 .qa-pipe-dot.todo { background: #d1d5db; }
@@ -202,8 +206,8 @@ const onNode = (step) => emit('select', step)
   flex-shrink: 0;
 }
 .qa-mini-dot.done { background: #22c55e; }
-.qa-mini-dot.on,
-.qa-mini-dot.next { background: #f59e0b; }
+.qa-mini-dot.on { background: #f59e0b; }
+.qa-mini-dot.next { background: #d1d5db; }
 .qa-mini-name {
   margin-left: 4px;
   min-width: 0;

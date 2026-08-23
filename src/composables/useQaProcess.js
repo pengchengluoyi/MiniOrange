@@ -6,7 +6,18 @@ import { rebaseTickets } from '@/utils/qaWorkflow'
 const cacheKey = (appId) => `mo.qa-process.${appId}`
 
 function emptyState() {
-  return { requirements: [], releases: [], schedule: [], workflow: null, updated_at: '' }
+  return {
+    requirements: [],
+    releases: [],
+    schedule: [],
+    workflow: null,
+    features: [],
+    app_atlas: { modules: [] },
+    atlas_patches: [],
+    autonomy: null,
+    role_log: [],
+    updated_at: '',
+  }
 }
 
 function readCache(appId) {
@@ -29,6 +40,11 @@ export function useQaProcess(appIdRef) {
   const releases = ref([])
   const schedule = ref([])
   const workflow = ref(null)
+  const features = ref([])
+  const appAtlas = ref({ modules: [] })
+  const atlasPatches = ref([])
+  const autonomy = ref(null)
+  const roleLog = ref([])
   const loading = ref(false)
   const saving = ref(false)
   const loadedFor = ref('')
@@ -38,6 +54,11 @@ export function useQaProcess(appIdRef) {
     releases: releases.value,
     schedule: schedule.value,
     workflow: workflow.value,
+    features: features.value,
+    app_atlas: appAtlas.value,
+    atlas_patches: atlasPatches.value,
+    autonomy: autonomy.value,
+    role_log: roleLog.value,
     updated_at: nowIso(),
   }))
 
@@ -45,12 +66,12 @@ export function useQaProcess(appIdRef) {
     const appId = appIdRef.value
     if (!appId) return
     const next = state.value
-    writeCache(appId, next)
     saving.value = true
     try {
       await updateAppAutomationConfig(appId, { qa_process: next })
+      writeCache(appId, next)
     } catch (_) {
-      /* 本机缓存仍可用 */
+      writeCache(appId, next)
     } finally {
       saving.value = false
     }
@@ -67,27 +88,45 @@ export function useQaProcess(appIdRef) {
     releases.value = Array.isArray(doc?.releases) ? doc.releases : []
     schedule.value = Array.isArray(doc?.schedule) ? doc.schedule : []
     workflow.value = doc?.workflow && typeof doc.workflow === 'object' ? doc.workflow : null
+    features.value = Array.isArray(doc?.features) ? doc.features : []
+    appAtlas.value = doc?.app_atlas && typeof doc.app_atlas === 'object' ? doc.app_atlas : { modules: [] }
+    atlasPatches.value = Array.isArray(doc?.atlas_patches) ? doc.atlas_patches : []
+    autonomy.value = doc?.autonomy && typeof doc.autonomy === 'object' ? doc.autonomy : null
+    roleLog.value = Array.isArray(doc?.role_log) ? doc.role_log : []
   }
+
+  const hasProcessData = (doc) => Boolean(
+    doc
+    && (
+      (doc.requirements || []).length
+      || (doc.releases || []).length
+      || (doc.schedule || []).length
+      || doc.workflow
+      || (doc.app_atlas?.modules || []).length
+    ),
+  )
 
   const load = async () => {
     const appId = appIdRef.value
     if (!appId) return
     loading.value = true
-    const cached = readCache(appId)
-    apply(cached)
     try {
       const res = await getAppAutomationConfig(appId)
       const remote = res?.data?.automation?.qa_process
-      if (remote && (Array.isArray(remote.requirements) || Array.isArray(remote.releases) || Array.isArray(remote.schedule) || remote.workflow)) {
-        const remoteAt = String(remote.updated_at || '')
-        const localAt = String(cached.updated_at || '')
-        if (!localAt || remoteAt >= localAt) apply(remote)
-        else await persist()
-      } else if (cached.requirements.length || cached.releases.length || (cached.schedule || []).length || cached.workflow) {
-        await persist()
+      if (hasProcessData(remote)) {
+        apply(remote)
+        writeCache(appId, state.value)
+      } else {
+        const cached = readCache(appId)
+        if (hasProcessData(cached)) {
+          apply(cached)
+          await persist()
+        } else {
+          apply(emptyState())
+        }
       }
     } catch (_) {
-      apply(cached)
+      apply(readCache(appId))
     } finally {
       loadedFor.value = appId
       loading.value = false
@@ -178,9 +217,15 @@ export function useQaProcess(appIdRef) {
     releases,
     schedule,
     workflow,
+    features,
+    appAtlas,
+    atlasPatches,
+    autonomy,
+    roleLog,
     loading,
     saving,
     load,
+    apply,
     persist,
     persistSoon,
     upsertReq,

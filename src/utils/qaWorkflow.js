@@ -26,7 +26,7 @@ export const STEP_KINDS = [
     id: 'cover',
     label: '准备用例',
     tab: 'cases',
-    hint: '每个测试点挂上飞书用例，或标明本版本不测。',
+    hint: '一个测试点按正向、异常、边界等情况展开成多条用例；写用例时会反推脑图缺不缺点。',
     assist: 'map_cases',
   },
   {
@@ -72,6 +72,147 @@ export function kindMeta(kind) {
   return STEP_KINDS.find((k) => k.id === kind) || STEP_KINDS[STEP_KINDS.length - 1]
 }
 
+/** 可挂到流程阶段上的 Job / prompt。工作流就是这些能力的有序搭配。 */
+export const PROCESS_JOBS = [
+  { id: 'analyze_req', role_id: 'req-analyst', label: '拆验收标准与测试点', output: '验收标准 / 影响面', tab: '验收标准', tick: true },
+  { id: 'propose_atlas', role_id: 'req-analyst', label: '建议应用图谱', output: '变更待确认', tab: '图谱变更', tick: true },
+  { id: 'draft_mindmap', role_id: 'mindmap-writer', label: '写测试脑图', output: '脑图', tab: '测试脑图', tick: true },
+  { id: 'draft_cases', role_id: 'case-writer', label: '写用例草稿', output: '用例草稿', tab: '测试用例', tick: true },
+  { id: 'map_cases', role_id: 'req-qa-bm', label: '对照用例库', output: '覆盖建议', tab: '用例对照', tick: false },
+  { id: 'draft_sign', role_id: 'req-qa-bm', label: '验收草稿', output: '验收建议', tab: '验收建议', tick: false },
+  { id: 'pick_regression', role_id: 'version-qa-bm', label: '圈定回归范围', output: '回归用例', tab: '回归范围', tick: false },
+  { id: 'draft_gate', role_id: 'version-qa-bm', label: '发版草稿', output: '发版建议', tab: '发版建议', tick: false },
+  { id: 'pick_account', role_id: 'test-engineer', label: '筛测试账号', output: '本步用的号', tab: '测试账号', tick: false },
+]
+
+export const PROCESS_JOB_MAP = Object.fromEntries(PROCESS_JOBS.map((j) => [j.id, j]))
+
+export function jobMeta(id) {
+  return PROCESS_JOB_MAP[id] || { id, label: id || '—', output: '', role_id: '', tick: false }
+}
+
+export function defaultJobsForKind(kind, track) {
+  if (kind === 'understand') return ['analyze_req', 'propose_atlas']
+  if (kind === 'cover') return ['draft_mindmap', 'draft_cases']
+  if (kind === 'scope') return ['pick_regression']
+  if (kind === 'human_verdict') return track === 'rel' ? ['draft_gate'] : ['draft_sign']
+  if (kind === 'dispatch') return ['pick_account']
+  return []
+}
+
+export function defaultChains() {
+  return [
+    {
+      id: 'wf-req-review',
+      name: '需求评审',
+      summary: '读懂需求：拆验收标准，并给出图谱变更等人确认。',
+      steps: [
+        { capability_id: 'analyze_req', role_id: 'req-analyst' },
+        { capability_id: 'propose_atlas', role_id: 'req-analyst' },
+      ],
+    },
+    {
+      id: 'wf-req-cases',
+      name: '用例准备',
+      summary: '按端写测试脑图，再按测试点生成用例。',
+      steps: [
+        { capability_id: 'draft_mindmap', role_id: 'mindmap-writer' },
+        { capability_id: 'draft_cases', role_id: 'case-writer' },
+      ],
+    },
+    {
+      id: 'wf-dispatch',
+      name: '下发执行',
+      summary: '开跑前按场景筛测试账号，再下发真机。',
+      steps: [{ capability_id: 'pick_account', role_id: 'test-engineer' }],
+    },
+    {
+      id: 'wf-req-sign',
+      name: '测试验收',
+      summary: '出验收草稿，结论必须人点。',
+      steps: [{ capability_id: 'draft_sign', role_id: 'req-qa-bm' }],
+    },
+    {
+      id: 'wf-rel-scope',
+      name: '版本范围',
+      summary: '圈定本版回归用例。',
+      steps: [{ capability_id: 'pick_regression', role_id: 'version-qa-bm' }],
+    },
+    {
+      id: 'wf-rel-gate',
+      name: '发版评审',
+      summary: '出发版草稿，结论必须人点。',
+      steps: [{ capability_id: 'draft_gate', role_id: 'version-qa-bm' }],
+    },
+  ]
+}
+
+export function defaultChainIdForKind(kind, track) {
+  if (kind === 'understand') return 'wf-req-review'
+  if (kind === 'cover') return 'wf-req-cases'
+  if (kind === 'scope') return 'wf-rel-scope'
+  if (kind === 'human_verdict') return track === 'rel' ? 'wf-rel-gate' : 'wf-req-sign'
+  return ''
+}
+
+export function normalizeChainStep(raw) {
+  const id = String(raw?.capability_id || raw?.id || raw?.job || '').trim()
+  if (!id) return null
+  const meta = jobMeta(id)
+  return {
+    capability_id: id,
+    role_id: String(raw?.role_id || meta.role_id || ''),
+    label: String(raw?.label || meta.label || id),
+  }
+}
+
+export function normalizeChains(raw) {
+  const list = Array.isArray(raw) ? raw.map((c) => {
+    if (!c || typeof c !== 'object') return null
+    const id = String(c.id || '').trim()
+    const steps = (c.steps || []).map(normalizeChainStep).filter(Boolean)
+    if (!id) return null
+    return {
+      id,
+      name: String(c.name || id).trim() || id,
+      summary: String(c.summary || '').trim(),
+      steps,
+    }
+  }).filter(Boolean) : []
+  if (list.length) return list
+  return defaultChains()
+}
+
+export function jobsOfStep(step, workflow, track) {
+  const chains = workflow?.chains || defaultChains()
+  const wid = String(step?.workflow_id || '').trim()
+  if (wid) {
+    const chain = chains.find((c) => c.id === wid)
+    if (chain?.steps?.length) return chain.steps.map((s) => s.capability_id)
+  }
+  const bound = (step?.jobs || []).map((j) => (typeof j === 'string' ? j : (j?.capability_id || j?.id || ''))).filter(Boolean)
+  if (bound.length) return bound
+  return defaultJobsForKind(step?.kind, track)
+}
+
+/** 阶段产出物页签：有几个 Job 就几个 tab。下发/验收这类以操作为主的阶段不拆。 */
+const JOB_CONTENT_KINDS = new Set(['understand', 'cover'])
+
+export function stageJobTabs(step, workflow, track) {
+  if (!JOB_CONTENT_KINDS.has(step?.kind)) return []
+  return jobsOfStep(step, workflow, track).map((id) => {
+    const meta = jobMeta(id)
+    return { id, label: meta.tab || meta.output || meta.label }
+  })
+}
+
+export function chainLabel(workflow, chainId) {
+  const id = String(chainId || '').trim()
+  if (!id) return '未绑定'
+  const hit = (workflow?.chains || defaultChains()).find((c) => c.id === id)
+  return hit?.name || id
+}
+
 /** 离开本步、走进下一步的方式。画在阶段图的连线上。 */
 export function leaveLabel(step, track) {
   if (!step) return ''
@@ -90,7 +231,7 @@ export function kindTab(kind) {
 }
 
 export function kindAssistJob(kind, track) {
-  if (kind === 'cover') return 'map_cases'
+  if (kind === 'cover') return ''
   if (kind === 'scope') return 'pick_regression'
   if (kind === 'human_verdict') return track === 'rel' || track === 'release' ? 'draft_gate' : 'draft_sign'
   return ''
@@ -100,7 +241,7 @@ export function tabLabel(tab, track) {
   if (tab === 'understand') return '需求评审'
   if (tab === 'cases') return '用例'
   if (tab === 'scope') return '范围'
-  if (tab === 'run') return '任务'
+  if (tab === 'run') return '本步下发'
   if (tab === 'checkpoint') return '确认'
   if (tab === 'report') return track === 'rel' || track === 'release' ? '发版评审' : '测试验收'
   return tab
@@ -131,6 +272,10 @@ export function makeStep(kind, extras = {}) {
     step.run = run
     step.env = String(extras.env || '').trim() || DISPATCH_RUNS[run]?.defaultEnv || 'test'
     step.auto_advance = Boolean(extras.auto_advance)
+    step.jobs = Array.isArray(extras.jobs) ? extras.jobs : defaultJobsForKind('dispatch')
+  } else {
+    step.workflow_id = extras.workflow_id || defaultChainIdForKind(meta.id, extras.track)
+    step.jobs = Array.isArray(extras.jobs) ? extras.jobs : defaultJobsForKind(meta.id, extras.track)
   }
   return step
 }
@@ -151,8 +296,8 @@ function reqDefaultSteps(envKeys, environments) {
   const first = keys[0]
   const firstName = envLabel(first, environments)
   const steps = [
-    makeStep('understand', { id: 'read', label: '需求评审', hint: '看需求，列出验收标准。确认理解没问题，再去准备用例。' }),
-    makeStep('cover', { id: 'cases', label: '用例准备', hint: '每个测试点挂上飞书用例，或标明本版本不测。' }),
+    makeStep('understand', { id: 'read', track: 'req', label: '需求评审', hint: '看需求，列出验收标准。确认理解没问题，再去准备用例。' }),
+    makeStep('cover', { id: 'cases', track: 'req', label: '用例准备', hint: '一个测试点按正向、异常、边界等情况展开成多条用例；写用例时会反推脑图缺不缺点。' }),
     makeStep('dispatch', {
       id: 'admit',
       label: `${firstName}冒烟`,
@@ -181,8 +326,8 @@ function reqDefaultSteps(envKeys, environments) {
       auto_advance: true,
     }))
   })
-  steps.push(makeStep('human_verdict', { id: 'sign', label: '测试验收', hint: '对照验收标准和各环境跑测结果，由测试判定是否通过。' }))
-  steps.push(makeStep('archive', { id: 'hand', label: '测试完成', hint: '本需求在各环境都测完，可以挂进版本。' }))
+  steps.push(makeStep('human_verdict', { id: 'sign', track: 'req', label: '测试验收', hint: '对照验收标准和各环境跑测结果，由测试判定是否通过。' }))
+  steps.push(makeStep('archive', { id: 'hand', track: 'req', label: '测试完成', hint: '本需求在各环境都测完，可以挂进版本。' }))
   return steps
 }
 
@@ -195,13 +340,15 @@ function relDefaultSteps(envKeys, environments) {
   const steps = [
     makeStep('scope', {
       id: 'lock',
+      track: 'rel',
       label: '纳入需求',
       hint: '定开测日期，确认本版本要带上哪些需求。没在各环境测完的需求不能当发版依据。',
     }),
     makeStep('scope', {
       id: 'scope',
+      track: 'rel',
       label: '历史回归',
-      hint: `圈定历史功能要在${preTitle}跑的飞书用例，确认老功能没被带坏。`,
+      hint: `圈定历史功能要在${preTitle}跑的用例库用例，确认老功能没被带坏。`,
     }),
     makeStep('dispatch', {
       id: 'pre',
@@ -213,6 +360,7 @@ function relDefaultSteps(envKeys, environments) {
     }),
     makeStep('human_verdict', {
       id: 'gate',
+      track: 'rel',
       label: '发版评审',
       hint: '对照纳入需求和回归结果：可以发、带风险发、或不发。',
     }),
@@ -227,7 +375,7 @@ function relDefaultSteps(envKeys, environments) {
       auto_advance: false,
     }))
   }
-  steps.push(makeStep('archive', { id: 'close', label: '已结束', hint: '本版本测试结束。' }))
+  steps.push(makeStep('archive', { id: 'close', track: 'rel', label: '已结束', hint: '本版本测试结束。' }))
   return steps
 }
 
@@ -239,6 +387,46 @@ export function defaultWorkflow(opts = {}) {
     tracks: {
       req: { label: '需求测试', steps: reqDefaultSteps(keys, environments) },
       rel: { label: '版本测试', steps: relDefaultSteps(keys, environments) },
+    },
+    chains: defaultChains(),
+  }
+}
+
+/** 上线顺序里多出来的环境，补进需求测试下发阶段（插在验收前）。不改已有阶段。 */
+export function ensurePipelineDispatch(workflow, envKeys, environments) {
+  const keys = activeEnvKeys(envKeys)
+  if (!keys.length) return workflow
+  const source = workflow && typeof workflow === 'object' ? workflow : resolveWorkflow(workflow)
+  const reqSteps = source?.tracks?.req?.steps
+  if (!Array.isArray(reqSteps) || !reqSteps.length) {
+    return resolveWorkflow(source)
+  }
+  const used = new Set(reqSteps.filter((s) => s.kind === 'dispatch').map((s) => String(s.env || '')))
+  const extras = []
+  keys.forEach((key) => {
+    if (used.has(key)) return
+    const name = envLabel(key, environments)
+    extras.push(makeStep('dispatch', {
+      id: `req-${key}`,
+      label: `${name}功能测试`,
+      hint: `本需求在${name}再跑一遍。每个需求都要覆盖上线顺序里的全部环境。`,
+      run: 'req_test',
+      env: key,
+      auto_advance: true,
+      track: 'req',
+    }))
+    used.add(key)
+  })
+  if (!extras.length) return source
+  const steps = [...reqSteps]
+  const insertAt = steps.findIndex((s) => s.kind === 'human_verdict' || s.kind === 'archive')
+  const at = insertAt < 0 ? steps.length : insertAt
+  steps.splice(at, 0, ...extras)
+  return {
+    ...source,
+    tracks: {
+      ...source.tracks,
+      req: { ...source.tracks.req, steps },
     },
   }
 }
@@ -302,11 +490,16 @@ function normalizeStep(raw, track) {
     label = fresh.label
     hint = fresh.hint
   }
+  if (kind === 'cover' && /飞书/.test(hint)) hint = defaultHint(kind)
   const step = {
     id,
     label,
     hint,
     kind,
+    workflow_id: String(raw?.workflow_id || fresh?.workflow_id || defaultChainIdForKind(kind, track) || ''),
+    jobs: Array.isArray(raw?.jobs)
+      ? raw.jobs.map((j) => (typeof j === 'string' ? j : (j?.capability_id || j?.id || ''))).filter(Boolean)
+      : defaultJobsForKind(kind, track),
   }
   if (kind === 'dispatch') {
     const fallbackRun = track === 'rel' ? 'release_regression' : 'req_test'
@@ -344,6 +537,7 @@ export function resolveWorkflow(doc) {
       req: normalizeTrack(doc.tracks?.req, 'req'),
       rel: normalizeTrack(doc.tracks?.rel, 'rel'),
     },
+    chains: normalizeChains(doc.chains),
   }
 }
 

@@ -85,7 +85,7 @@ export function emptyUnderstanding() {
     confirmed_at: '',
     source_excerpt: '',
     ac: [''],
-    impact: { platforms: [], notes: '' },
+    impact: { platforms: [], notes: '', e2e: false, how_to_run: '' },
     points: [],
     stale_risks: [],
     rule_candidates: [],
@@ -119,11 +119,18 @@ export function extractUnderstanding(sourceText, { title } = {}) {
   const platforms = []
   if (/ios|iphone|苹果/i.test(text)) platforms.push('ios')
   if (/android|安卓/i.test(text)) platforms.push('android')
+  if (/app|移动端|客户端/i.test(text)) platforms.push('app')
+  if (/web|h5|后台|管理端|网页|运营平台|运营后台|cms/i.test(text)) platforms.push('web')
+  const e2e = /端到端|跨端/.test(text)
+  if (e2e) platforms.push('e2e')
 
   const notes = []
   if (/登录|账号|token/i.test(text)) notes.push('账号态')
   if (/支付|订单|钱包/.test(text)) notes.push('支付')
   if (/权限|相册|相机|定位/.test(text)) notes.push('系统权限')
+  if (/上传|选图|本地图片/.test(text)) notes.push('图片上传')
+  if (/运营平台|运营后台/.test(text)) notes.push('运营平台')
+  if (e2e) notes.push('端到端')
 
   const points = ac.map((item, i) => ({
     id: `tp${i + 1}`,
@@ -159,9 +166,14 @@ export function extractUnderstanding(sourceText, { title } = {}) {
     version: 1,
     confirmed: false,
     confirmed_at: '',
-    source_excerpt: text.slice(0, 8000),
+    source_excerpt: text.slice(0, 20000),
     ac,
-    impact: { platforms, notes: notes.join('、') },
+    impact: {
+      platforms,
+      notes: notes.join('、'),
+      e2e,
+      how_to_run: e2e ? '需要跨端验证' : '',
+    },
     points,
     stale_risks: [],
     rule_candidates,
@@ -242,6 +254,53 @@ export function reqOptionLabel(req, workflow) {
   return `${tag} · ${gateLabel('req', req.gate, workflow)} · ${req.title}`
 }
 
+export function flattenMindmap(root) {
+  const rows = []
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object') return
+    const name = String(node.text || node.title || node.name || '').trim()
+    const kind = String(node.kind || '')
+    const children = (node.children || []).filter((c) => c && typeof c === 'object')
+    const isLeaf = !children.length
+    const isPoint = Boolean(name) && kind !== 'root' && kind !== 'platform' && (
+      kind === 'point' || (isLeaf && kind !== 'module' && kind !== 'feature')
+    )
+    if (name && kind !== 'root' && kind !== 'platform') {
+      rows.push({
+        name,
+        kind,
+        depth,
+        detail: String(node.detail || '').trim(),
+        isLeaf,
+        isPoint,
+      })
+    }
+    for (const child of children) walk(child, depth + (kind === 'root' || kind === 'platform' ? 0 : 1))
+  }
+  walk(root, 0)
+  return rows
+}
+
+export function mindmapPointRows(root) {
+  return flattenMindmap(root).filter((row) => row.isPoint)
+}
+
+export function coverHistory(req, job) {
+  return [...(req?.cover_history || [])]
+    .filter((row) => row && (!job || row.job === job))
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+}
+
+export function coverReady(req) {
+  const points = mindmapPointRows(req?.mindmap)
+  const cases = req?.draft_cases || []
+  if (!points.length) return { ok: false, reason: '测试脑图还没写完，请等待或重试' }
+  if (!cases.length) return { ok: false, reason: '用例还没写完，请等待或重试' }
+  const { gaps } = coverageStats(req)
+  if (gaps) return { ok: false, reason: `还有 ${gaps} 个测试点没挂用例（可标「本版本不测」）` }
+  return { ok: true }
+}
+
 export function coverageStats(req) {
   const points = req?.understanding?.points || []
   const total = points.length
@@ -256,7 +315,51 @@ export function linkedCaseIds(req) {
     for (const id of p.case_ids || []) if (id) set.add(id)
   }
   for (const id of req?.case_ids || []) if (id) set.add(id)
+  for (const row of req?.draft_cases || []) {
+    if (row?.case_id) set.add(row.case_id)
+  }
   return [...set]
+}
+
+/** 流程里写出来的用例，转成和下发对话框同一套结构。 */
+export function generatedCasesFromProcess(requirements = []) {
+  const rows = []
+  for (const req of requirements || []) {
+    const title = String(req?.title || req?.external_id || '需求').trim() || '需求'
+    for (const raw of req?.draft_cases || []) {
+      if (!raw || typeof raw !== 'object') continue
+      const caseId = String(raw.case_id || '').trim()
+      if (!caseId) continue
+      const stepsRaw = Array.isArray(raw.steps) ? raw.steps.join('\n') : String(raw.steps || raw.steps_raw || '')
+      const expectedRaw = Array.isArray(raw.expected) ? raw.expected.join('\n') : String(raw.expected || raw.expected_raw || '')
+      const module = String(raw.module || '').trim()
+      rows.push({
+        ...raw,
+        case_id: caseId,
+        name: raw.name || raw.title || caseId,
+        title: raw.name || raw.title || caseId,
+        module: module ? `本需求生成 / ${title} / ${module}` : `本需求生成 / ${title}`,
+        source: 'generated',
+        requirement_id: req.id || raw.requirement_id || '',
+        requirement_title: title,
+        steps: Array.isArray(raw.steps) ? raw.steps : [],
+        expected: Array.isArray(raw.expected) ? raw.expected : [],
+        steps_raw: stepsRaw,
+        expected_raw: expectedRaw,
+        precondition: raw.precondition || raw.pre || '',
+        platform: raw.platform || '',
+      })
+    }
+  }
+  return rows
+}
+
+export function mergeRunCases(primary = [], extra = []) {
+  const by = new Map()
+  for (const c of [...(primary || []), ...(extra || [])]) {
+    if (c?.case_id && !by.has(String(c.case_id))) by.set(String(c.case_id), c)
+  }
+  return [...by.values()]
 }
 
 function canLeaveStep(track, entity, current, next) {
@@ -278,10 +381,7 @@ function canLeaveStep(track, entity, current, next) {
     return { ok: true }
   }
   if (current.kind === 'cover') {
-    const { gaps, total } = coverageStats(entity)
-    if (!total) return { ok: false, reason: '还没有测试点' }
-    if (gaps) return { ok: false, reason: `还有 ${gaps} 个测试点没挂用例（可标「本版本不测」）` }
-    return { ok: true }
+    return coverReady(entity)
   }
   if (current.kind === 'scope') {
     if (next?.kind === 'dispatch' && !(entity?.case_ids || []).length) {
@@ -430,6 +530,9 @@ export function createRelease({ title, requirement_ids = [], workflow } = {}) {
 }
 
 export const ASSIST_JOBS = [
+  { id: 'analyze_req', label: '需求分析' },
+  { id: 'draft_mindmap', label: '测试脑图' },
+  { id: 'draft_cases', label: '写用例' },
   { id: 'map_cases', label: '对照用例' },
   { id: 'classify_fail', label: '失败分类' },
   { id: 'draft_sign', label: '验收建议' },
@@ -544,14 +647,14 @@ export function mapCasesJob({ req, cases = [] } = {}) {
       gaps.push({
         point_id: p.id,
         point_text: p.text,
-        reason: exactIds.size ? '池里没有能对上的步骤，去飞书表补' : '飞书「需求ID」列没有本需求编号',
+        reason: exactIds.size ? '池里没有能对上的步骤，去用例库补或手写草稿' : '用例库没有能对上本需求编号的用例',
       })
     }
   }
   return createArtifact({
     job: 'map_cases',
     suggest: gaps.length
-      ? `${gaps.length} 个测试点还缺用例，去飞书表补或手选`
+      ? `${gaps.length} 个测试点还缺用例，去用例库补或手选`
       : (mappings.length ? `${mappings.length} 个测试点可挂用例，采纳后才算覆盖` : '测试点已挂满，或还没有测试点'),
     citations: mappings.flatMap((m) => m.suggest.map((s) => s.case_id)),
     payload: { mappings, gaps, pool_count: exactIds.size || poolRows.length },
@@ -994,4 +1097,86 @@ export function formatShortDate(iso) {
   const d = parseWhen(iso)
   if (!d) return '—'
   return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+export function sortReleases(releases = []) {
+  return [...(releases || [])].filter(Boolean).sort((a, b) => {
+    const ta = String(a.created_at || a.updated_at || '')
+    const tb = String(b.created_at || b.updated_at || '')
+    if (ta !== tb) return ta.localeCompare(tb)
+    return String(a.title || '').localeCompare(String(b.title || ''))
+  })
+}
+
+export function previousRelease(releases, release) {
+  if (!release) return null
+  const sorted = sortReleases(releases)
+  const idx = sorted.findIndex((r) => r.id === release.id)
+  return idx > 0 ? sorted[idx - 1] : null
+}
+
+function hungPaths(atlas, reqId) {
+  const rid = String(reqId || '')
+  if (!rid) return []
+  const rows = []
+  const walk = (mod, path) => {
+    const next = [...path, mod.name]
+    if ((mod.req_ids || []).includes(rid)) rows.push(next.join('-'))
+    for (const child of mod.children || []) walk(child, next)
+    for (const feat of mod.features || []) {
+      if ((feat.req_ids || []).includes(rid)) rows.push([...next, feat.name].join('-'))
+    }
+  }
+  for (const mod of atlas?.modules || []) walk(mod, [])
+  return [...new Set(rows)]
+}
+
+function nodePaths(atlas) {
+  const rows = []
+  const walk = (mod, path) => {
+    const next = [...path, mod.name]
+    rows.push(next.join('-'))
+    for (const child of mod.children || []) walk(child, next)
+    for (const feat of mod.features || []) rows.push([...next, feat.name].join('-'))
+  }
+  for (const mod of atlas?.modules || []) walk(mod, [])
+  return new Set(rows)
+}
+
+/** 这条需求相对上一版本：完全新增 / 修改已有功能 / 新增功能。 */
+export function reqVersionImpact(req, releases = [], atlas) {
+  const sorted = sortReleases(releases)
+  const hungOn = sorted.filter((r) => (r.requirement_ids || []).includes(req?.id))
+  const target = hungOn[hungOn.length - 1] || sorted[sorted.length - 1] || null
+  const prev = target ? previousRelease(sorted, target) : null
+  const currentAtlas = atlas || target?.atlas || {}
+  const current = hungPaths(currentAtlas, req?.id)
+  if (!prev) {
+    return {
+      kind: 'new',
+      label: '完全新增',
+      vs: null,
+      target,
+      added: current,
+      changed: [],
+    }
+  }
+  const prevNodes = nodePaths(prev.atlas || {})
+  const prevHung = hungPaths(prev.atlas || {}, req?.id)
+  const added = current.filter((p) => !prevNodes.has(p))
+  const changed = current.filter((p) => prevNodes.has(p))
+  if (!prevHung.length && !changed.length) {
+    return { kind: 'new', label: `相对 ${prev.title} 完全新增`, vs: prev, target, added: current, changed: [] }
+  }
+  const bits = []
+  if (changed.length) bits.push(`修改 ${changed.slice(0, 3).join('、')}`)
+  if (added.length) bits.push(`新增 ${added.slice(0, 3).join('、')}`)
+  return {
+    kind: added.length && !changed.length ? 'add' : 'change',
+    label: bits.join('，') || `相对 ${prev.title} 修改`,
+    vs: prev,
+    target,
+    added,
+    changed,
+  }
 }

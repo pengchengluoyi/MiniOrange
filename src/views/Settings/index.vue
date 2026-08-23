@@ -1,52 +1,58 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, Cpu, Key, Monitor, Calendar } from '@element-plus/icons-vue'
+import { Setting, Cpu, Key, Monitor, User, Operation, Connection, Avatar, Files } from '@element-plus/icons-vue'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
-import { returnFromSettingsPath } from '@/utils/workMode'
+import { rememberSettingsPath, returnFromSettingsPath } from '@/utils/workMode'
+import { useAppChrome } from '@/composables/useAppChrome'
 import './settings-ui.css'
 
 const route = useRoute()
 const router = useRouter()
-const isMac = ref(false)
-
-onMounted(() => {
-  isMac.value = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
-})
+const { isElectron, showMacTraffic, showWinControls, handleMinimize, handleMaximize, handleClose } = useAppChrome()
 
 const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
-  { id: 'schedule', label: '定时任务', icon: Calendar, to: '/settings/schedule' },
-  { id: 'skills', label: 'Skills', icon: Cpu, to: '/settings/skills' },
-  { id: 'packs', label: '扩展', icon: Cpu, to: '/settings/packs' },
-  { id: 'keys', label: '密钥配置', icon: Key, to: '/settings/keys' },
+  { id: 'skills', label: '能力目录', icon: Cpu, to: '/settings/skills' },
+  { id: 'roles', label: '角色', icon: User, to: '/settings/roles' },
+  { id: 'dispatch', label: '调用记录', icon: Operation, to: '/settings/dispatch' },
+  { id: 'plugins', label: '插件', icon: Connection, to: '/settings/plugins' },
+  { id: 'packs', label: '扩展包', icon: Files, to: '/settings/packs' },
+  { id: 'keys', label: '密钥与发信', icon: Key, to: '/settings/keys' },
+  { id: 'accounts', label: '登录账号', icon: Avatar, to: '/settings/accounts' },
   { id: 'system', label: '系统设置', icon: Setting, to: '/settings/system' },
 ]
 
 const runtimeSubNav = [
-  { id: 'overview', label: '运行概览', query: { view: 'overview' } },
-  { id: 'topology', label: '多机方案', query: { view: 'topology' } },
+  { id: 'overview', label: '运行概览' },
+  { id: 'topology', label: '多机方案' },
+  { id: 'schedule', label: '定时任务', to: { name: 'SettingsSchedule' } },
 ]
 
-const keysSubNav = [
-  { id: 'model-keys', label: '大模型 Key', query: { tab: 'model-keys' } },
-  { id: 'robots', label: '机器人', query: { tab: 'robots' } },
+const pluginSubNav = [
+  { id: 'all', label: '全部' },
+  { id: 'docs', label: '文档' },
+  { id: 'im', label: 'IM' },
+  { id: 'defect', label: '缺陷' },
+  { id: 'design', label: '设计' },
 ]
 
 const appConfigSubNav = [
   { key: 'env', label: '环境配置' },
-  { key: 'flow', label: '流程模板' },
-  { key: 'logic', label: '应用逻辑' },
-  { key: 'regression', label: '用例来源' },
+  { key: 'flow', label: '阶段模板' },
+  { key: 'workflow', label: '角色编排' },
   { key: 'figma', label: '设计稿' },
 ]
 
 const isActive = (s) => {
   if (s.id === 'runtime') {
-    return route.path.startsWith('/settings/runtime')
+    return route.path.startsWith('/settings/runtime') || route.path.startsWith('/settings/schedule')
   }
   if (s.id === 'keys') {
-    return route.path.startsWith('/settings/keys') || route.path.startsWith('/settings/ai') || route.path.startsWith('/settings/feishu')
+    return route.path.startsWith('/settings/keys') || route.path.startsWith('/settings/ai')
+  }
+  if (s.id === 'plugins') {
+    return route.path.startsWith('/settings/plugins') || route.path.startsWith('/settings/feishu')
   }
   if (s.id === 'system') {
     return route.path.startsWith('/settings/system')
@@ -73,11 +79,25 @@ const secondaryNav = computed(() => {
       })),
     }
   }
-  if (route.path.startsWith('/settings/runtime') && route.name !== 'SettingsDeviceDetail') {
+  if (
+    (route.path.startsWith('/settings/runtime') && route.name !== 'SettingsDeviceDetail')
+    || route.name === 'SettingsSchedule'
+  ) {
     return { kind: 'simple', parent: 'runtime', items: runtimeSubNav }
   }
-  if (route.path.startsWith('/settings/keys')) {
-    return { kind: 'simple', parent: 'keys', items: keysSubNav }
+  if (route.path.startsWith('/settings/plugins')) {
+    return {
+      kind: 'simple',
+      parent: 'plugins',
+      items: pluginSubNav.map((item) => ({
+        id: item.id,
+        label: item.label,
+        to: {
+          name: 'SettingsPlugins',
+          query: item.id === 'all' ? {} : { cat: item.id },
+        },
+      })),
+    }
   }
   return null
 })
@@ -87,16 +107,14 @@ const isSubActive = (item) => {
     return route.params.section === item.id
   }
   if (secondaryNav.value?.parent === 'runtime') {
+    if (item.id === 'schedule') return route.name === 'SettingsSchedule'
+    if (route.name === 'SettingsSchedule') return false
     const view = route.query.view || (route.query.tab === 'cluster' ? 'topology' : 'overview')
     return view === item.id
   }
-  if (secondaryNav.value?.parent === 'hub') {
-    const tab = route.query.tab === 'knowledge' ? 'knowledge' : 'projects'
-    return tab === item.id
-  }
-  if (secondaryNav.value?.parent === 'keys') {
-    const tab = route.query.tab === 'robots' ? 'robots' : 'model-keys'
-    return tab === item.id
+  if (secondaryNav.value?.parent === 'plugins') {
+    const cat = String(route.query.cat || 'all')
+    return cat === item.id
   }
   return false
 }
@@ -106,12 +124,12 @@ const go = (s) => {
     router.push({ path: '/settings/runtime', query: { view: 'overview' } })
     return
   }
-  if (s.id === 'hub') {
-    router.push({ path: '/settings/hub' })
-    return
-  }
   if (s.id === 'keys') {
     router.push({ path: '/settings/keys', query: { tab: 'model-keys' } })
+    return
+  }
+  if (s.id === 'plugins') {
+    router.push({ name: 'SettingsPlugins' })
     return
   }
   router.push(s.to)
@@ -124,16 +142,15 @@ const goSub = (item) => {
   }
   const parent = secondaryNav.value?.parent
   if (parent === 'runtime') {
+    if (item.to) {
+      router.push(item.to)
+      return
+    }
     router.replace({ path: '/settings/runtime', query: { ...route.query, view: item.id, tab: undefined } })
     return
   }
-  if (parent === 'hub') {
-    const nextQuery = item.id === 'knowledge' ? { tab: 'knowledge' } : {}
-    router.replace({ name: 'SettingsHub', query: nextQuery })
-    return
-  }
-  if (parent === 'keys') {
-    router.replace({ path: '/settings/keys', query: { tab: item.id } })
+  if (parent === 'plugins') {
+    router.push(item.to)
   }
 }
 
@@ -145,16 +162,18 @@ const leaveSettings = () => {
   router.push(returnFromSettingsPath())
 }
 
-const handleMinimize = () => window.electronAPI?.minimize()
-const handleMaximize = () => window.electronAPI?.maximize()
-const handleClose = () => window.electronAPI?.close()
+watch(
+  () => route.fullPath,
+  (p) => rememberSettingsPath(p),
+  { immediate: true },
+)
 </script>
 
 <template>
-  <div class="settings-layout">
+  <div class="settings-layout" :class="{ 'is-electron': isElectron }">
     <div class="settings-sidebar-col">
-      <div class="aside-chrome">
-        <div v-if="isMac" class="mac-traffic-zone" aria-hidden="true" />
+      <div v-if="isElectron" class="aside-chrome">
+        <div v-if="showMacTraffic" class="mac-traffic-zone" aria-hidden="true" />
       </div>
 
       <aside class="settings-aside">
@@ -217,7 +236,7 @@ const handleClose = () => window.electronAPI?.close()
       <router-view />
     </main>
 
-    <div v-if="!isMac" class="settings-win-controls">
+    <div v-if="showWinControls" class="settings-win-controls">
       <div class="control-btn minimize" @click="handleMinimize">
         <el-icon><Minus /></el-icon>
       </div>
@@ -363,7 +382,7 @@ const handleClose = () => window.electronAPI?.close()
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 28px 48px;
+  padding: 14px 20px 24px;
   position: relative;
 }
 

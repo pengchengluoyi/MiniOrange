@@ -11,8 +11,10 @@ import {
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 import { fetchTaskDetail } from '@/composables/useTestingTasks'
-import { getFeishuCasesCached } from '@/api/feishuRegression'
+import { getAppAutomationConfig } from '@/api/appAutomation'
 import { reviewKnowledgeItem } from '@/api/settings'
+import { generatedCasesFromProcess } from '@/utils/qaProcess'
+import { envLabel } from '@/constants/envProfiles'
 import { normalizeCaseRow } from '@/utils/caseText'
 import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import {
@@ -21,6 +23,10 @@ import {
   coverageLabel,
   formatElapsed,
   formatTaskDevices,
+  formatTaskWhen,
+  runKindLabel,
+  taskElapsedMs,
+  taskPackageLabel,
   isMissingTaskEndpoint,
   isStepLimitCase,
   platformLabel,
@@ -28,7 +34,6 @@ import {
   shortDeviceLabel,
   statusLabel,
   statusTagType,
-  taskCountLabel,
   taskCoverage,
   taskPassRate,
   taskPlatformOfSn,
@@ -66,6 +71,7 @@ const hitlPending = ref(null)
 const cancelling = ref(false)
 const retrying = ref(false)
 const catalog = ref([])
+const processMeta = ref({ requirements: [], releases: [] })
 
 const caseRunIdOf = (c) => c.report_run_id || (c.case_id ? `${props.taskId}::${c.case_id}` : '')
 
@@ -119,6 +125,18 @@ const skippedCases = computed(() =>
   (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
 )
 const passRate = computed(() => taskPassRate(task.value))
+const progressPct = computed(() => taskProgressPct(task.value))
+const headStats = computed(() => {
+  const cases = task.value?.cases || []
+  return {
+    total: Number(task.value?.total || cases.length || 0),
+    passed: Number(task.value?.passed || 0),
+    failed: Number(task.value?.failed || 0),
+    blocked: Number(task.value?.blocked || 0),
+    running: cases.filter((c) => c.status === 'running').length,
+    pending: cases.filter((c) => isPendingStatus(c.status)).length,
+  }
+})
 const caseRailOpen = ref(true)
 const selectedCase = computed(() =>
   (task.value?.cases || []).find((c) => caseRunIdOf(c) === selectedCaseRunId.value) || null,
@@ -127,6 +145,57 @@ const showTimeline = computed(() => {
   const s = selectedCase.value?.status
   return Boolean(selectedCaseRunId.value && s && !['pending', 'cancelled', 'skipped'].includes(s))
 })
+const releaseTitle = computed(() => {
+  const id = String(task.value?.releaseId || '')
+  if (!id) return ''
+  return processMeta.value.releases.find((r) => r.id === id)?.title || ''
+})
+const requirementTitle = computed(() => {
+  const id = String(task.value?.requirementId || '')
+  if (!id) return ''
+  return processMeta.value.requirements.find((r) => r.id === id)?.title || ''
+})
+const taskFacts = computed(() => {
+  const t = task.value
+  if (!t) return []
+  const elapsed = formatElapsed(taskElapsedMs(t))
+  const pkg = taskPackageLabel(t)
+  const model = [t.providerName, t.modelName].filter(Boolean).join(' · ')
+  const rows = [
+    { k: '应用', v: t.appName || '' },
+    { k: '环境', v: t.envProfile ? envLabel(t.envProfile) : '' },
+    { k: '测试应用版本', v: releaseTitle.value },
+    { k: '需求', v: requirementTitle.value },
+    { k: '来源', v: runKindLabel(t) },
+    { k: '测试包', v: pkg },
+    { k: '端', v: platformLabel(t.platform) },
+    { k: '覆盖', v: taskSns(t).length > 1 ? coverageLabel(taskCoverage(t)) : '' },
+    { k: '设备', v: formatTaskDevices(t) },
+    { k: '模型', v: model },
+    { k: '开始', v: formatTaskWhen(t.startedAt) },
+    { k: '结束', v: formatTaskWhen(t.finishedAt) },
+    { k: '耗时', v: elapsed },
+    { k: '任务编号', v: t.taskId || '' },
+  ]
+  return rows.filter((row) => row.v && row.v !== '—')
+})
+const headChips = computed(() => taskFacts.value
+  .filter((row) => ['应用', '环境', '测试应用版本', '端', '测试包', '模型', '耗时'].includes(row.k))
+  .slice(0, 6))
+const factGroups = computed(() => {
+  const map = Object.fromEntries(taskFacts.value.map((row) => [row.k, row.v]))
+  if (!map['测试应用版本']) map['测试应用版本'] = '未绑定'
+  return [
+    { title: '测试对象', keys: ['应用', '环境', '测试应用版本', '测试包', '端'] },
+    { title: '执行', keys: ['来源', '需求', '设备', '覆盖', '模型', '任务编号'] },
+    { title: '时间', keys: ['开始', '结束', '耗时'] },
+  ].map((group) => ({
+    ...group,
+    rows: group.keys.map((k) => ({ k, v: map[k] })).filter((row) => row.v),
+  })).filter((group) => group.rows.length)
+})
+const isFactMuted = (row) => row.v === '未绑定'
+const isFactMono = (row) => ['任务编号', '测试包'].includes(row.k)
 const isMatrix = computed(() => taskCoverage(task.value) === 'per_device' && taskSns(task.value).length > 1)
 const deviceLanes = computed(() => {
   const sns = taskSns(task.value)
@@ -282,6 +351,29 @@ const selectCase = async (c) => {
   await loadHeader(id)
 }
 
+const keepReviewedProposals = (prev, next) => {
+  if (!next) return next
+  const reviewed = new Map()
+  const collect = (list) => {
+    for (const p of list || []) {
+      if (p?.id && ['approved', 'rejected'].includes(p.review_status)) {
+        reviewed.set(p.id, p.review_status)
+      }
+    }
+  }
+  collect(prev?.knowledge_proposals)
+  for (const c of prev?.cases || []) collect(c.knowledge_proposals)
+  if (!reviewed.size) return next
+  const apply = (list) => (list || []).map((p) => (
+    reviewed.has(p?.id) ? { ...p, review_status: reviewed.get(p.id) } : p
+  ))
+  return {
+    ...next,
+    knowledge_proposals: apply(next.knowledge_proposals),
+    cases: (next.cases || []).map((c) => ({ ...c, knowledge_proposals: apply(c.knowledge_proposals) })),
+  }
+}
+
 const loadTask = async ({ silent = false } = {}) => {
   if (!props.taskId) return
   if (!silent) loading.value = true
@@ -290,7 +382,7 @@ const loadTask = async ({ silent = false } = {}) => {
     if (next && (!next.cases || !next.cases.length) && props.seed?.cases?.length) {
       next = { ...next, cases: props.seed.cases }
     }
-    task.value = next
+    task.value = keepReviewedProposals(task.value, next)
 
     const stillValid = selectedCaseRunId.value
       && next?.cases?.some((c) => caseRunIdOf(c) === selectedCaseRunId.value)
@@ -430,6 +522,7 @@ const approveProposal = async (row) => {
       content: row.content,
       category: row.category,
       tags: row.tags || [],
+      origin_task_id: props.taskId,
     })
     markProposalStatus(row.id, 'approved')
     ElMessage.success('已审核并加入知识库')
@@ -444,7 +537,7 @@ const rejectProposal = async (row) => {
   if (!row?.id) return
   reviewingId.value = row.id
   try {
-    await reviewKnowledgeItem(row.id, { action: 'reject' })
+    await reviewKnowledgeItem(row.id, { action: 'reject', origin_task_id: props.taskId })
     markProposalStatus(row.id, 'rejected')
     ElMessage.success('已驳回')
   } catch (e) {
@@ -471,7 +564,9 @@ const onWs = (res) => {
   } else if (type === 'testing_task') {
     const tid = data.task_id
     if (tid && tid !== props.taskId) return
-    if (task.value) task.value = applyTestingTaskEvent(task.value, data)
+    if (task.value) {
+      task.value = keepReviewedProposals(task.value, applyTestingTaskEvent(task.value, data))
+    }
     if (data.event === 'case_running' && data.case) {
       const row = (task.value?.cases || []).find((c) => c.case_id === data.case.case_id)
       if (row) selectCase(row)
@@ -513,10 +608,14 @@ watch(
 const loadCatalog = async () => {
   if (!props.appId) return
   try {
-    const r = await getFeishuCasesCached(props.appId, false)
-    catalog.value = r?.data?.cases || []
+    const r = await getAppAutomationConfig(props.appId)
+    const proc = r?.data?.automation?.qa_process || {}
+    const reqs = proc.requirements || []
+    processMeta.value = { requirements: reqs, releases: proc.releases || [] }
+    catalog.value = generatedCasesFromProcess(reqs)
   } catch (_) {
     catalog.value = []
+    processMeta.value = { requirements: [], releases: [] }
   }
 }
 
@@ -567,35 +666,58 @@ const saveReview = async () => {
   <div class="pane" v-loading="loading">
     <template v-if="task">
       <div class="pane-head">
-        <div class="pane-head-row">
-          <el-tag :type="statusTagType(task.status, task)" effect="dark" round>{{ statusLabel(task.status, task) }}</el-tag>
-          <span class="title" :title="task.taskId">{{ taskTitle(task) }}</span>
-          <el-tag v-if="taskSns(task).length > 1" size="small" effect="plain" round>{{ coverageLabel(taskCoverage(task)) }}</el-tag>
-          <span v-if="taskSns(task).length" class="muted">设备 {{ formatTaskDevices(task) }}</span>
-          <span>通过 {{ task.passed }} · 失败 {{ task.failed }}{{ task.blocked ? ` · 阻塞 ${task.blocked}` : '' }}</span>
-          <span>{{ taskCountLabel(task) }}<template v-if="passRate != null && displayTaskStatus(task) !== 'cancelled'"> · 通过率 {{ passRate }}%</template></span>
-          <el-button size="small" text @click="copyTaskId">复制任务编号</el-button>
-          <el-button
-            v-if="task.status === 'running' || task.status === 'queued'"
-            size="small"
-            type="warning"
-            plain
-            :loading="cancelling"
-            @click="cancelTask"
-          >取消任务</el-button>
-          <el-button
-            v-if="failedCases.length && task.status !== 'running'"
-            size="small"
-            plain
-            :loading="retrying"
-            @click="retryFailed"
-          >重跑失败用例</el-button>
+        <div class="pane-head-main">
+          <div class="pane-head-info">
+            <div class="pane-head-title-row">
+              <el-tag :type="statusTagType(task.status, task)" effect="dark" round>{{ statusLabel(task.status, task) }}</el-tag>
+              <span class="title" :title="taskTitle(task)">{{ taskTitle(task) }}</span>
+              <el-tag v-if="taskSns(task).length > 1" size="small" effect="plain" round>{{ coverageLabel(taskCoverage(task)) }}</el-tag>
+            </div>
+            <div class="pane-head-stats">
+              <span>全部 {{ headStats.total }}</span>
+              <span class="ok">通过 {{ headStats.passed }}</span>
+              <span class="bad">失败 {{ headStats.failed }}</span>
+              <span v-if="headStats.blocked">阻塞 {{ headStats.blocked }}</span>
+              <span v-if="headStats.running">运行中 {{ headStats.running }}</span>
+              <span v-if="headStats.pending">等待 {{ headStats.pending }}</span>
+              <span v-if="passRate != null && displayTaskStatus(task) !== 'cancelled'">通过率 {{ passRate }}%</span>
+              <span v-if="taskSns(task).length">设备 {{ formatTaskDevices(task) }}</span>
+            </div>
+            <div v-if="headChips.length" class="pane-head-chips">
+              <span v-for="chip in headChips" :key="chip.k" class="head-chip" :title="`${chip.k} ${chip.v}`">
+                <em>{{ chip.k }}</em>{{ chip.v }}
+              </span>
+            </div>
+          </div>
+          <div class="pane-head-actions">
+            <slot name="actions" />
+            <el-button size="small" text @click="copyTaskId">复制任务编号</el-button>
+            <el-button
+              v-if="task.status === 'running' || task.status === 'queued'"
+              size="small"
+              type="warning"
+              plain
+              :loading="cancelling"
+              @click="cancelTask"
+            >取消任务</el-button>
+            <el-button
+              v-if="failedCases.length && task.status !== 'running'"
+              size="small"
+              plain
+              :loading="retrying"
+              @click="retryFailed"
+            >重跑失败用例</el-button>
+          </div>
         </div>
-        <el-progress
-          :percentage="taskProgressPct(task)"
-          :stroke-width="6"
-          :status="progressStatus(task)"
-        />
+        <div class="pane-progress">
+          <el-progress
+            :percentage="progressPct"
+            :stroke-width="8"
+            :show-text="false"
+            :status="progressStatus(task)"
+          />
+          <span class="pane-progress-pct">{{ progressPct }}%</span>
+        </div>
         <div v-if="deviceLanes.length > 1" class="device-lanes">
           <div
             v-for="lane in deviceLanes"
@@ -621,13 +743,28 @@ const saveReview = async () => {
 
       <div class="seg">
         <button type="button" :class="{ active: view === 'cases' }" @click="view = 'cases'">用例与时间线</button>
+        <button type="button" :class="{ active: view === 'info' }" @click="view = 'info'">任务详情</button>
         <button type="button" :class="{ active: view === 'summary' }" @click="view = 'summary'">总结报表</button>
         <button type="button" :class="{ active: view === 'knowledge' }" @click="view = 'knowledge'">
           待审核知识<template v-if="pendingKnowledge.length"> {{ pendingKnowledge.length }}</template>
         </button>
       </div>
 
-      <template v-if="view === 'summary'">
+      <template v-if="view === 'info'">
+        <div class="info-page">
+          <section v-for="group in factGroups" :key="group.title" class="info-group">
+            <div class="info-kicker">{{ group.title }}</div>
+            <dl class="info-facts">
+              <div v-for="row in group.rows" :key="row.k">
+                <dt>{{ row.k }}</dt>
+                <dd :class="{ muted: isFactMuted(row), mono: isFactMono(row) }">{{ row.v }}</dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      </template>
+
+      <template v-else-if="view === 'summary'">
         <div class="metrics">
           <div class="metric"><div class="k">通过率</div><div class="v">{{ passRate == null ? '—' : `${passRate}%` }}</div></div>
           <div class="metric"><div class="k">通过</div><div class="v ok">{{ task.passed || 0 }}</div></div>
@@ -840,18 +977,22 @@ const saveReview = async () => {
           </div>
           <template v-if="selectedCase">
             <div v-if="caseProposals.length" class="know-block compact">
-              <h4>本条可沉淀的知识</h4>
+              <h4>本条可沉淀的知识 <small>{{ caseProposals.length }}</small></h4>
               <article v-for="row in caseProposals" :key="row.id" class="know-card">
                 <header>
-                  <strong>{{ row.title }}</strong>
+                  <el-input v-model="row.title" size="small" class="know-title" placeholder="知识标题" />
                   <small>{{ SOURCE_LABEL[row.source] || '用例执行' }}</small>
                 </header>
                 <p v-if="row.question" class="know-q">{{ row.question }}</p>
-                <el-input v-model="row.title" size="small" class="know-title" />
-                <el-input v-model="row.content" type="textarea" :rows="3" />
+                <el-input
+                  v-model="row.content"
+                  type="textarea"
+                  class="know-body"
+                  :autosize="{ minRows: 2, maxRows: 5 }"
+                />
                 <div class="know-actions">
-                  <el-button size="small" :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
-                  <el-button size="small" type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并审核通过</el-button>
+                  <el-button link :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
+                  <el-button link type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并通过</el-button>
                 </div>
               </article>
             </div>
@@ -965,28 +1106,186 @@ const saveReview = async () => {
 .matrix-cell.wait { background: #e5e7eb; color: transparent; }
 .matrix-cell.active { outline: 2px solid #111827; }
 .pane-head {
-  padding: 12px 14px;
+  padding: 2px 2px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 1px solid #eef2f7;
+  flex-shrink: 0;
+}
+.pane-head-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.pane-head-info {
+  min-width: 0;
+  flex: 1;
+}
+.pane-head-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pane-head-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+.pane-head-stats > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 600;
+}
+.pane-head-stats .ok { background: #ecfdf5; color: #059669; }
+.pane-head-stats .bad { background: #fef2f2; color: #dc2626; }
+.pane-head-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.head-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: min(360px, 100%);
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e8edf4;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.head-chip em {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+.info-page {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  align-items: start;
+}
+.info-group {
+  padding: 0;
   border: 1px solid #e3e8f0;
   border-radius: 14px;
   background: #fff;
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
-.pane-head-row {
+.info-kicker {
+  color: #4f46e5;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #eef2f7;
+}
+.info-facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 4px 14px 10px;
+}
+.info-facts > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 9px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.info-facts > div:last-child {
+  border-bottom: 0;
+}
+.info-facts dt {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding-top: 2px;
+}
+.info-facts dd {
+  margin: 0;
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.info-facts dd.muted { color: #94a3b8; }
+@media (max-width: 1100px) {
+  .info-page {
+    grid-template-columns: 1fr;
+  }
+}
+.pane-head-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
   align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+@media (max-width: 1100px) {
+  .pane-head-main {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pane-head-actions {
+    justify-content: flex-start;
+  }
+}
+.pane-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pane-progress :deep(.el-progress) {
+  flex: 1;
+  min-width: 0;
+}
+.pane-progress :deep(.el-progress-bar__outer) {
+  overflow: hidden;
+}
+.pane-progress-pct {
+  width: 40px;
+  flex-shrink: 0;
+  text-align: right;
   font-size: 12px;
-  color: #6b7280;
-  margin-bottom: 8px;
+  font-weight: 650;
+  color: #4b5563;
 }
 .mono { font-family: ui-monospace, monospace; color: #111827; font-weight: 600; }
 .title {
   color: #111827;
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: 800;
+  font-size: 16px;
   min-width: 0;
-  max-width: 42%;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1030,38 +1329,74 @@ const saveReview = async () => {
 }
 .hitl-banner-text small { font-size: 11px; color: #a16207; }
 .know-block {
-  margin: 12px 0;
-  padding: 12px 14px;
-  background: #f8fafc;
+  margin: 0 0 10px;
+  padding: 10px 12px 8px;
+  background: #fff;
   border: 1px solid #e3e8f0;
   border-radius: 12px;
+  flex-shrink: 0;
+  max-height: min(42vh, 420px);
+  overflow: auto;
 }
-.know-block.compact { margin: 8px 0 12px; }
+.know-block.compact { margin: 0 0 10px; }
 .know-block h4 {
   margin: 0 0 8px;
   font-size: 13px;
   font-weight: 700;
 }
+.know-block h4 small {
+  margin-left: 6px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+}
 .know-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  border: 1px solid #e8edf4;
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px 6px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 .know-card + .know-card { margin-top: 8px; }
 .know-card header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
-.know-card header strong { font-size: 13px; }
-.know-card header small { font-size: 11px; color: #9ca3af; }
-.know-q { margin: 0; font-size: 12px; color: #b45309; }
-.know-title { margin-top: 0; }
-.know-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.know-card header small {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.know-q {
+  margin: 0;
+  font-size: 12px;
+  color: #b45309;
+  line-height: 1.4;
+}
+.know-title { flex: 1; min-width: 0; }
+.know-title :deep(.el-input__wrapper) {
+  box-shadow: none !important;
+  background: transparent;
+  padding-left: 0;
+}
+.know-title :deep(.el-input__inner) {
+  font-weight: 700;
+  font-size: 13px;
+  color: #111827;
+}
+.know-body :deep(.el-textarea__inner) {
+  box-shadow: none;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #334155;
+}
+.know-actions { display: flex; justify-content: flex-end; gap: 2px; }
 .seg {
   display: inline-flex;
   gap: 4px;

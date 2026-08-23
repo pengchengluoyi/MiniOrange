@@ -1,12 +1,30 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import RobotIntegrationsPanel from './RobotIntegrationsPanel.vue'
-import { listAIProviders, saveAIProvider, deleteAIProvider, saveAIUsage } from '@/api/settings'
+import { listAIProviders, saveAIProvider, deleteAIProvider, saveAIUsage, getMailSettings, saveMailSettings, testMailSettings } from '@/api/settings'
+import './settings-ui.css'
 
+const KEY_TABS = [
+  { id: 'model-keys', label: '大模型', desc: '规划与校验用的 API Key' },
+  { id: 'mail', label: '发信邮箱', desc: '注册验证码 SMTP' },
+]
 const activeTab = ref('model-keys')
+const mailSaving = ref(false)
+const mailTesting = ref(false)
+const mailForm = reactive({
+  host: '',
+  port: 587,
+  username: '',
+  password: '',
+  from_email: '',
+  from_name: 'MiniOrange',
+  use_tls: true,
+  configured: false,
+  password_masked: '',
+})
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const savingId = ref('')
 const savingUsage = ref(false)
@@ -51,11 +69,6 @@ const apiTypeLabel = (provider) => {
   if (t === 'gemini') return 'Gemini API'
   return 'Chat API'
 }
-
-const tabs = [
-  { id: 'model-keys', label: '大模型 Key', desc: '配置模型供应商' },
-  { id: 'robots', label: '机器人', desc: '文档读取与消息通知' },
-]
 
 const roundRatio = (value) => {
   const num = Number(value)
@@ -131,8 +144,69 @@ const load = async () => {
     if (!expandedProvider.value && sortedProviders.value.length) {
       expandedProvider.value = sortedProviders.value[0].id
     }
+    try {
+      const mail = await getMailSettings()
+      Object.assign(mailForm, {
+        host: mail?.data?.host || '',
+        port: mail?.data?.port || 587,
+        username: mail?.data?.username || '',
+        password: '',
+        from_email: mail?.data?.from_email || '',
+        from_name: mail?.data?.from_name || 'MiniOrange',
+        use_tls: mail?.data?.use_tls !== false,
+        configured: !!mail?.data?.configured,
+        password_masked: mail?.data?.password_masked || '',
+      })
+    } catch (_) { /* 发信配置读失败不挡模型列表 */ }
   } finally {
     loading.value = false
+  }
+}
+
+const saveMail = async () => {
+  mailSaving.value = true
+  try {
+    const res = await saveMailSettings({
+      host: mailForm.host,
+      port: Number(mailForm.port) || 587,
+      username: mailForm.username,
+      password: mailForm.password,
+      from_email: mailForm.from_email,
+      from_name: mailForm.from_name,
+      use_tls: mailForm.use_tls,
+    })
+    mailForm.password = ''
+    mailForm.configured = !!res?.data?.configured
+    mailForm.password_masked = res?.data?.password_masked || ''
+    ElMessage.success('发信配置已保存')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  } finally {
+    mailSaving.value = false
+  }
+}
+
+const testMail = async () => {
+  mailTesting.value = true
+  try {
+    if (mailForm.password || mailForm.host) {
+      await saveMailSettings({
+        host: mailForm.host,
+        port: Number(mailForm.port) || 587,
+        username: mailForm.username,
+        password: mailForm.password,
+        from_email: mailForm.from_email,
+        from_name: mailForm.from_name,
+        use_tls: mailForm.use_tls,
+      })
+      mailForm.password = ''
+    }
+    const res = await testMailSettings(mailForm.from_email)
+    ElMessage.success(`测试信已发到 ${res?.data?.to || mailForm.from_email}`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '测试失败')
+  } finally {
+    mailTesting.value = false
   }
 }
 
@@ -255,13 +329,11 @@ onMounted(() => {
 })
 
 const syncTabFromRoute = () => {
-  if (['model-keys', 'robots'].includes(route.query.tab)) {
-    activeTab.value = route.query.tab
-  } else if (route.query.tab === 'ai-usage') {
-    activeTab.value = 'model-keys'
-  } else {
-    activeTab.value = 'model-keys'
+  if (route.query.tab === 'robots') {
+    router.replace({ name: 'SettingsPlugins' })
+    return
   }
+  activeTab.value = KEY_TABS.some((t) => t.id === route.query.tab) ? String(route.query.tab) : 'model-keys'
 }
 
 watch(() => route.query.tab, syncTabFromRoute)
@@ -269,11 +341,60 @@ watch(() => route.query.tab, syncTabFromRoute)
 
 <template>
   <div class="settings-panel keys-page" v-loading="loading">
-    <div class="settings-toolbar keys-toolbar">
-      <span class="settings-summary-pill">{{ configuredCount }} 个模型已配置</span>
+    <header class="settings-page-header">
+      <div>
+        <h2 class="settings-page-title">密钥与发信</h2>
+        <p class="settings-page-desc">大模型 API Key，以及邮箱注册验证码用的发信邮箱。</p>
+      </div>
+      <div class="settings-summary-pill">{{ configuredCount }} 个模型已配置</div>
+    </header>
+
+    <div class="settings-tabbar">
+      <button
+        v-for="item in KEY_TABS"
+        :key="item.id"
+        type="button"
+        class="settings-tab"
+        :class="{ active: activeTab === item.id }"
+        @click="router.replace({ query: { ...route.query, tab: item.id } })"
+      >
+        <strong>{{ item.label }}</strong>
+        <span>{{ item.desc }}</span>
+      </button>
     </div>
 
-    <section v-if="activeTab === 'model-keys'" class="keys-content">
+    <section v-if="activeTab === 'mail'" class="keys-content">
+      <section class="settings-info-card">
+        <div class="settings-kicker">注册要验证邮箱</div>
+        <p>填 SMTP 后，注册页才能给邮箱发 6 位验证码。163 / QQ 邮箱请用授权码当密码，不要用登录密码。</p>
+      </section>
+      <section class="settings-card">
+        <div class="mail-grid">
+          <label>SMTP 主机<input v-model="mailForm.host" placeholder="smtp.163.com" /></label>
+          <label>端口<input v-model.number="mailForm.port" type="number" placeholder="587" /></label>
+          <label>账号<input v-model="mailForm.username" autocomplete="off" placeholder="发信账号" /></label>
+          <label>
+            密码 / 授权码
+            <input v-model="mailForm.password" type="password" autocomplete="new-password" :placeholder="mailForm.password_masked || '不改请留空'" />
+          </label>
+          <label>发件人邮箱<input v-model="mailForm.from_email" placeholder="name@company.com" /></label>
+          <label>发件人名称<input v-model="mailForm.from_name" placeholder="MiniOrange" /></label>
+        </div>
+        <div class="mail-row">
+          <span>STARTTLS（587 常用；465 会自动走 SSL）</span>
+          <el-switch v-model="mailForm.use_tls" />
+        </div>
+        <div class="mail-actions">
+          <button type="button" class="settings-action-pill" :disabled="mailSaving" @click="saveMail">
+            保存
+            <span class="settings-action-arrow">→</span>
+          </button>
+          <el-button size="small" :loading="mailTesting" :disabled="!mailForm.host" @click="testMail">发一封测试</el-button>
+        </div>
+      </section>
+    </section>
+
+    <section v-else-if="activeTab === 'model-keys'" class="keys-content">
       <section class="settings-card exec-card">
         <div class="exec-copy">
           <span class="settings-kicker">用例执行</span>
@@ -416,8 +537,6 @@ watch(() => route.query.tab, syncTabFromRoute)
         </el-collapse-item>
       </el-collapse>
     </section>
-
-    <RobotIntegrationsPanel v-else />
   </div>
 </template>
 
@@ -667,7 +786,41 @@ watch(() => route.query.tab, syncTabFromRoute)
   color: #b91c1c;
 }
 
+.mail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+.mail-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.mail-grid input {
+  height: 38px;
+  border: 1px solid var(--settings-border, #e3e8f0);
+  border-radius: 10px;
+  padding: 0 10px;
+}
+.mail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+.mail-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 @media (max-width: 720px) {
+  .mail-grid { grid-template-columns: 1fr; }
   .exec-card {
     flex-direction: column;
     align-items: flex-start;

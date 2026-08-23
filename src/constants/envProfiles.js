@@ -145,6 +145,33 @@ export function channelValue(snap, channelId, field) {
   return String(block[field] || block.value || block.package || block.bundle || block.base_url || block.path || '').trim()
 }
 
+export const MOBILE_CHANNEL_IDS = new Set(['android', 'ios'])
+
+function mobileField(id) {
+  return id === 'ios' ? 'bundle' : 'package'
+}
+
+/** 移动端未单独填写时，沿用其它环境 / 另一端已填的包名，不覆盖手动填写。 */
+export function resolveChannelValue(profiles, envOrder, envKey, channelId, field) {
+  const local = channelValue(profiles?.[envKey], channelId, field)
+  if (local) return { value: local, fromKey: envKey, fromChannel: channelId, inherited: false }
+  if (!MOBILE_CHANNEL_IDS.has(channelId)) {
+    return { value: '', fromKey: '', fromChannel: '', inherited: false }
+  }
+  const keys = (Array.isArray(envOrder) && envOrder.length ? envOrder : Object.keys(profiles || {})).filter(Boolean)
+  for (const key of keys) {
+    const v = channelValue(profiles?.[key], channelId, field)
+    if (v) return { value: v, fromKey: key, fromChannel: channelId, inherited: key !== envKey }
+  }
+  const other = channelId === 'android' ? 'ios' : 'android'
+  for (const key of [envKey, ...keys]) {
+    if (!key) continue
+    const v = channelValue(profiles?.[key], other, mobileField(other))
+    if (v) return { value: v, fromKey: key, fromChannel: other, inherited: true }
+  }
+  return { value: '', fromKey: '', fromChannel: '', inherited: false }
+}
+
 export function profileIsFilled(snap, channels) {
   if (!snap || typeof snap !== 'object') return false
   const list = Array.isArray(channels) && channels.length ? channels : DEFAULT_CHANNELS
@@ -173,20 +200,27 @@ export function filledEnvKeys(docOrProfiles) {
 export function envSummaries(docOrProfiles) {
   const doc = normalizeEnvDoc(docOrProfiles)
   const pipe = new Set(doc.pipeline)
+  const order = doc.pipeline.length ? doc.pipeline : doc.environments.map((e) => e.key)
   return doc.environments.map((e) => {
     const snap = doc.profiles[e.key] || {}
-    const channelRows = doc.channels.map((ch) => ({
-      id: ch.id,
-      label: ch.label,
-      value: channelValue(snap, ch.id, ch.field),
-    }))
+    const channelRows = doc.channels.map((ch) => {
+      const resolved = resolveChannelValue(doc.profiles, order, e.key, ch.id, ch.field)
+      return {
+        id: ch.id,
+        label: ch.label,
+        value: resolved.value,
+        inherited: resolved.inherited,
+      }
+    })
     const filledChannels = channelRows.filter((c) => c.value)
+    const pkg = resolveChannelValue(doc.profiles, order, e.key, 'android', 'package')
+    const bundle = resolveChannelValue(doc.profiles, order, e.key, 'ios', 'bundle')
     return {
       key: e.key,
       label: e.label,
-      filled: profileIsFilled(snap, doc.channels),
-      package: channelValue(snap, 'android', 'package'),
-      bundle: channelValue(snap, 'ios', 'bundle'),
+      filled: filledChannels.length > 0 || profileIsFilled(snap, doc.channels),
+      package: pkg.value,
+      bundle: bundle.value,
       web: channelValue(snap, 'web', 'base_url'),
       preview: filledChannels[0]?.value || '',
       channels: channelRows,

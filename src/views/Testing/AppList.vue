@@ -6,6 +6,7 @@ import { deleteAppInProject, deleteProject, getProjects } from '@/api/workReport
 import { getAppAutomationConfig, listQaProcessSummary, updateAppAutomationConfig } from '@/api/appAutomation'
 import { formatPlatformTags } from '@/constants/appPlatforms'
 import { listCaseRunnerDevices, listCaseRunnerRuns, listTestingTaskSummary } from '@/api/caseRunner'
+import { fetchTaskDetail } from '@/composables/useTestingTasks'
 import { isMissingTaskEndpoint, normalizeTask, statusLabel, statusTagType, taskCountLabel } from '@/utils/testingTasks'
 import { filterExecutableDevices } from '@/utils/testingDevices'
 import { formatSlotCardLine, nextUpcomingSlot, nowIso, persistableSlot } from '@/utils/qaProcess'
@@ -196,12 +197,41 @@ const openApp = (app, project, extra = {}) => {
       appName: app.name,
       projectName: project?.name || '',
       projectId: project?.id || '',
-      tab: extra.tab || 'tasks',
-      board: extra.board,
+      tab: extra.tab || 'process',
+      board: extra.board || ((extra.tab || 'process') === 'process' ? 'req' : undefined),
       pid: extra.pid,
+      task: extra.task,
     },
   })
 }
+
+const openProject = (p, extra = {}) => {
+  const apps = p?.apps || []
+  if (!apps.length) {
+    ElMessage.warning('这个项目还没有端，先到「项目」里补')
+    return
+  }
+  const preferred = apps.find((a) => runningCountByApp.value[a.id]) || apps[0]
+  openApp(preferred, p, extra)
+}
+
+const projectPlatforms = (p) => {
+  const set = new Set()
+  for (const a of p?.apps || []) {
+    for (const t of formatPlatformTags(a.platforms)) set.add(t)
+  }
+  return [...set]
+}
+
+const runningCountByProject = computed(() => {
+  const map = {}
+  for (const p of projects.value) {
+    let n = 0
+    for (const a of p.apps || []) n += runningCountByApp.value[a.id] || 0
+    if (n) map[p.id] = n
+  }
+  return map
+})
 
 const openProcess = (appId, board, pid) => {
   const { app, project } = findAppMeta(appId)
@@ -223,9 +253,9 @@ const onLabSave = async (slot) => {
   if (i >= 0) proc.schedule.splice(i, 1, next)
   else proc.schedule = [next, ...(proc.schedule || [])]
   proc.updated_at = nowIso()
-  writeProcessCache(appId, proc)
   try {
     await updateAppAutomationConfig(appId, { qa_process: proc })
+    writeProcessCache(appId, proc)
   } catch (e) {
     ElMessage.error(e?.message || '保存排期失败')
     return
@@ -245,38 +275,14 @@ const onLabRemove = async (id, appId) => {
   }
   proc.schedule = (proc.schedule || []).filter((s) => s.id !== id)
   proc.updated_at = nowIso()
-  writeProcessCache(aid, proc)
   try {
     await updateAppAutomationConfig(aid, { qa_process: proc })
+    writeProcessCache(aid, proc)
   } catch (e) {
     ElMessage.error(e?.message || '删除排期失败')
     return
   }
   await loadProcess()
-}
-
-const onLabDispatch = (seed) => {
-  const appId = seed.appId
-  if (!appId) return
-  const { app, project } = findAppMeta(appId)
-  router.push({
-    name: 'TestingApp',
-    params: { appId },
-    query: {
-      appName: app.name,
-      projectName: project?.name || '',
-      projectId: project?.id || '',
-      tab: 'tasks',
-      openRun: '1',
-      caseIds: (seed.caseIds || []).join(','),
-      kind: seed.kind,
-      slotId: seed.slotId,
-      requirementId: seed.requirementId,
-      releaseId: seed.releaseId,
-      sns: (seed.sns || []).join(','),
-      envProfile: seed.envProfile,
-    },
-  })
 }
 
 const selectProject = (id) => {
@@ -348,7 +354,21 @@ const confirmDeleteApp = async () => {
   }
 }
 
-onMounted(load)
+const consumeTaskQuery = async () => {
+  const tid = String(route.query.task || '')
+  if (!tid) return
+  const detail = await fetchTaskDetail(tid)
+  const appId = detail?.appId
+  if (!appId) return
+  const { app, project } = findAppMeta(appId)
+  if (!app?.id) return
+  openApp(app, project, { tab: 'tasks', task: tid })
+}
+
+onMounted(async () => {
+  await load()
+  await consumeTaskQuery()
+})
 watch(() => route.name, (name) => {
   if (name === 'TestingHome') load()
 })
@@ -393,7 +413,7 @@ watch(() => route.query.view, (v) => {
               ? '点日历空位按整天排哪个版本 / 需求。设备在下发任务时再选。实验室视图要选应用。'
               : homeView === 'manage'
                 ? '按项目管理应用。删除应用要两次确认，图标目标和自动化配置会一起清掉。'
-                : '选择应用进入工作台；卡片上会带本周下一条排期。左侧可按项目筛选。' }}
+                : '点项目进入工作台。端（App / Web）在项目里筛，不再先选应用。' }}
           </p>
         </div>
         <div class="home-head-actions">
@@ -406,16 +426,16 @@ watch(() => route.query.view, (v) => {
 
       <div class="home-tabs">
         <button type="button" class="home-tab" :class="{ on: homeView === 'apps' }" @click="setHomeView('apps')">
-          <strong>应用</strong>
+          <strong>项目</strong>
           <span>进工作台</span>
         </button>
         <button type="button" class="home-tab" :class="{ on: homeView === 'schedule' }" @click="setHomeView('schedule')">
-          <strong>排期</strong>
-          <span>{{ filterProjectId ? '本项目高亮，仍显示全实验室排期' : '全实验室开测日历' }}</span>
+          <strong>实验室排期</strong>
+          <span>{{ filterProjectId ? '本项目高亮，仍显示全实验室日历' : '全实验室开测日历' }}</span>
         </button>
         <button type="button" class="home-tab" :class="{ on: homeView === 'manage' }" @click="setHomeView('manage')">
-          <strong>项目</strong>
-          <span>管理应用 · 删除需确认</span>
+          <strong>管理</strong>
+          <span>增删项目和应用</span>
         </button>
       </div>
 
@@ -433,14 +453,13 @@ watch(() => route.query.view, (v) => {
           @remove="onLabRemove"
           @open-req="(id, appId) => openProcess(appId, 'req', id)"
           @open-rel="(id, appId) => openProcess(appId, 'rel', id)"
-          @dispatch-run="onLabDispatch"
         />
       </div>
 
       <div v-else-if="homeView === 'manage'" class="home-manage">
         <section class="settings-info-card">
-          <div class="settings-kicker">项目是分组，应用才进工作台</div>
-          <p>项目是产品线（造好物、造物相机）。应用是这条线下要测的包（苹果 / 安卓 / 移动端）。删除项目或应用都要两次确认；配置和图标目标会清掉，历史任务会留下。</p>
+          <div class="settings-kicker">项目是工作台入口</div>
+          <p>点项目看这条产品线下的流程、用例、任务。App / Web 只是内部筛选。删除项目或应用都要两次确认；配置和图标目标会清掉，历史任务会留下。</p>
         </section>
         <section
           v-for="p in filteredProjects"
@@ -469,7 +488,7 @@ watch(() => route.query.view, (v) => {
             </el-table-column>
             <el-table-column label="用例 / 图标" width="120">
               <template #default="{ row }">
-                {{ row.automation_stats?.feishu_cases || 0 }} / {{ row.automation_stats?.icon_targets || 0 }}
+                {{ row.automation_stats?.case_count ?? 0 }} / {{ row.automation_stats?.icon_targets || 0 }}
               </template>
             </el-table-column>
             <el-table-column label="操作" width="148" fixed="right">
@@ -484,38 +503,24 @@ watch(() => route.query.view, (v) => {
       </div>
 
       <div v-else class="home-apps">
-        <div v-for="p in filteredProjects" :key="p.id" class="project-block">
-          <div class="project-head">
-            <h3>{{ p.name }}</h3>
-            <span class="sub">{{ p.apps?.length || 0 }} 个应用</span>
-          </div>
-          <div class="app-grid">
-            <button
-              v-for="app in (p.apps || [])"
-              :key="app.id"
-              type="button"
-              class="app-card"
-              @click="openApp(app, p)"
-            >
-              <strong>{{ app.name }}</strong>
-              <span class="meta">
-                <span v-for="t in formatPlatformTags(app.platforms)" :key="t" class="tag">{{ t }}</span>
-              </span>
-              <span class="recent" v-if="nextSlotByApp[app.id]">
-                {{ formatSlotCardLine(nextSlotByApp[app.id]) }}
-              </span>
-              <span class="recent" v-if="runningCountByApp[app.id]">
-                <el-tag size="small" type="primary">运行中 {{ runningCountByApp[app.id] }}</el-tag>
-              </span>
-              <span class="recent" v-else-if="liveByApp[app.id]">
-                <el-tag size="small" :type="statusTagType(liveByApp[app.id].status, liveByApp[app.id])">{{ statusLabel(liveByApp[app.id].status, liveByApp[app.id]) }}</el-tag>
-                {{ taskCountLabel(liveByApp[app.id]) }}
-              </span>
-              <span class="recent muted" v-else-if="!nextSlotByApp[app.id]">暂无最近任务</span>
-            </button>
-          </div>
-        </div>
-        <el-empty v-if="!filteredProjects.length && !loading" description="暂无项目/应用" />
+        <button
+          v-for="p in filteredProjects"
+          :key="p.id"
+          type="button"
+          class="app-card"
+          @click="openProject(p)"
+        >
+          <strong>{{ p.name }}</strong>
+          <span class="meta">
+            <span v-for="t in projectPlatforms(p)" :key="t" class="tag">{{ t }}</span>
+            <span v-if="!projectPlatforms(p).length" class="tag">{{ p.apps?.length || 0 }} 个端</span>
+          </span>
+          <span class="recent" v-if="runningCountByProject[p.id]">
+            <el-tag size="small" type="primary">运行中 {{ runningCountByProject[p.id] }}</el-tag>
+          </span>
+          <span class="recent muted" v-else>进入后看这个项目下的全部数据</span>
+        </button>
+        <el-empty v-if="!filteredProjects.length && !loading" description="暂无项目" />
       </div>
     </div>
 
@@ -677,7 +682,15 @@ watch(() => route.query.view, (v) => {
   padding: 16px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
 }
-.home-apps { flex: 1; min-height: 0; overflow: auto; }
+.home-apps {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
 .home-manage { flex: 1; min-height: 0; overflow: auto; }
 .home-manage .settings-info-card { margin: 0 0 14px; padding: 12px 14px; overflow: visible; }
 .home-manage .settings-info-card p { margin: 4px 0 0; font-size: 13px; color: #374151; line-height: 1.55; white-space: normal; }

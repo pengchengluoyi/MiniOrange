@@ -8,8 +8,9 @@ import {
   promoteCaseRunnerBaseline,
   listCaseRunnerDevices,
 } from '@/api/caseRunner'
-import { getFeishuCasesCached } from '@/api/feishuRegression'
+import { getAppAutomationConfig } from '@/api/appAutomation'
 import { listAIProviders } from '@/api/settings'
+import { generatedCasesFromProcess } from '@/utils/qaProcess'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 
 const props = defineProps({
@@ -75,9 +76,10 @@ const loadCases = async () => {
   if (!props.appId) return
   casesLoading.value = true
   try {
-    const r = await getFeishuCasesCached(props.appId, false)
-    cases.value = r?.data?.cases || []
-  } catch (_) { ElMessage.warning('未拉到用例，请先在「飞书回归」抓取一次表格') }
+    const r = await getAppAutomationConfig(props.appId)
+    const reqs = r?.data?.automation?.qa_process?.requirements || []
+    cases.value = generatedCasesFromProcess(reqs)
+  } catch (_) { ElMessage.warning('未拉到用例，先在流程里写出用例草稿') }
   finally { casesLoading.value = false }
 }
 const loadRuns = async () => {

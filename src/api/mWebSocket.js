@@ -12,12 +12,35 @@ export const setWsUrl = (url) => {
   customBaseUrl = url
 }
 
+let openWaiters = []
+
+const flushOpenWaiters = () => {
+  const pending = openWaiters
+  openWaiters = []
+  pending.forEach((fn) => {
+    try { fn() } catch (_) { /* noop */ }
+  })
+}
+
+export const whenWebSocketReady = (timeout = 4000) => new Promise((resolve, reject) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    resolve()
+    return
+  }
+  const timer = setTimeout(() => reject(new Error('WebSocket not connected')), timeout)
+  openWaiters.push(() => {
+    clearTimeout(timer)
+    resolve()
+  })
+  initWebSocket()
+})
+
 export const initWebSocket = (token) => {
   if (token) {
     currentToken = token
     localStorage.setItem('ws_token', token)
   } else if (!currentToken) {
-    currentToken = localStorage.getItem('ws_token') || ''
+    currentToken = localStorage.getItem('ws_token') || localStorage.getItem('token') || ''
   }
 
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -39,6 +62,7 @@ export const initWebSocket = (token) => {
       clearInterval(reconnectTimer)
       reconnectTimer = null
     }
+    flushOpenWaiters()
   }
 
   ws.onmessage = (event) => {
@@ -141,16 +165,24 @@ export const getConnectedUrl = () => {
 }
 
 export const reconnectWebSocket = (token) => {
-  if (ws) {
-    try { ws.close() } catch (_) { /* noop */ }
-    ws = null
-  }
+  disconnectWebSocket()
+  initWebSocket(token)
+}
+
+export const disconnectWebSocket = () => {
   if (reconnectTimer) {
     clearInterval(reconnectTimer)
     reconnectTimer = null
   }
+  currentToken = ''
+  const socket = ws
+  ws = null
   isConnected = false
-  initWebSocket(token)
+  if (!socket) return
+  try {
+    socket.onclose = null
+    socket.close()
+  } catch (_) { /* noop */ }
 }
 
 export default {
@@ -165,4 +197,5 @@ export default {
   wsGetTimelineDetail,
   getConnectedUrl,
   reconnectWebSocket,
+  disconnectWebSocket,
 }

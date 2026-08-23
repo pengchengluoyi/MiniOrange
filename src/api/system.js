@@ -1,3 +1,4 @@
+import request from '@/utils/request'
 import { sendWsRequest } from '@/api/mWebSocket'
 
 export const getServerInfo = () => {
@@ -19,3 +20,6 @@ export const updateConfig = (data) => {
 export const getNodeStatus = () => {
   return sendWsRequest('get_node_status')
 }
+
+export const getRuntimeStatusHttp = () =>
+  request({ url: '/sys/runtime', method: 'get' })

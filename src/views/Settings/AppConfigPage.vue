@@ -13,10 +13,7 @@ import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { initWebSocket } from '@/api/mWebSocket'
 import { envSummaries, filledEnvKeys, pipelineKeys } from '@/constants/envProfiles'
 import { getProjectEnv } from '@/api/workReport'
-import FeishuRegressionPanel from './FeishuRegressionPanel.vue'
-import CaseRunnerPanel from './CaseRunnerPanel.vue'
 import ProjectEnvEditor from './ProjectEnvEditor.vue'
-import KnowledgePanel from './KnowledgePanel.vue'
 import QaWorkflowEditor from '@/views/Testing/QaWorkflowEditor.vue'
 import { useQaProcess } from '@/composables/useQaProcess'
 import { getFigmaSettings } from '@/api/settings'
@@ -30,17 +27,25 @@ const props = defineProps({
   embedProjectName: { type: String, default: '' },
   embedSection: { type: String, default: 'env' },
   hideSections: { type: Array, default: () => [] },
+  hideNav: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update:embedSection'])
+const emit = defineEmits(['update:embedSection', 'go-tab'])
 
 const route = useRoute()
 const router = useRouter()
 const appId = computed(() => (props.embedded ? props.embedAppId : route.params.appId))
-const section = computed(() => {
+const sectionRaw = computed(() => {
   const raw = props.embedded ? (props.embedSection || 'env') : (route.params.section || 'env')
   if (raw === 'icons' || raw === 'skills') return 'env'
+  if (raw === 'flow') return 'flow-req'
   return raw
 })
+const section = computed(() => {
+  const raw = sectionRaw.value
+  if (raw === 'flow-req' || raw === 'flow-rel') return 'flow'
+  return raw
+})
+const flowTrack = computed(() => (sectionRaw.value === 'flow-rel' ? 'rel' : 'req'))
 const appName = computed(() => (props.embedded ? props.embedAppName : route.query.appName) || '应用')
 const projectName = computed(() => (props.embedded ? props.embedProjectName : route.query.projectName) || '')
 const projectId = computed(() => String((props.embedded ? props.embedProjectId : route.query.projectId) || ''))
@@ -51,18 +56,15 @@ const tabs = computed(() => {
   if (props.embedded) {
     return [
       { key: 'env', label: '环境配置', desc: '上线顺序 · 渠道' },
-      { key: 'flow', label: '流程模板', desc: '阶段对齐已配环境' },
+      { key: 'flow', label: '阶段模板', desc: '阶段对齐已配环境' },
+      { key: 'workflow', label: '角色编排', desc: '角色 Prompt 编排' },
       { key: 'figma', label: '设计稿', desc: '同步 Figma' },
-      { key: 'cases', label: '用例来源' },
-      { key: 'logic', label: '应用逻辑' },
     ].filter((t) => !hidden.includes(t.key))
   }
   return [
     { key: 'env', label: '环境配置', desc: '上线顺序 · 渠道' },
-    { key: 'flow', label: '流程模板', desc: '阶段对齐已配环境' },
-    { key: 'logic', label: '应用逻辑' },
-    { key: 'regression', label: '回归' },
-    { key: 'feishu-legacy', label: '飞书回归(旧)' },
+    { key: 'flow', label: '阶段模板', desc: '阶段对齐已配环境' },
+    { key: 'workflow', label: '角色编排', desc: '角色 Prompt 编排' },
     { key: 'figma', label: '设计稿' },
   ].filter((t) => !hidden.includes(t.key))
 })
@@ -205,6 +207,18 @@ const loadEnvSnap = async () => {
   }
 }
 
+const onGoProcess = ({ track } = {}) => {
+  if (props.embedded) {
+    emit('go-tab', 'process')
+    return
+  }
+  router.push({
+    name: 'TestingApp',
+    params: { appId: appId.value },
+    query: { ...route.query, tab: 'process', board: track === 'rel' ? 'rel' : 'req' },
+  })
+}
+
 const onSaveWorkflow = async (next) => {
   const moved = await saveWorkflow(next)
   ElMessage.success(moved ? `流程模板已保存。${moved} 张单据已对到还在的阶段。` : '流程模板已保存')
@@ -223,14 +237,14 @@ const saveFigma = async () => {
   }
 }
 
-const openKnowledge = () => {
-  router.push({ name: 'SettingsHub', query: { tab: 'knowledge', appId: appId.value } })
+const openFigmaPlugin = () => {
+  router.push({ name: 'SettingsPluginDetail', params: { pluginId: 'figma' } })
 }
 
 const syncFigmaPreview = async () => {
   if (!figmaForm.value.file_url?.trim()) return ElMessage.warning('请填写 Figma 文件链接')
   if (!figmaTokenConfigured.value) {
-    ElMessage.warning('请先在「应用与环境 → 知识库」中配置 Figma Token')
+    ElMessage.warning('请先在「设置 → 插件 → Figma」中配置 Token')
     return
   }
   normalizeFigmaForm()
@@ -259,7 +273,7 @@ const syncFigmaPreview = async () => {
 const applyFigmaLogic = async () => {
   if (!figmaForm.value.file_url?.trim()) return ElMessage.warning('请填写 Figma 文件链接')
   if (!figmaTokenConfigured.value) {
-    ElMessage.warning('请先在「应用与环境 → 知识库」配置 Figma Token（普通账号即可，无需 Developer 应用）')
+    ElMessage.warning('请先在「设置 → 插件 → Figma」配置 Token（普通账号即可，无需 Developer 应用）')
     return
   }
   normalizeFigmaForm()
@@ -307,11 +321,7 @@ const saveEnvTab = async () => {
 }
 
 watch(section, (s) => {
-  if (s === 'skills') {
-    openKnowledge()
-    return
-  }
-  if (s === 'flow') {
+  if (s === 'flow' || s === 'workflow') {
     loadFlow()
     loadEnvSnap()
   }
@@ -331,6 +341,17 @@ onMounted(async () => {
   await Promise.all([load(), loadDevices(), loadFlow(), loadEnvSnap()])
   const raw = props.embedded ? props.embedSection : route.params.section
   if (raw === 'icons') switchTab('env')
+  if (raw === 'logic' || raw === 'regression') {
+    const tab = raw === 'logic' ? 'knowledge' : 'tasks'
+    if (props.embedded) emit('go-tab', tab)
+    else {
+      router.replace({
+        name: 'TestingApp',
+        params: { appId: appId.value },
+        query: { appName: appName.value, projectName: projectName.value, projectId: projectId.value, tab },
+      })
+    }
+  }
 })
 </script>
 
@@ -343,7 +364,7 @@ onMounted(async () => {
     }"
     v-loading="loading"
   >
-    <div v-if="embedded" class="settings-tabbar embed-tabs">
+    <div v-if="embedded && !hideNav" class="settings-tabbar embed-tabs">
       <button
         v-for="t in tabs"
         :key="t.key"
@@ -377,8 +398,11 @@ onMounted(async () => {
       </el-alert>
     </div>
 
-    <div v-show="section === 'flow'" class="tab-body flow-tab">
+    <div v-if="section === 'flow'" class="tab-body flow-tab">
       <QaWorkflowEditor
+        mode="tracks"
+        :track="hideNav ? flowTrack : ''"
+        :hide-nav="hideNav"
         :workflow="workflow"
         :requirements="requirements"
         :releases="releases"
@@ -386,29 +410,21 @@ onMounted(async () => {
         :env-summaries="envSnap.summaries"
         @save="onSaveWorkflow"
         @go-env="switchTab('env')"
+        @go-process="onGoProcess"
       />
     </div>
 
-    <div v-show="section === 'logic'" class="tab-body logic-tab">
-      <el-card shadow="never" class="card logic-graph-card">
-        <h3>应用逻辑（图谱）</h3>
-        <p class="hint">页面跳转、共享组件、骨架识别等在应用图谱中维护。</p>
-        <el-button type="primary" @click="router.push(`/report/editor/${appId}`)">打开用例编排 / 应用图谱</el-button>
-      </el-card>
-      <KnowledgePanel embedded app-only :app-id="appId" :app-name="appName" />
-    </div>
-
-    <div v-show="section === 'regression'" class="tab-body">
-      <CaseRunnerPanel :app-id="appId" :app-name="appName" embedded />
-    </div>
-
-    <div v-show="section === 'feishu-legacy' || section === 'cases'" class="tab-body">
-      <FeishuRegressionPanel
-        :app-id="appId"
-        :app-name="appName"
-        :project-id="projectId"
-        :project-name="projectName"
-        embedded
+    <div v-else-if="section === 'workflow'" class="tab-body flow-tab">
+      <QaWorkflowEditor
+        mode="chains"
+        :workflow="workflow"
+        :requirements="requirements"
+        :releases="releases"
+        :saving="flowSaving"
+        :env-summaries="envSnap.summaries"
+        @save="onSaveWorkflow"
+        @go-env="switchTab('env')"
+        @go-process="onGoProcess"
       />
     </div>
 
@@ -416,10 +432,9 @@ onMounted(async () => {
       <el-card shadow="never" class="card">
         <h3>Figma 设计稿 · 应用逻辑学习</h3>
         <p class="hint">
-          使用 Figma 设计稿学习页面结构与文案，无需上传真机截图训练骨架。
-          只需普通 Figma 账号的 Personal Access Token（
-          <el-link type="primary" @click="openKnowledge">知识库</el-link>
-          中配置，勾选 file_content:read，不需要 Developer OAuth 应用）。
+          Token 在
+          <el-link type="primary" @click="openFigmaPlugin">设置 → 插件 → Figma</el-link>
+          配置（普通账号 Personal Access Token，勾选 file_content:read）。这里只绑本应用的设计稿并学习页面结构。
           <el-tag :type="figmaTokenConfigured ? 'success' : 'warning'" size="small" style="margin-left: 6px">
             {{ figmaTokenConfigured ? 'Token 已配置' : 'Token 未配置' }}
           </el-tag>

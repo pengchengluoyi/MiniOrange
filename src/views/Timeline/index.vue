@@ -4,6 +4,7 @@ import { ElMessage, ElCard, ElButton, ElTable, ElTableColumn, ElPagination, ElTa
 import { Refresh, Back, Check, VideoPlay, VideoPause, Aim, Mouse, Reading, Close, Connection } from '@element-plus/icons-vue'
 import { initWebSocket, wsGetFile, wsGetTimelineList, wsGetTimelineDetail } from '@/api/mWebSocket'
 import { useBlobUrlCache } from '@/composables/useBlobUrlCache'
+import PayloadView from '@/components/PayloadView.vue'
 
 // ================== 列表页状态 ==================
 const loading = ref(false)
@@ -617,7 +618,7 @@ onUnmounted(() => {
             <div class="info-block">
               <div class="label">Data Detail</div>
               <div class="code-box">
-                <pre>{{ JSON.stringify(currentStepData, null, 2) }}</pre>
+                <PayloadView :value="currentStepData" />
               </div>
             </div>
 

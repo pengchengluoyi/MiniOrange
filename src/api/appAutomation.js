@@ -7,7 +7,13 @@ export const listQaProcessSummary = () =>
   request({ url: '/app-automation/qa-process/summary', method: 'get' })
 
 export const assistQaProcess = (appId, data) =>
-  request({ url: `/app-automation/qa-process/assist/${appId}`, method: 'post', data, timeout: 30000 })
+  request({ url: `/app-automation/qa-process/assist/${appId}`, method: 'post', data, timeout: 120000 })
+
+export const tickQaProcess = (appId, data = {}) =>
+  request({ url: `/app-automation/qa-process/tick/${appId}`, method: 'post', data, timeout: 600000 })
+
+export const reviewAtlasPatch = (appId, data) =>
+  request({ url: `/app-automation/qa-process/atlas-patch/${appId}`, method: 'post', data, timeout: 180000 })
 
 export const updateAppAutomationConfig = (appId, data) =>
   request({ url: `/app-automation/config/${appId}`, method: 'put', data })
@@ -18,12 +24,10 @@ export const syncAppFigma = (appId, data) =>
 export const applyFigmaAppLogic = (appId, data) =>
   request({ url: `/app-automation/config/${appId}/figma/apply-logic`, method: 'post', data, timeout: 120000 })
 
-export const getCachedFeishuCases = (appId, refresh = false) =>
+export const getAppCases = (appId) =>
   request({
-    url: `/feishu/cases/${appId}`,
+    url: `/app-automation/cases/${appId}`,
     method: 'get',
-    params: { refresh: refresh ? 1 : 0 },
-    timeout: refresh ? 120000 : 30000,
   })
 
 export const listAppRegressionRuns = (appId, limit = 30) =>

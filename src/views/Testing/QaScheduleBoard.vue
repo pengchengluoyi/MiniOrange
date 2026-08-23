@@ -25,10 +25,8 @@ import {
   startOfWeek,
   toInclusiveDateValue,
   weekDays,
-  linkedCaseIds,
   gateLabel,
 } from '@/utils/qaProcess'
-import { reachedDispatch } from '@/utils/qaWorkflow'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 
 const props = defineProps({
@@ -44,7 +42,7 @@ const props = defineProps({
   focusProjectId: { type: String, default: '' },
 })
 
-const emit = defineEmits(['save', 'remove', 'open-req', 'open-rel', 'dispatch-run'])
+const emit = defineEmits(['save', 'remove', 'open-req', 'open-rel'])
 
 const workflowOf = (req, rel, appId) => {
   if (!props.labMode) return props.workflow
@@ -349,40 +347,16 @@ const removeCurrent = async () => {
   dialogOpen.value = false
 }
 
-const dispatchSlot = (slot) => {
-  const meta = slotKindMeta(slot.kind)
-  if (!meta.run) {
-    ElMessage.warning('提审 / 上线不走执行器，只是排期节点')
+const goProcessFromSlot = (slot) => {
+  if (slot.release_id) {
+    emit('open-rel', slot.release_id, slot.app_id)
     return
   }
-  const req = props.requirements.find((r) => r.id === slot.requirement_id)
-  const rel = props.releases.find((r) => r.id === slot.release_id)
-  const wf = workflowOf(req, rel, slot.app_id)
-  const gate = canCreateSlot(slot.kind, { req, rel, workflow: wf })
-  if (!gate.ok) {
-    ElMessage.warning(gate.reason)
+  if (slot.requirement_id) {
+    emit('open-req', slot.requirement_id, slot.app_id)
     return
   }
-  if (rel && meta.run === 'release_regression' && !reachedDispatch(rel, wf, 'rel', 'release_regression')) {
-    ElMessage.warning('先确认回归范围再下发预发回归')
-    return
-  }
-  const caseIds = rel ? (rel.case_ids || []) : linkedCaseIds(req)
-  if (!caseIds.length) {
-    ElMessage.warning('这条排期还没有可跑的用例')
-    return
-  }
-  emit('dispatch-run', {
-    caseIds,
-    kind: meta.run,
-    coverage: 'once',
-    sns: [],
-    slotId: slot.id,
-    requirementId: slot.requirement_id || undefined,
-    releaseId: slot.release_id || undefined,
-    envProfile: meta.env,
-    appId: slot.app_id,
-  })
+  ElMessage.info('先把排期挂到需求或版本，再到流程里下发')
 }
 
 const openLinked = (slot) => {
@@ -405,7 +379,7 @@ defineExpose({ openCreate })
       </div>
     </div>
     <p class="sch-hint">
-      行是需求 / 版本。点日历空位按自然日整天排（24 小时可跑）。设备在下发任务时再选，排期不占机。
+      排期只预约日期，不占机、不直接开跑。真机下发在「流程」或「任务」里做。
     </p>
     <div class="gantt-wrap">
       <div class="gantt">
@@ -497,12 +471,11 @@ defineExpose({ openCreate })
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openEdit(row)">改</el-button>
             <el-button
-              v-if="slotKindMeta(row.kind).run"
               link
               type="primary"
               size="small"
-              @click="dispatchSlot(row)"
-            >下发</el-button>
+              @click="goProcessFromSlot(row)"
+            >去流程</el-button>
           </template>
         </el-table-column>
       </el-table>

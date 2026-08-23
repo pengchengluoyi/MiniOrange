@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChatDotRound, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import { deleteAgentSession, readAgentSessions } from '@/utils/agentSessions'
+import { deleteAgentSession, pullAgentSessions, readAgentSessions } from '@/utils/agentSessions'
 
 const router = useRouter()
 const sessions = ref([])
@@ -20,8 +20,9 @@ const formatTime = (value) => {
   return Number.isNaN(date.getTime()) ? '刚刚' : date.toLocaleString()
 }
 
-const loadSessions = () => {
-  sessions.value = readAgentSessions()
+const loadSessions = async () => {
+  sessions.value = await pullAgentSessions()
+  if (!sessions.value.length) sessions.value = readAgentSessions()
 }
 
 const newAgent = () => {
@@ -53,22 +54,22 @@ onMounted(loadSessions)
   <div class="agent-history-page">
     <header class="history-header">
       <div>
-        <span class="history-kicker">Agent Sessions</span>
-        <h2>Agent 对话记录</h2>
-        <p>保存最近的 Agent 执行上下文，点击任意记录继续对话。</p>
+        <span class="history-kicker">对话</span>
+        <h2>对话记录</h2>
+        <p>保存最近的对话上下文，点击任意记录继续。</p>
       </div>
       <button type="button" class="new-agent-btn" @click="newAgent">
         <el-icon><Plus /></el-icon>
-        <span>New Agent</span>
+        <span>新建对话</span>
       </button>
     </header>
 
     <section class="history-shell">
       <div v-if="!sortedSessions.length" class="empty-history">
         <el-icon><ChatDotRound /></el-icon>
-        <strong>暂无 Agent 记录</strong>
-        <span>新建 Agent 后，对话会自动保存在这里。</span>
-        <button type="button" @click="newAgent">New Agent</button>
+        <strong>暂无对话记录</strong>
+        <span>新建对话后，内容会自动保存在这里。</span>
+        <button type="button" @click="newAgent">新建对话</button>
       </div>
 
       <template v-else>
@@ -83,7 +84,7 @@ onMounted(loadSessions)
           </div>
           <div class="history-main">
             <div class="history-title-row">
-              <strong>{{ session.title || 'New Agent' }}</strong>
+              <strong>{{ session.title || '新对话' }}</strong>
               <span>{{ formatTime(session.updatedAt) }}</span>
             </div>
             <p>{{ session.messages?.[session.messages.length - 1]?.content || '空对话' }}</p>

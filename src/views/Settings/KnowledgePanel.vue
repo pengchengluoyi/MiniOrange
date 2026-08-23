@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getTestingKnowledge, upsertKnowledgeItem, deleteKnowledgeItem, reviewKnowledgeItem, getFigmaSettings, saveFigmaSettings, testFigmaToken } from '@/api/settings'
+import { getTestingKnowledge, upsertKnowledgeItem, deleteKnowledgeItem, reviewKnowledgeItem, autoReviewKnowledge } from '@/api/settings'
 import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import './settings-ui.css'
 
@@ -11,6 +11,8 @@ const props = defineProps({
   appId: { type: String, default: '' },
   appOnly: { type: Boolean, default: false },
   appName: { type: String, default: '' },
+  hideNav: { type: Boolean, default: false },
+  reviewFilter: { type: String, default: '' },
 })
 
 const CATEGORY_OPTIONS = ['业务逻辑', 'UI导航', '登录注册', 'Tab切换', '交互规范', '其他']
@@ -19,12 +21,12 @@ const REVIEW_LABEL = { pending: '待审核', approved: '已通过', rejected: '�
 
 const loading = ref(false)
 const savingItem = ref(false)
+const autoReviewing = ref(false)
 const allItems = ref([])
-const listFilter = ref('pending')
-const figmaToken = ref('')
-const figmaFileUrl = ref('')
-const figmaConfigured = ref(false)
-const testingFigma = ref(false)
+const listFilter = ref(props.reviewFilter === 'all' ? 'all' : 'pending')
+watch(() => props.reviewFilter, (v) => {
+  if (v === 'pending' || v === 'all') listFilter.value = v
+})
 const configDialogVisible = ref(false)
 const editingRow = ref(null) // draft
 const editingTargetRow = ref(null) // edit 时引用原始行；create 时为 null
@@ -76,10 +78,10 @@ const pageTitle = computed(() => {
 })
 const pageDesc = computed(() => {
   if (props.appOnly) {
-    return `${props.appName ? `${props.appName} · ` : ''}用例执行自动生成的条目在「待审核」中确认后，才会被执行匹配。`
+    return `${props.appName ? `${props.appName} · ` : ''}产品专家先对照图谱和需求给意见，知识审核员再机审。置信不足才留人工。`
   }
-  if (props.embedded) return '自动生成的条目在「待审核」确认后才会被匹配。'
-  return '自动生成的条目须在「待审核」通过后才会注入执行。'
+  if (props.embedded) return '产品专家提供应用事实，知识审核员机审。拿不准的留待审核。'
+  return '机审先问产品专家（图谱/需求），再由知识审核员过或驳。高置信自动处理，其余留人工。需求/版本验收仍必须人点。'
 })
 const createLabel = computed(() => (props.embedded ? '新建' : '新建条目'))
 const tableTitle = computed(() => (listFilter.value === 'pending' ? '待审核' : '已通过知识'))
@@ -96,9 +98,19 @@ const pendingCount = computed(() => {
 })
 const sourceLabel = (row) => SOURCE_LABEL[row?.source] || SOURCE_LABEL.manual
 const reviewLabel = (row) => REVIEW_LABEL[row?.review_status] || REVIEW_LABEL.approved
+const reviewMethodLabel = (row) => {
+  if (row?.review_method === 'machine') {
+    const n = Number(row.review_confidence)
+    const bit = Number.isFinite(n) ? ` ${n}` : ''
+    if (row.review_status === 'pending') return `机审留人${bit}`
+    return `机审${bit}`
+  }
+  if (row?.review_method === 'human') return '人工'
+  return '—'
+}
 const emptyText = computed(() => (
   listFilter.value === 'pending'
-    ? '暂无待审核知识。跑完用例后会自动出现在这里。'
+    ? '暂无待审核。跑完用例会生成草稿，机审高置信会自动过。'
     : '暂无已通过知识'
 ))
 const metaEditable = computed(() => {
@@ -121,6 +133,25 @@ const load = async () => {
     allItems.value = (res?.data?.items || []).map(normalizeRow)
   } finally {
     loading.value = false
+  }
+}
+
+const runAutoReview = async () => {
+  if (autoReviewing.value || !pendingCount.value) return
+  autoReviewing.value = true
+  try {
+    const res = await autoReviewKnowledge(props.appOnly ? props.appId : '')
+    const data = res?.data || {}
+    const approved = Number(data.approved || 0)
+    const rejected = Number(data.rejected || 0)
+    const held = Number(data.held || 0)
+    const skipped = Number(data.skipped || 0)
+    ElMessage.success(`机审完成：通过 ${approved} · 驳回 ${rejected} · 留人 ${held}${skipped ? ` · 未跑 ${skipped}` : ''}`)
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '机审失败')
+  } finally {
+    autoReviewing.value = false
   }
 }
 
@@ -292,46 +323,13 @@ const beforeDialogClose = (done) => {
   done()
 }
 
-
-const loadFigma = async () => {
-  const res = await getFigmaSettings()
-  figmaConfigured.value = !!res?.data?.configured
-  figmaFileUrl.value = res?.data?.default_file_url || ''
-}
-
-const saveFigma = async () => {
-  await saveFigmaSettings({
-    access_token: figmaToken.value || undefined,
-    default_file_url: figmaFileUrl.value,
-    clear_token: false,
-  })
-  figmaToken.value = ''
-  await loadFigma()
-  ElMessage.success('Figma Token 已保存')
-}
-
-const verifyFigmaToken = async () => {
-  testingFigma.value = true
-  try {
-    const res = await testFigmaToken(figmaToken.value || '')
-    const email = res?.data?.email || res?.data?.handle || ''
-    ElMessage.success(email ? `Token 有效（${email}）` : 'Token 有效')
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || 'Token 无效')
-  } finally {
-    testingFigma.value = false
-  }
-}
-
 onMounted(async () => {
-  await Promise.all([load(), loadFigma()])
+  await load()
 })
 
 watch([listFilter, () => visibleItems.value.length], () => {
   page.value = 1
 })
-
-defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
 </script>
 
 <template>
@@ -345,7 +343,7 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
         {{ pendingCount ? `${pendingCount} 条待审核` : '暂无待审核' }}
       </div>
     </header>
-    <div class="settings-tabbar">
+    <div v-if="!hideNav" class="settings-tabbar">
       <button type="button" class="settings-tab" :class="{ active: listFilter === 'pending' }" @click="listFilter = 'pending'">
         <strong>待审核</strong>
         <span>自动生成，通过后才使用</span>
@@ -359,6 +357,13 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
       <div class="col-head">
         <h3>{{ tableTitle }}</h3>
         <div class="col-actions">
+          <el-button
+            v-if="listFilter === 'pending'"
+            size="small"
+            :loading="autoReviewing"
+            :disabled="!pendingCount"
+            @click="runAutoReview"
+          >机审待审</el-button>
           <el-button size="small" type="primary" @click="onCreate">{{ createLabel }}</el-button>
         </div>
       </div>
@@ -383,6 +388,11 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
           <el-table-column label="审核" width="88">
             <template #default="{ row }">
               <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="机审" width="108" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :title="row.review_reason || ''">{{ reviewMethodLabel(row) }}</span>
             </template>
           </el-table-column>
           <el-table-column v-if="showAppColumn" label="限定应用" width="140" show-overflow-tooltip>
@@ -424,25 +434,6 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
       />
     </section>
 
-    <div v-if="embedded && !appOnly" class="figma-section">
-      <h4>Figma Token（普通账号即可）</h4>
-      <p class="desc compact">
-        在 figma.com → 头像 → Settings → Security → Personal access tokens 生成 Token，
-        勾选 <code>file_content:read</code>。不需要 Developer OAuth 应用；Token 所属账号需能打开设计稿。
-      </p>
-      <div class="figma-row">
-        <el-input
-          v-model="figmaToken"
-          size="small"
-          type="password"
-          :placeholder="figmaConfigured ? 'Token 已配置，输入新值可覆盖' : 'figd_... Personal Access Token'"
-          style="width: 240px"
-        />
-        <el-button size="small" :loading="testingFigma" @click="verifyFigmaToken">验证</el-button>
-        <el-button size="small" type="primary" @click="saveFigma">保存 Token</el-button>
-      </div>
-    </div>
-
     <el-dialog
       v-model="configDialogVisible"
       :title="editingRow?.review_status === 'pending' ? '审核知识' : '知识配置'"
@@ -456,6 +447,12 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
         </el-form-item>
         <el-form-item v-if="editingRow.question" label="提问">
           <p class="desc compact">{{ editingRow.question }}</p>
+        </el-form-item>
+        <el-form-item v-if="editingRow.review_reason || editingRow.review_method" label="机审">
+          <p class="desc compact">{{ reviewMethodLabel(editingRow) }}<template v-if="editingRow.review_reason"> · {{ editingRow.review_reason }}</template></p>
+        </el-form-item>
+        <el-form-item v-if="editingRow.expert_note" label="产品专家">
+          <p class="desc compact">{{ editingRow.expert_note }}</p>
         </el-form-item>
         <el-form-item label="分类">
           <el-select v-if="metaEditable" v-model="editingRow.category" filterable allow-create style="width: 100%">
@@ -532,16 +529,6 @@ defineExpose({ saveFigma, figmaConfigured, figmaToken, figmaFileUrl })
   color: #6b7280;
   line-height: 1.45;
 }
-.figma-section {
-  margin-top: 16px;
-  padding: 12px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  flex-shrink: 0;
-}
-.figma-section h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
-.figma-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .head-row { display: flex; justify-content: space-between; margin-bottom: 12px; }
 h2 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
 </style>

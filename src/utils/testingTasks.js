@@ -56,6 +56,38 @@ export function coverageLabel(coverage) {
   return coverage === 'per_device' ? '全机' : '拆分'
 }
 
+export function runKindLabel(task) {
+  const t = String(task?.runType || task?.kind || '').toLowerCase()
+  if (t.includes('rel') || t.includes('release') || t.includes('version')) return '版本测试'
+  if (t.includes('req') || t.includes('requirement')) return '需求测试'
+  if (t === 'schedule') return '定时'
+  if (!t || t === 'manual') return '手动'
+  return t
+}
+
+export function formatTaskWhen(iso) {
+  const s = String(iso || '').replace('T', ' ').replace(/Z$/, '').replace(/\.\d+$/, '')
+  if (!s) return ''
+  return s.length >= 16 ? s.slice(0, 16) : s
+}
+
+export function taskElapsedMs(task) {
+  const a = Date.parse(String(task?.startedAt || '').replace(' ', 'T'))
+  const b = Date.parse(String(task?.finishedAt || '').replace(' ', 'T'))
+  if (Number.isFinite(a) && Number.isFinite(b) && b >= a) return b - a
+  return 0
+}
+
+export function taskPackageLabel(task) {
+  const pkgs = task?.packages_by_platform && typeof task.packages_by_platform === 'object'
+    ? task.packages_by_platform
+    : {}
+  const android = String(pkgs.android || '').trim()
+  const ios = String(pkgs.ios || '').trim()
+  if (android && ios && android !== ios) return `Android ${android} · iOS ${ios}`
+  return String(task?.package || android || ios || '').trim()
+}
+
 export function taskPlatformOfSn(task, sn = '') {
   const map = task?.platforms_by_sn
   const key = String(sn || '').trim()
@@ -186,7 +218,7 @@ export function taskTitle(task) {
 export function sortTasksForList(tasks = []) {
   const rank = (t) => {
     const s = displayTaskStatus(t)
-    if (s === 'running' || s === 'queued') return 0
+    if (s === 'running' || s === 'queued' || s === 'blocked') return 0
     return 1
   }
   return [...tasks].sort((a, b) => {
@@ -210,6 +242,7 @@ export function filterTasks(tasks = [], { status = 'all', sn = '', when = 'all' 
       if (status === 'partial_fail' && vis !== 'partial_fail') return false
       if (status === 'cancelled' && vis !== 'cancelled') return false
       if (status === 'done' && vis !== 'done') return false
+      if (status === 'blocked' && vis !== 'blocked') return false
     }
     if (sn && !taskSns(t).includes(sn)) return false
     if (when === 'today' || when === 'week') {
@@ -332,6 +365,15 @@ export function normalizeTask(raw, { source = '' } = {}) {
     busy: Boolean(raw.busy),
     cases,
     source: source || raw.source || 'tasks-api',
+    title: raw.title || '',
+    role: raw.role || '',
+    kind: raw.kind || '',
+    envProfile: raw.env_profile || raw.envProfile || '',
+    package: raw.package || '',
+    requirementId: raw.requirement_id || raw.requirementId || '',
+    releaseId: raw.release_id || raw.releaseId || '',
+    slotId: raw.slot_id || raw.slotId || '',
+    atlas_patch: raw.atlas_patch && typeof raw.atlas_patch === 'object' ? raw.atlas_patch : null,
     knowledge_ids: Array.isArray(raw.knowledge_ids) ? raw.knowledge_ids : [],
     knowledge_proposals: Array.isArray(raw.knowledge_proposals) ? raw.knowledge_proposals : [],
   }

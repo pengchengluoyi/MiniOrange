@@ -50,3 +50,36 @@ export function suiteCaseIds(suite, cases = []) {
   if (!want.size) return []
   return (cases || []).filter((c) => want.has(c.case_id)).map((c) => c.case_id)
 }
+
+/** 按模块路径铺成树：勾父节点等于勾下面全部用例。 */
+export function groupCasesByModuleTree(cases = []) {
+  const split = (m) => String(m || '未分类')
+    .split(/\s*\/\s*|\s*>\s*|\s*-\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const root = { id: 'root', label: '全部', children: [] }
+  const map = new Map([['', root]])
+  for (const c of cases || []) {
+    const parts = split(c.module)
+    if (!parts.length) parts.push('未分类')
+    let parent = root
+    let acc = []
+    for (const part of parts) {
+      acc.push(part)
+      const path = acc.join(' / ')
+      if (!map.has(path)) {
+        const node = { id: `mod:${path}`, label: part, path, children: [] }
+        parent.children.push(node)
+        map.set(path, node)
+      }
+      parent = map.get(path)
+    }
+    parent.children.push({
+      id: c.case_id,
+      label: `${c.case_id} · ${c.name || c.title || ''}`.trim(),
+      isCase: true,
+      case_id: c.case_id,
+    })
+  }
+  return root.children
+}

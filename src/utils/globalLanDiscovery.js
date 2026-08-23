@@ -5,6 +5,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getDeviceList } from '@/api/device'
+import { getRuntimeStatusHttp } from '@/api/system'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { adoptClawNode } from '@/api/clawnode'
@@ -159,6 +160,13 @@ export const resolveGatewayHost = async (runtime) => {
   if (!rt?.endpoints?.length && window.electronAPI?.getRuntimeStatus) {
     try {
       rt = await window.electronAPI.getRuntimeStatus()
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!rt?.endpoints?.length) {
+    try {
+      rt = (await getRuntimeStatusHttp())?.data || rt
     } catch {
       /* ignore */
     }
