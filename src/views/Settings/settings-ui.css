@@ -464,6 +464,70 @@
   font-weight: 600;
 }
 
+.stack-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stack-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.stack-entry h3 {
+  margin: 4px 0 0;
+  color: var(--settings-text);
+  font-size: 18px;
+}
+
+.stack-entry > p,
+.stack-path > p {
+  margin: 6px 0 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.stack-effect {
+  margin-top: 10px;
+  color: var(--settings-text);
+}
+
+.stack-path {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--settings-border);
+}
+
+.stack-path .settings-form-stack {
+  margin-top: 10px;
+}
+
+.stack-hands {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stack-hand {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.stack-hand small {
+  color: var(--settings-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .settings-form-stack {
   display: flex;
   flex-direction: column;

@@ -13,18 +13,64 @@ export const ROLE_LABEL = {
   'report-writer': '报告编写',
   'product-expert': '产品专家',
   conductor: '分析师',
+  'im-qa-assistant': 'IM 总指挥',
+  'im-defect-assistant': 'IM 缺陷助手',
 }
 
 export const TRIGGER_LABEL = {
-  qa_tick: '流程推进',
+  qa_tick: '继续分析',
   atlas_confirm: '确认图谱变更',
   atlas_edit: '人手改骨架',
-  settings_chat: '设置页对话',
-  case_run: '执行用例',
+  atlas_reject: '驳回图谱后重跑',
+  settings_chat: '角色页对话',
+  im_chat: 'IM 进线',
+  case_run: '下发执行',
   knowledge_capture: '沉淀知识',
   knowledge_review: '知识机审',
   conductor_route: '分析师调度',
   unknown: '未归类',
+}
+
+export const SOURCE_LABEL = {
+  continue_analysis: '继续分析',
+  im_inbound: 'IM 进线',
+  feishu_im: '飞书进线',
+  wecom_im: '企微进线',
+  wechat_im: '微信进线',
+  dingtalk_im: '钉钉进线',
+  slack_im: 'Slack 进线',
+  plugin_trial: '插件试对话',
+  settings_role_chat: '角色页对话',
+  case_run: '下发执行',
+  atlas_confirm: '确认图谱',
+  atlas_edit: '人手改骨架',
+  atlas_reject: '驳回图谱后重跑',
+  knowledge_capture: '沉淀知识',
+  knowledge_review: '知识机审',
+  analyst_route: '分析师调度',
+}
+
+export const SKILL_LABEL = {
+  'im.dialogue': 'IM 对话',
+  'im.defect': 'IM 提缺陷',
+  analyze_req: '拆验收标准',
+  propose_atlas: '建议图谱',
+  draft_mindmap: '写测试脑图',
+  draft_cases: '写用例草稿',
+  map_cases: '对照用例库',
+  draft_sign: '验收草稿',
+  pick_regression: '圈回归范围',
+  draft_gate: '发版草稿',
+  pick_account: '筛测试账号',
+  'goal-extract': '抽取目标',
+  'agent-decide': '看图决策',
+  'assert-vision': '视觉断言',
+  'plan-overview': '规划步骤',
+  'locate-vision': '视觉定位',
+  'single-step-replan': '失败重规划',
+  'hitl-composer': '问人话术',
+  'persona-task': '拟人路径',
+  publish_wiki: '写入 Wiki',
 }
 
 export const JOB_LABEL = {
@@ -48,17 +94,21 @@ export const JOB_LABEL = {
   'knowledge-capture': '沉淀知识',
   'knowledge-review': '知识机审',
   role_chat: '角色对话',
+  im_dialogue: '问答',
+  im_defect: '提缺陷',
   route: '选下一步',
 }
 
-const HEAD_JOBS = new Set(['qa_tick', 'atlas_followup'])
+const HEAD_JOBS = new Set(['qa_tick', 'route', 'atlas_followup'])
 const CASE_HEAD_JOBS = ['goal-extract', 'plan-overview', 'agent-restart']
 const CLUSTERABLE = new Set(['case_run', 'knowledge_capture', 'knowledge_review'])
 const CLUSTER_MS = 3 * 60 * 1000
 
 export const roleLabel = (id) => ROLE_LABEL[id] || id || '—'
 export const triggerLabel = (id) => TRIGGER_LABEL[id] || id || '—'
-export const jobLabel = (id) => JOB_LABEL[id] || id || '—'
+export const sourceLabel = (id) => SOURCE_LABEL[id] || TRIGGER_LABEL[id] || id || '—'
+export const skillLabel = (id) => SKILL_LABEL[id] || JOB_LABEL[id] || id || '—'
+export const jobLabel = (id) => JOB_LABEL[id] || SKILL_LABEL[id] || id || '—'
 export const kindLabel = (k) => (k === 'job' ? '流水线节点' : '模型调用')
 export const statusLabel = (s) => ({ done: '完成', running: '进行中', error: '失败', skipped: '跳过' }[s] || s || '—')
 export const statusTagType = (s) => ({ done: 'success', running: 'warning', error: 'danger', skipped: 'info' }[s] || '')
@@ -109,7 +159,13 @@ export const fmtTokens = (row) => {
 
 export const jobTitle = (row) => {
   if (!row) return '调度'
-  return `${triggerLabel(row.trigger)} · ${jobLabel(row.job)}`
+  const skill = skillLabel(row.skill || row.job)
+  const role = roleLabel(row.role)
+  if (row.role === 'conductor' || row.job === 'route') {
+    return `${sourceLabel(row.source || row.trigger)} · 分析师理解任务`
+  }
+  if (role !== '—' && skill !== '—') return `${sourceLabel(row.source || row.trigger)} · ${role} · ${skill}`
+  return `${sourceLabel(row.source || row.trigger)} · ${jobLabel(row.job)}`
 }
 
 const parseMaybeJson = (value) => {
@@ -211,35 +267,44 @@ export function inferCallMeta(row = {}) {
   const parsed = parseMaybeJson(row.output) || {}
   const sys = String(row.system_prompt || '')
   if (parsed.goal && (parsed.checkpoints != null || parsed.checkpoint != null)) {
-    return { trigger: 'case_run', job: 'goal-extract', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'goal-extract', role: 'test-engineer', skill: 'goal-extract', source: 'case_run' }
   }
   if ('restart' in parsed && parsed.thought) {
-    return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
   }
   if (parsed.thought && ['action', 'tool', 'capability_id', 'done', 'x', 'y'].some((k) => k in parsed)) {
-    return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
   }
-  if (parsed.thought) return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer' }
+  if (parsed.thought) return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
   if ('passed' in parsed && (parsed.confidence != null || parsed.ai_reasoning)) {
-    return { trigger: 'case_run', job: 'assert-vision', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'assert-vision', role: 'test-engineer', skill: 'assert-vision', source: 'case_run' }
   }
   if (Array.isArray(parsed.events) || ['plan', 'decline', 'replan', 'give_up'].includes(parsed.mode)) {
-    return { trigger: 'case_run', job: 'plan-overview', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'plan-overview', role: 'test-engineer', skill: 'plan-overview', source: 'case_run' }
   }
   if (parsed.bbox || (parsed.x != null && parsed.y != null)) {
-    return { trigger: 'case_run', job: 'locate-vision', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'locate-vision', role: 'test-engineer', skill: 'locate-vision', source: 'case_run' }
   }
   if (Array.isArray(parsed.items)) {
-    return { trigger: 'knowledge_capture', job: 'knowledge-capture', role: 'version-qa-bm' }
+    return { trigger: 'knowledge_capture', job: 'knowledge-capture', role: 'version-qa-bm', source: 'knowledge_capture' }
   }
   if (sys.includes('抽取目标') || sys.includes('goal-extract')) {
-    return { trigger: 'case_run', job: 'goal-extract', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'goal-extract', role: 'test-engineer', skill: 'goal-extract', source: 'case_run' }
   }
   if (sys.includes('是否先重开') || sys.includes('agent-restart')) {
-    return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
   }
   if (sys.includes('下一个动作') || sys.includes('agent-decide')) {
-    return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer' }
+    return { trigger: 'case_run', job: 'agent-decide', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
+  }
+  if (parsed.action && ['submit', 'clarify', 'reject'].includes(parsed.action) && (parsed.reply || parsed.title || parsed.steps)) {
+    return { trigger: 'im_chat', job: 'im_defect', role: 'im-defect-assistant', skill: 'im.defect', source: 'im_inbound' }
+  }
+  if (['在飞书 / 企业微信 / 钉钉 / Slack', '不在这套对话里直接建禅道单', 'MiniOrange 的测试助手', 'MiniOrange 的总指挥', '你排兵，其他角色干活', '请他们说「提缺陷」'].some((m) => sys.includes(m))) {
+    return { trigger: 'im_chat', job: 'im_dialogue', role: 'im-qa-assistant', skill: 'im.dialogue', source: 'im_inbound' }
+  }
+  if (['整理一张可提交到禅道的缺陷', '只输出 JSON，不要输出其它文字'].some((m) => sys.includes(m))) {
+    return { trigger: 'im_chat', job: 'im_defect', role: 'im-defect-assistant', skill: 'im.defect', source: 'im_inbound' }
   }
   return {}
 }
@@ -249,11 +314,15 @@ export function normalizeCall(row = {}) {
   const trigger = (!row.trigger || row.trigger === 'unknown')
     ? (guessed.trigger || row.trigger || 'unknown')
     : row.trigger
+  const job = row.job || guessed.job || ''
   return {
     ...row,
     trigger,
-    job: row.job || guessed.job || '',
+    job,
     role: row.role || guessed.role || '',
+    skill: row.skill || guessed.skill || job,
+    source: row.source || guessed.source || trigger,
+    routed_by: row.routed_by || (trigger === 'qa_tick' ? 'conductor' : ''),
   }
 }
 
@@ -335,8 +404,38 @@ const pickHead = (steps) => {
     || collapsed[0]
 }
 
+const routedChain = (row, steps = []) => {
+  const explicit = Array.isArray(row?.routed) ? row.routed : []
+  const fromSteps = (steps.length ? steps : (row?._steps || []))
+    .filter((s) => s.role && s.role !== 'conductor' && s.job !== 'qa_tick' && s.job !== 'route')
+    .map((s) => ({ role: s.role, skill: s.skill || s.job }))
+  const list = explicit.length ? explicit : fromSteps
+  const seen = new Set()
+  const bits = []
+  for (const item of list) {
+    const role = roleLabel(item.role)
+    const skill = skillLabel(item.skill)
+    const key = `${role}·${skill}`
+    if (!item.role && !item.skill) continue
+    if (seen.has(key)) continue
+    seen.add(key)
+    bits.push(`${role} · ${skill}`)
+  }
+  return bits
+}
+
 export const pipelineHeadline = (row, steps = []) => {
   const list = steps.length ? steps : (row?._steps || [])
+  const chain = routedChain(row, list)
+  if (row?.trigger === 'qa_tick' || row?.job === 'route') {
+    return chain.length ? `分析师 → ${chain.join(' → ')}` : '分析师理解任务后无需调用'
+  }
+  if (row?.routed_by === 'conductor' && chain.length) {
+    return `分析师 → ${chain.join(' → ')}`
+  }
+  if (row?.trigger === 'im_chat') {
+    return chain[0] || `${roleLabel(row.role)} · ${skillLabel(row.skill || row.job)}`
+  }
   if (row?.trigger === 'case_run') {
     const decide = list.filter((s) => s.job === 'agent-decide').length
     const asserts = list.filter((s) => s.job === 'assert-vision')
@@ -344,17 +443,18 @@ export const pipelineHeadline = (row, steps = []) => {
       const parsed = parseMaybeJson(s.output)
       return parsed && parsed.passed === false
     })
-    const bits = ['执行用例']
-    if (decide) bits.push(`${decide} 次决策`)
-    if (asserts.length) bits.push(failed ? '有断言未通过' : `${asserts.length} 次断言`)
-    if (bits.length === 1) bits.push(jobLabel(row.job))
+    const bits = ['测试工程师']
+    if (decide) bits.push(`${decide} 次看图决策`)
+    if (asserts.length) bits.push(failed ? '有断言未通过' : `${asserts.length} 次视觉断言`)
+    if (bits.length === 1) bits.push(skillLabel(row.skill || row.job))
     return bits.join(' · ')
   }
+  if (chain.length) return chain.join(' → ')
   if (list.length > 1) {
-    const names = [...new Set(list.map((s) => jobLabel(s.job)).filter((x) => x && x !== '—'))]
+    const names = [...new Set(list.map((s) => skillLabel(s.skill || s.job)).filter((x) => x && x !== '—'))]
     if (names.length > 1) return names.slice(0, 3).join(' → ')
   }
-  return jobLabel(row?.job)
+  return skillLabel(row?.skill || row?.job)
 }
 
 const toGroup = (steps, { pipelineId = '' } = {}) => {
@@ -368,6 +468,9 @@ const toGroup = (steps, { pipelineId = '' } = {}) => {
     ...head,
     at: latest.at || head.at,
     pipeline_id: pipelineId || head.pipeline_id || '',
+    source: head.source || collapsed.find((s) => s.source)?.source || head.trigger,
+    skill: head.skill || collapsed.find((s) => s.skill)?.skill || head.job,
+    routed: head.routed || undefined,
     status: rollupStatus(steps),
     total_tokens: tokens || Number(head.total_tokens || 0),
     elapsed_ms: elapsed || Number(head.elapsed_ms || 0),
@@ -432,7 +535,7 @@ export function flattenDispatchJobs(calls = []) {
         ...step,
         pipeline_id: group.pipeline_id,
         headline: group.headline,
-        step_label: jobLabel(step.job),
+        step_label: skillLabel(step.skill || step.job),
         step_index_label: `${idx + 1}/${steps.length}`,
         prev_job: prev ? jobLabel(prev.job) : '起点',
         next_job: next ? jobLabel(next.job) : '结束',
@@ -468,6 +571,9 @@ export function relatedWork(row) {
   if (trigger === 'case_run') return { label: '去任务', tab: 'tasks' }
   if (trigger === 'knowledge_capture' || trigger === 'knowledge_review') {
     return { label: '去知识', tab: 'knowledge' }
+  }
+  if (trigger === 'im_chat' || trigger === 'settings_chat') {
+    return { label: '去角色', tab: '' }
   }
   return { label: '详情', tab: '' }
 }

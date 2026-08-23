@@ -90,6 +90,24 @@ export const chatPlugin = (pluginId, data) =>
 export const syncFeishuListener = () =>
   request({ url: '/settings/plugins/feishu/listener/sync', method: 'post', timeout: 20000 })
 
+export const startWechatLogin = () =>
+  request({ url: '/settings/plugins/wechat/login', method: 'post', timeout: 30000 })
+
+export const getWechatLogin = () =>
+  request({ url: '/settings/plugins/wechat/login', method: 'get', timeout: 20000 })
+
+export const verifyWechatLogin = (verifyCode) =>
+  request({ url: '/settings/plugins/wechat/login/verify', method: 'post', data: { verify_code: verifyCode }, timeout: 20000 })
+
+export const logoutWechat = () =>
+  request({ url: '/settings/plugins/wechat/logout', method: 'post', timeout: 20000 })
+
+export const syncWechatListener = () =>
+  request({ url: '/settings/plugins/wechat/listener/sync', method: 'post', timeout: 20000 })
+
+export const debugFeishuWiki = (data) =>
+  request({ url: '/settings/plugins/feishu/wiki/debug', method: 'post', data, timeout: 30000 })
+
 export const testZentaoPlugin = (data = {}) =>
   request({ url: '/settings/plugins/zentao/test', method: 'post', data, timeout: 20000 })
 
@@ -119,6 +137,12 @@ export const getAIPlanPrompt = () =>
 
 export const listAIRoles = () =>
   request({ url: '/settings/ai/roles', method: 'get' })
+
+export const getLayerStack = () =>
+  request({ url: '/settings/ai/stack', method: 'get' })
+
+export const saveLayerStack = (data) =>
+  request({ url: '/settings/ai/stack', method: 'put', data })
 
 export const chatAIRole = (data) =>
   request({ url: '/settings/ai/roles/chat', method: 'post', data, timeout: 120000 })

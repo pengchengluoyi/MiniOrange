@@ -1,7 +1,7 @@
 <script setup>
 import { computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, Cpu, Key, Monitor, User, Operation, Connection, Avatar, Files } from '@element-plus/icons-vue'
+import { Setting, Key, Monitor, User, Operation, Connection, Avatar, Files } from '@element-plus/icons-vue'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
 import { rememberSettingsPath, returnFromSettingsPath } from '@/utils/workMode'
 import { useAppChrome } from '@/composables/useAppChrome'
@@ -13,7 +13,6 @@ const { isElectron, showMacTraffic, showWinControls, handleMinimize, handleMaxim
 
 const sections = [
   { id: 'runtime', label: '运行状态', icon: Monitor, to: '/settings/runtime' },
-  { id: 'skills', label: '能力目录', icon: Cpu, to: '/settings/skills' },
   { id: 'roles', label: '角色', icon: User, to: '/settings/roles' },
   { id: 'dispatch', label: '调用记录', icon: Operation, to: '/settings/dispatch' },
   { id: 'plugins', label: '插件', icon: Connection, to: '/settings/plugins' },

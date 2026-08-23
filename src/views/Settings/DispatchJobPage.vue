@@ -10,14 +10,14 @@ import {
   fmtElapsed,
   fmtTime,
   fmtTokens,
-  jobLabel,
   jobSummary,
   jobTitle,
   relatedWork,
   roleLabel,
+  skillLabel,
+  sourceLabel,
   statusLabel,
   statusTagType,
-  triggerLabel,
 } from '@/utils/dispatchLog'
 import './settings-ui.css'
 
@@ -124,7 +124,7 @@ onMounted(load)
       <div>
         <h2 class="settings-page-title">{{ head?.headline || jobTitle(head) }}</h2>
         <p class="settings-page-desc">
-          {{ triggerLabel(head?.trigger) }}
+          {{ sourceLabel(head?.source || head?.trigger) }}
           <span v-if="head?.app_name"> · {{ head.app_name }}</span>
           · {{ statusLabel(head?.status) }}
           · {{ steps.length }} 步
@@ -160,7 +160,7 @@ onMounted(load)
             <span v-if="idx" class="pipe-line" />
             <span class="pipe-index">{{ idx + 1 }}</span>
             <div class="pipe-body">
-              <strong>{{ jobLabel(step.job) }}</strong>
+              <strong>{{ skillLabel(step.skill || step.job) }}</strong>
               <small>{{ jobSummary(step) }}</small>
               <small>{{ roleLabel(step.role) }} · {{ fmtTime(step.at) }}</small>
             </div>
@@ -170,9 +170,12 @@ onMounted(load)
       </section>
 
       <section v-if="selected" class="settings-card detail-card">
-        <div class="settings-kicker">{{ triggerLabel(selected.trigger) }} · {{ roleLabel(selected.role) }} · {{ jobLabel(selected.job) }}</div>
+        <div class="settings-kicker">{{ sourceLabel(selected.source || selected.trigger) }} · {{ roleLabel(selected.role) }} · {{ skillLabel(selected.skill || selected.job) }}</div>
         <p class="step-lead">{{ jobSummary(selected) }}</p>
         <dl class="facts">
+          <div><dt>来源</dt><dd>{{ sourceLabel(selected.source || selected.trigger) }}</dd></div>
+          <div><dt>角色</dt><dd>{{ roleLabel(selected.role) }}</dd></div>
+          <div><dt>技能</dt><dd>{{ skillLabel(selected.skill || selected.job) }}</dd></div>
           <div><dt>时间</dt><dd>{{ fmtTime(selected.at) }}</dd></div>
           <div><dt>耗时</dt><dd>{{ fmtElapsed(selected.elapsed_ms) }}</dd></div>
           <div><dt>tokens</dt><dd>{{ selected.kind === 'llm' ? `${selected.prompt_tokens || 0} / ${selected.completion_tokens || 0}` : '—' }}</dd></div>

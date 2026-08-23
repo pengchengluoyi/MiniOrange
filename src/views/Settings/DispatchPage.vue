@@ -16,9 +16,10 @@ import {
   matchDispatchFilters,
   relatedWork,
   roleLabel,
+  skillLabel,
+  sourceLabel,
   statusLabel,
   statusTagType,
-  triggerLabel,
 } from '@/utils/dispatchLog'
 import './settings-ui.css'
 
@@ -44,8 +45,8 @@ const pageTitle = computed(() => {
   return view.value === 'jobs' ? '按次查看' : '按推进分组'
 })
 const pageDesc = computed(() => {
-  if (view.value === 'jobs') return '一次模型调用一行。点进去看 Prompt、输入和产出。这里不是真机执行。'
-  return '一次推进或一次跑次收成一行。点进去看实际走了哪些角色。这里不是真机执行。'
+  if (view.value === 'jobs') return '一次调用一行：来源、分析师之后调用了哪个角色的什么技能。'
+  return '一次推进收成一行。看分析师理解任务后调用了哪个角色的什么技能。'
 })
 
 const triggerOptions = computed(() => Object.entries(TRIGGER_LABEL).filter(([id]) => id !== 'unknown'))
@@ -122,7 +123,7 @@ onMounted(load)
     </div>
 
     <div class="settings-toolbar">
-      <el-select v-model="filters.trigger" size="small" clearable placeholder="入口" class="filter-item">
+      <el-select v-model="filters.trigger" size="small" clearable placeholder="来源" class="filter-item">
         <el-option v-for="([id, label]) in triggerOptions" :key="id" :label="label" :value="id" />
       </el-select>
       <el-select v-model="filters.role" size="small" clearable placeholder="角色" class="filter-item">
@@ -158,18 +159,21 @@ onMounted(load)
         <el-table-column label="时间" width="108">
           <template #default="{ row }">{{ fmtTimeShort(row.at) }}</template>
         </el-table-column>
-        <el-table-column label="入口" width="112">
-          <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
+        <el-table-column label="来源" width="120">
+          <template #default="{ row }">{{ sourceLabel(row.source || row.trigger) }}</template>
         </el-table-column>
         <el-table-column v-if="!appId" label="应用" width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.app_name || '—' }}</template>
         </el-table-column>
         <template v-if="view === 'pipeline'">
-          <el-table-column label="做了什么" min-width="180" show-overflow-tooltip>
+          <el-table-column label="分析师之后" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">{{ row.headline || jobLabel(row.job) }}</template>
           </el-table-column>
           <el-table-column label="角色" width="110">
             <template #default="{ row }">{{ roleLabel(row.role) }}</template>
+          </el-table-column>
+          <el-table-column label="技能" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ skillLabel(row.skill || row.job) }}</template>
           </el-table-column>
           <el-table-column label="步数" width="64">
             <template #default="{ row }">{{ row.step_total || 1 }}</template>
@@ -187,8 +191,8 @@ onMounted(load)
           </el-table-column>
         </template>
         <template v-else>
-          <el-table-column label="本步" min-width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.step_label || jobLabel(row.job) }}</template>
+          <el-table-column label="技能" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.step_label || skillLabel(row.skill || row.job) }}</template>
           </el-table-column>
           <el-table-column label="序号" width="64">
             <template #default="{ row }">{{ row.step_index_label || '—' }}</template>

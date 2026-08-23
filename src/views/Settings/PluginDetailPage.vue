@@ -1,9 +1,11 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import QRCode from 'qrcode'
 import HintFold from '@/components/HintFold.vue'
 import RobotIntegrationsPanel from './RobotIntegrationsPanel.vue'
+import PluginDebugPanel from './PluginDebugPanel.vue'
 import {
   getPlugin,
   savePlugin,
@@ -13,6 +15,12 @@ import {
   testZentaoBug,
   chatPlugin,
   syncFeishuListener,
+  startWechatLogin,
+  getWechatLogin,
+  verifyWechatLogin,
+  logoutWechat,
+  syncWechatListener,
+  debugFeishuWiki,
 } from '@/api/settings'
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
 import { getProjects } from '@/api/workReport'
@@ -35,6 +43,16 @@ const wikiForm = ref({
   folder_pattern: '{project}/版本/{version}',
   childrenText: '测试报告、测试用例、需求、缺陷',
 })
+const wikiDebug = ref({
+  busy: false,
+  result: null,
+})
+const wikiDebugActions = [
+  { id: 'ping', label: '测试连接' },
+  { id: 'list', label: '列出当前层' },
+  { id: 'mkdir', label: '建调试文件夹' },
+  { id: 'create_doc', label: '建调试页' },
+]
 const notifyForm = ref({
   bot_id: '',
   chat_id: '',
@@ -104,13 +122,10 @@ const capabilities = computed(() =>
 const robots = computed(() => plugin.value?.robots || [])
 const bindings = computed(() => plugin.value?.bindings || [])
 const isNotify = computed(() => ['wecom', 'dingtalk', 'slack'].includes(pluginId.value))
-const isIm = computed(() => pluginId.value === 'feishu' || isNotify.value)
+const isIm = computed(() => pluginId.value === 'feishu' || pluginId.value === 'wechat' || isNotify.value)
+const isLiveIm = computed(() => pluginId.value === 'feishu' || pluginId.value === 'wechat')
 const chatForm = ref({
   enabled: false,
-})
-const chatRoles = ref({
-  dialogue: 'im-qa-assistant',
-  defect: 'im-defect-assistant',
 })
 const chatWebhookPath = ref('/webhooks/feishu')
 const chatListener = ref({
@@ -141,11 +156,12 @@ const formatChatTime = (iso) => {
 
 const chatLink = computed(() => {
   const row = chatListener.value || {}
-  if (row.connected) return { tone: '', label: '已连上', hint: '飞书消息会自动回。' }
+  const wechat = pluginId.value === 'wechat'
+  if (row.connected) return { tone: '', label: '已连上', hint: wechat ? '微信消息会自动回。' : '飞书消息会自动回。' }
   if (row.error) return { tone: 'is-err', label: '连接失败', hint: row.error }
-  if (row.running) return { tone: 'is-warn', label: '握手中', hint: '等十几秒再点开放平台「重新验证」。' }
-  if (chatForm.value.enabled) return { tone: 'is-warn', label: '未连上', hint: '点重新连接，或重启 MiniOrangeServer。' }
-  return { tone: 'is-muted', label: '已关闭', hint: '打开自动回复后，本机会连飞书收消息。' }
+  if (row.running) return { tone: 'is-warn', label: '握手中', hint: wechat ? '正在连微信 iLink。' : '等十几秒再点开放平台「重新验证」。' }
+  if (chatForm.value.enabled) return { tone: 'is-warn', label: '未连上', hint: wechat ? '先扫码，再打开自动回复。' : '点重新连接，或重启 MiniOrangeServer。' }
+  return { tone: 'is-muted', label: '已关闭', hint: wechat ? '打开自动回复后，本机会长轮询微信消息。' : '打开自动回复后，本机会连飞书收消息。' }
 })
 
 const lastEventLabel = computed(() => {
@@ -166,7 +182,144 @@ const lastEventLabel = computed(() => {
   return `${label} · ${formatChatTime(last.at)}`
 })
 
-const setupFoldOpen = computed(() => Boolean(chatForm.value.enabled && !chatListener.value.connected))
+const wechatLogin = ref({
+  logged_in: false,
+  status: 'idle',
+  qrcode_img: '',
+  need_verify: false,
+  error: '',
+  ilink_user_id: '',
+})
+const wechatPairCode = ref('')
+const wechatBusy = ref(false)
+let wechatPollTimer = null
+
+const isWechatQrImage = (text) => {
+  const t = String(text || '').trim()
+  return t.startsWith('data:image') || /\.(png|jpe?g|gif|webp|svg)(\?|#|$)/i.test(t)
+}
+
+const toWechatQrImage = async (raw) => {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  if (isWechatQrImage(text)) return text
+  return QRCode.toDataURL(text, { width: 280, margin: 1, errorCorrectionLevel: 'M' })
+}
+
+const applyWechatLogin = async (data) => {
+  const row = data || {}
+  const nextStatus = row.status || (row.logged_in ? 'confirmed' : wechatLogin.value.status || 'idle')
+  const keepImg = nextStatus !== 'expired' && nextStatus !== 'idle' && !row.logged_in
+  const incoming = String(row.qrcode_img || '').trim()
+  let img = ''
+  if (incoming) img = await toWechatQrImage(incoming)
+  else if (keepImg) img = wechatLogin.value.qrcode_img
+  wechatLogin.value = {
+    logged_in: Boolean(row.logged_in),
+    status: nextStatus,
+    qrcode_img: img,
+    need_verify: Boolean(row.need_verify),
+    error: row.error || '',
+    ilink_user_id: row.ilink_user_id || '',
+  }
+  if (row.listener) chatListener.value = { ...(chatListener.value || {}), ...row.listener }
+}
+
+const stopWechatPoll = () => {
+  if (wechatPollTimer) {
+    clearInterval(wechatPollTimer)
+    wechatPollTimer = null
+  }
+}
+
+const refreshWechatLogin = async () => {
+  const res = await getWechatLogin()
+  await applyWechatLogin(res?.data || {})
+  return wechatLogin.value
+}
+
+const startWechatPoll = () => {
+  stopWechatPoll()
+  wechatPollTimer = setInterval(async () => {
+    try {
+      const row = await refreshWechatLogin()
+      if (row.logged_in || row.status === 'expired') stopWechatPoll()
+    } catch {
+      stopWechatPoll()
+    }
+  }, 1600)
+}
+
+const beginWechatLogin = async () => {
+  wechatBusy.value = true
+  wechatLogin.value = {
+    ...wechatLogin.value,
+    logged_in: false,
+    status: 'loading',
+    error: '',
+  }
+  try {
+    const res = await startWechatLogin()
+    await applyWechatLogin(res?.data || {})
+    if (!wechatLogin.value.qrcode_img && !wechatLogin.value.error) {
+      wechatLogin.value.error = '微信没有返回二维码图，请再试一次'
+    }
+    if (wechatLogin.value.qrcode_img) startWechatPoll()
+  } catch (e) {
+    const msg = e?.response?.data?.detail || e?.message || '拿二维码失败'
+    wechatLogin.value = { ...wechatLogin.value, status: 'idle', error: String(msg) }
+    ElMessage.error(msg)
+  } finally {
+    wechatBusy.value = false
+  }
+}
+
+const submitWechatPair = async () => {
+  if (!wechatPairCode.value.trim()) return ElMessage.warning('先填微信里的配对码')
+  wechatBusy.value = true
+  try {
+    const res = await verifyWechatLogin(wechatPairCode.value.trim())
+    await applyWechatLogin(res?.data || {})
+    wechatPairCode.value = ''
+    if (wechatLogin.value.logged_in) {
+      stopWechatPoll()
+      ElMessage.success('微信已绑定')
+      await load()
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '配对失败')
+  } finally {
+    wechatBusy.value = false
+  }
+}
+
+const unbindWechat = async () => {
+  wechatBusy.value = true
+  try {
+    const res = await logoutWechat()
+    await applyWechatLogin(res?.data || {})
+    ElMessage.success('已退出微信')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '退出失败')
+  } finally {
+    wechatBusy.value = false
+  }
+}
+
+const reconnectLiveIm = async () => {
+  saving.value = true
+  try {
+    const res = pluginId.value === 'wechat' ? await syncWechatListener() : await syncFeishuListener()
+    chatListener.value = { ...(chatListener.value || {}), ...(res?.data || {}) }
+    ElMessage.success(res?.data?.connected ? '已连上' : '已发起连接，等几秒再看状态')
+    setTimeout(load, 2500)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '连接失败')
+  } finally {
+    saving.value = false
+  }
+}
 const statusLabel = computed(() => {
   const s = plugin.value?.status
   if (s === 'ready') return '已连接'
@@ -214,12 +367,18 @@ const applyConfig = (data) => {
   chatForm.value = {
     enabled: Boolean(cfg.chat?.enabled),
   }
-  chatRoles.value = {
-    dialogue: cfg.chat_roles?.dialogue || 'im-qa-assistant',
-    defect: cfg.chat_roles?.defect || 'im-defect-assistant',
-  }
   chatWebhookPath.value = cfg.chat_webhook?.path || '/webhooks/feishu'
   chatListener.value = cfg.chat_listener || { running: false, error: '', last: {} }
+  if (pluginId.value === 'wechat') {
+    void applyWechatLogin({
+      ...(cfg.wechat_account || {}),
+      listener: cfg.chat_listener,
+      status: cfg.wechat_account?.logged_in ? 'confirmed' : (wechatLogin.value.status || 'idle'),
+      qrcode_img: wechatLogin.value.qrcode_img,
+      need_verify: wechatLogin.value.need_verify,
+      error: cfg.chat_listener?.error || wechatLogin.value.error,
+    })
+  }
   const keepTpl = zentaoTemplates.value.find((x) => x.id === zentaoTestBug.value.template_id)
     || zentaoTemplates.value.find((x) => x.is_default)
     || zentaoTemplates.value[0]
@@ -296,6 +455,31 @@ const saveWiki = () => persist({
   },
 })
 
+const runWikiDebug = async (action) => {
+  if (wikiDebug.value.busy) return
+  wikiDebug.value.busy = true
+  wikiDebug.value.result = { action, ok: true, title: '进行中', summary: '' }
+  try {
+    const res = await debugFeishuWiki({
+      action,
+      space_id: wikiForm.value.space_id.trim(),
+      root_node_token: wikiForm.value.root_node_token.trim(),
+      folder_pattern: wikiForm.value.folder_pattern.trim(),
+      children: parseChildren(wikiForm.value.childrenText),
+      project: 'MiniOrange',
+      version: '调试',
+    })
+    wikiDebug.value.result = res?.data || { ok: true, action, title: '已完成' }
+    ElMessage.success(wikiDebug.value.result.title || '已完成')
+  } catch (e) {
+    const error = e?.response?.data?.detail || e?.message || '调试失败'
+    wikiDebug.value.result = { ok: false, action, title: '没连上', summary: error, error }
+    ElMessage.error(error)
+  } finally {
+    wikiDebug.value.busy = false
+  }
+}
+
 const chatPayload = () => ({
   enabled: chatForm.value.enabled,
 })
@@ -305,23 +489,9 @@ const toggleChatEnabled = async (val) => {
   await persist({ chat: chatPayload() }, val ? '已开启群对话' : '已关闭群对话')
 }
 
-const goRole = (roleId) => {
-  router.push({ name: 'SettingsRoles', query: { tab: 'product', role: roleId } })
-}
+const reconnectFeishu = reconnectLiveIm
 
-const reconnectFeishu = async () => {
-  saving.value = true
-  try {
-    const res = await syncFeishuListener()
-    chatListener.value = { ...(chatListener.value || {}), ...(res?.data || {}) }
-    ElMessage.success(res?.data?.connected ? '已连上飞书' : '已发起连接，等几秒再看状态')
-    setTimeout(load, 2500)
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '连接失败')
-  } finally {
-    saving.value = false
-  }
-}
+const setupFoldOpen = computed(() => Boolean(chatForm.value.enabled && !chatListener.value.connected))
 
 const sendChatTrial = async () => {
   const text = chatTrial.value.draft.trim()
@@ -666,11 +836,19 @@ const submitBind = () => {
 
 watch(pluginId, () => {
   tab.value = 'connect'
+  stopWechatPoll()
   load()
 })
 
 onMounted(async () => {
   await Promise.all([load(), loadProjects()])
+  if (pluginId.value === 'wechat') {
+    try { await refreshWechatLogin() } catch { /* ignore */ }
+  }
+})
+
+onUnmounted(() => {
+  stopWechatPoll()
 })
 </script>
 
@@ -712,34 +890,89 @@ onMounted(async () => {
       </button>
     </div>
 
-    <section v-if="tab === 'connect' && (pluginId === 'feishu' || isNotify)">
-      <RobotIntegrationsPanel :platform="plugin?.robot_platform || pluginId" />
-    </section>
-
-    <section v-else-if="pluginId === 'feishu' && tab === 'wiki'" class="settings-card">
-      <div class="settings-kicker">Wiki 副本</div>
-      <p class="hint">人确认过的需求、用例、报告、缺陷，按版本写成文件夹。没有凭证时只准备结构，不假装已经写进飞书。</p>
-      <el-form label-position="top" class="settings-form-stack">
-        <el-form-item label="知识空间 ID">
-          <el-input v-model="wikiForm.space_id" placeholder="飞书知识空间 space_id" />
-        </el-form-item>
-        <el-form-item label="根节点 token">
-          <el-input v-model="wikiForm.root_node_token" placeholder="可选，挂在某个已有目录下" />
-        </el-form-item>
-        <el-form-item label="文件夹规则">
-          <el-input v-model="wikiForm.folder_pattern" placeholder="{project}/版本/{version}" />
-        </el-form-item>
-        <el-form-item label="版本下的子目录">
-          <el-input v-model="wikiForm.childrenText" placeholder="测试报告、测试用例、需求、缺陷" />
-        </el-form-item>
-        <div>
-          <button type="button" class="settings-action-pill" :disabled="saving" @click="saveWiki">
-            保存 Wiki
+    <section v-if="tab === 'connect' && pluginId === 'wechat'" class="settings-card wechat-connect">
+      <div class="settings-kicker">微信 ClawBot</div>
+      <p class="hint">用手机微信扫码，把 MiniOrange 加成 ClawBot 联系人。这是微信官方 iLink，不是登录你的个人号。</p>
+      <div v-if="wechatLogin.logged_in" class="wechat-bound">
+        <div class="settings-summary-pill">已绑定</div>
+        <p>可以在微信里找 ClawBot 对话。{{ wechatLogin.ilink_user_id ? `账号 ${wechatLogin.ilink_user_id}` : '' }}</p>
+        <div class="row-actions">
+          <button type="button" class="settings-action-pill" :disabled="wechatBusy" @click="unbindWechat">
+            退出微信
             <span class="settings-action-arrow">→</span>
           </button>
         </div>
-      </el-form>
+      </div>
+      <div v-else class="wechat-qr-box">
+        <div v-if="wechatLogin.qrcode_img" class="wechat-qr">
+          <img :src="wechatLogin.qrcode_img" alt="微信登录二维码">
+        </div>
+        <p v-if="wechatBusy" class="hint">正在向微信要二维码…</p>
+        <p v-if="wechatLogin.status === 'expired'" class="hint">二维码过期了，重新拿一张。</p>
+        <p v-else-if="wechatLogin.status === 'scaned' || wechatLogin.status === 'scanned'" class="hint">已扫码，在手机上确认。</p>
+        <p v-else-if="wechatLogin.error" class="hint">{{ wechatLogin.error }}</p>
+        <div v-if="wechatLogin.need_verify" class="wechat-pair">
+          <el-input v-model="wechatPairCode" placeholder="微信显示的配对码" style="max-width: 220px" />
+          <button type="button" class="settings-action-pill" :disabled="wechatBusy" @click="submitWechatPair">
+            确认配对
+            <span class="settings-action-arrow">→</span>
+          </button>
+        </div>
+        <button type="button" class="settings-action-pill" :disabled="wechatBusy" @click="beginWechatLogin">
+          {{ wechatBusy ? '正在获取二维码' : (wechatLogin.qrcode_img ? '刷新二维码' : '扫码绑定微信') }}
+          <span class="settings-action-arrow">→</span>
+        </button>
+      </div>
     </section>
+
+    <section v-else-if="tab === 'connect' && (pluginId === 'feishu' || isNotify)">
+      <RobotIntegrationsPanel :platform="plugin?.robot_platform || pluginId" />
+    </section>
+
+    <template v-else-if="pluginId === 'feishu' && tab === 'wiki'">
+      <div class="wiki-page">
+      <section class="settings-info-card">
+        <div class="settings-kicker">现在怎么用</div>
+        <p>这里只存「写到哪个知识空间、文件夹怎么排」。人确认过的报告 / 用例 / 需求 / 缺陷，以后由文档维护按这份规则落一份飞书副本；MiniOrange 里的数据仍是源。</p>
+        <p>自动写入还没接到流程上。顶部「已连接」只说明机器人凭证在，不代表这个知识空间一定有权限。下面调试用来验空间、列目录、建一个可删的调试页。</p>
+      </section>
+
+      <section class="settings-card">
+        <div class="settings-kicker">Wiki 规则</div>
+        <p class="hint">没有空间 ID 时只保存规则。填了节点 token 也能解析到所属空间。</p>
+        <el-form label-position="top" class="settings-form-stack">
+          <el-form-item label="知识空间 ID">
+            <el-input v-model="wikiForm.space_id" placeholder="空间 ID，或任意 Wiki 节点 token" />
+          </el-form-item>
+          <el-form-item label="根节点 token">
+            <el-input v-model="wikiForm.root_node_token" placeholder="可选，挂在某个已有目录下" />
+          </el-form-item>
+          <el-form-item label="文件夹规则">
+            <el-input v-model="wikiForm.folder_pattern" placeholder="{project}/版本/{version}" />
+          </el-form-item>
+          <el-form-item label="版本下的子目录">
+            <el-input v-model="wikiForm.childrenText" placeholder="测试报告、测试用例、需求、缺陷" />
+          </el-form-item>
+          <div>
+            <button type="button" class="settings-action-pill" :disabled="saving" @click="saveWiki">
+              保存 Wiki
+              <span class="settings-action-arrow">→</span>
+            </button>
+          </div>
+        </el-form>
+      </section>
+
+      <PluginDebugPanel
+        title="Wiki 调试"
+        hint="用当前表单里的空间和规则试。建文件夹按 MiniOrange / 版本 / 调试，已有同名则复用。测完可以在飞书里删掉调试页。"
+        :busy="wikiDebug.busy"
+        busy-label="请求中"
+        :result="wikiDebug.result"
+        :actions="wikiDebugActions"
+        @run="runWikiDebug"
+      />
+      </div>
+    </template>
 
     <template v-else-if="isIm && tab === 'chat'">
       <div class="im-chat-page">
@@ -747,11 +980,11 @@ onMounted(async () => {
           <div class="im-channel-top">
             <div>
               <div class="settings-kicker">通道</div>
-              <p>{{ pluginId === 'feishu' ? chatLink.hint : '这个平台还没收消息，可先在下面试。' }}</p>
+              <p>{{ isLiveIm ? chatLink.hint : '这个平台还没收消息，可先在下面试。' }}</p>
             </div>
             <div class="im-channel-controls">
               <span
-                v-if="pluginId === 'feishu'"
+                v-if="isLiveIm"
                 class="settings-summary-pill"
                 :class="chatLink.tone"
               >{{ chatLink.label }}</span>
@@ -760,21 +993,16 @@ onMounted(async () => {
                 <el-switch
                   :model-value="chatForm.enabled"
                   :loading="saving"
-                  :disabled="pluginId !== 'feishu'"
+                  :disabled="!isLiveIm"
                   @change="toggleChatEnabled"
                 />
               </label>
             </div>
           </div>
-          <div class="im-channel-meta">
-            <p v-if="pluginId === 'feishu'">{{ lastEventLabel }}</p>
-            <p v-else>说话方式所有 IM 通道共用。</p>
+          <div v-if="isLiveIm" class="im-channel-meta">
+            <p>{{ lastEventLabel }}</p>
             <div class="im-channel-links">
-              <button type="button" class="im-text-link" @click="goRole(chatRoles.dialogue)">对话 prompt</button>
-              <span>·</span>
-              <button type="button" class="im-text-link" @click="goRole(chatRoles.defect)">提缺陷 prompt</button>
               <button
-                v-if="pluginId === 'feishu'"
                 type="button"
                 class="settings-action-pill"
                 :disabled="saving"
@@ -786,6 +1014,17 @@ onMounted(async () => {
             </div>
           </div>
         </section>
+
+        <HintFold
+          v-if="pluginId === 'wechat'"
+          title="微信收不到消息时"
+          :summary="chatListener.connected ? '长轮询已通，一般不用看' : '先扫码，再打开自动回复'"
+          :default-open="setupFoldOpen"
+        >
+          <p>微信要较新的 iOS / Android 版本，设置里能看到 ClawBot 插件。</p>
+          <p>扫码后，ClawBot 会出现在聊天列表里。私聊即可，官方通道目前以私聊为主。</p>
+          <p>登录大约一天会过期。过期后回到「连接」重新扫码。MiniOrange 要一直开着才能收消息。</p>
+        </HintFold>
 
         <HintFold
           v-if="pluginId === 'feishu'"
@@ -803,7 +1042,7 @@ onMounted(async () => {
           <div class="im-trial-head">
             <div>
               <div class="settings-kicker">试对话</div>
-              <p>不依赖飞书是否已订阅。提缺陷在信息够且禅道已连上时会真建单。</p>
+              <p>不依赖微信 / 飞书是否已连上。提缺陷在信息够且禅道已连上时会真建单。</p>
             </div>
             <div class="im-mode">
               <button
@@ -1278,10 +1517,18 @@ onMounted(async () => {
   font-size: 11px;
 }
 
-.im-chat-page {
+.im-chat-page,
+.wiki-page {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.wiki-page .settings-info-card p {
+  margin: 8px 0 0;
+  color: var(--settings-text);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .im-channel-top,
@@ -1331,21 +1578,6 @@ onMounted(async () => {
   color: var(--settings-text);
   font-size: 12px;
   font-weight: 700;
-}
-
-.im-text-link {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--settings-primary);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.im-channel-links > span {
-  color: var(--settings-muted);
-  font-size: 12px;
 }
 
 .im-trial {
@@ -1449,5 +1681,42 @@ onMounted(async () => {
 .plugin-detail code {
   font-size: 12px;
   color: #4338ca;
+}
+
+.wechat-connect .hint {
+  margin: 8px 0 12px;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.wechat-qr-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.wechat-qr {
+  width: 220px;
+  height: 220px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid var(--settings-border);
+  background: #fff;
+}
+
+.wechat-qr img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.wechat-pair,
+.wechat-bound .row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 </style>

@@ -14,6 +14,7 @@ import { getBaseUrl } from '@/utils/config'
 import { selectableExecutionDevices, pickDefaultDeviceSn, applyOnlineStatusGrace, dedupeDevicesForUi } from '@/utils/devices'
 import WorkShell from '@/layouts/WorkShell.vue'
 import PayloadView from '@/components/PayloadView.vue'
+import { rememberAgentPath } from '@/utils/workMode'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res

@@ -3,7 +3,8 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Promotion, Search } from '@element-plus/icons-vue'
-import { chatAIRole, listAIRoles, saveRolePrompt } from '@/api/settings'
+import { chatAIRole, getLayerStack, listAIRoles, saveLayerStack, saveRolePrompt } from '@/api/settings'
+import './settings-ui.css'
 
 const STARTERS = {
   conductor: ['执行一条用例时每一步该调谁？', '需求刚贴进来下一步做什么？', 'Plan 模式失败了该调什么能力？'],
@@ -15,7 +16,7 @@ const STARTERS = {
   'test-engineer': ['登录失败了下一步怎么查？', '按「我要发造物秀」筛一个测试账号', '没有截图时你怎么工作？'],
   'report-writer': ['根据这些结果写一份测试报告', '没有上一版本时发版报告怎么写？', '相对 1.0.0 新增和修改分别写什么？'],
   'doc-keeper': ['飞书 Wiki 我们能建哪些东西？', '测试完成后状态怎么回写？', '没有飞书插件时你输出什么？'],
-  'im-qa-assistant': ['登录失败了下一步怎么查？', '需求测试和版本测试有什么区别？', '我想提单该怎么说？'],
+  'im-qa-assistant': ['登录失败了，下令下一步怎么查', '这条需求接下来调谁、做什么', '下发一轮冒烟还缺什么'],
   'im-defect-assistant': ['提缺陷：登录页点登录没反应', '缺步骤时你会问什么？', '这是闲聊你会怎么拒绝？'],
 }
 
@@ -25,9 +26,31 @@ const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const sending = ref(false)
-const catalog = ref({ product: [], runtime: [], counts: {} })
+const DEFAULT_SKILL_CATEGORIES = [
+  { id: 'flow', label: '流程产出', desc: '读需求、写脑图和用例、出验收或发版草稿' },
+  { id: 'device', label: '设备操作', desc: '真机上规划、点按、定位和断言' },
+  { id: 'channel', label: '通道对话', desc: 'IM 里回答、下令、提缺陷，或问人' },
+  { id: 'sync', label: '外部同步', desc: '写到 Wiki 等外部系统' },
+]
+
+const SKILL_CATEGORY_FALLBACK = {
+  'im.dialogue': 'channel',
+  'im.defect': 'channel',
+  'hitl-composer': 'channel',
+  'goal-extract': 'device',
+  'agent-decide': 'device',
+  'assert-vision': 'device',
+  'plan-overview': 'device',
+  'locate-vision': 'device',
+  'single-step-replan': 'device',
+  'persona-task': 'device',
+  publish_wiki: 'sync',
+}
+
+const catalog = ref({ product: [], skills: [], skill_categories: [], counts: {} })
 const activeTab = ref('product')
 const keyword = ref('')
+const skillFilter = ref('all')
 const selectedId = ref('conductor')
 const explainMode = ref(true)
 const draft = ref('')
@@ -36,36 +59,72 @@ const chatEnd = ref(null)
 const tokenStats = ref({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, turns: 0 })
 const promptDraft = ref('')
 const promptSaving = ref(false)
+const skillSaving = ref(false)
 
 const tabs = [
-  { id: 'product', label: '角色', desc: '分析师调度 + 具体能力' },
-  { id: 'playbook', label: '执行剧本', desc: '每一步调谁的什么能力' },
-  { id: 'runtime', label: '全部 prompt', desc: '仓库原文' },
+  { id: 'product', label: '角色', desc: '什么角色，绑了哪些技能' },
+  { id: 'skills', label: '全部技能', desc: '按分类看技能清单' },
 ]
 
+const allRoles = computed(() => catalog.value.product || [])
+const allSkills = computed(() => catalog.value.skills || [])
+const skillCategories = computed(() => (
+  catalog.value.skill_categories?.length ? catalog.value.skill_categories : DEFAULT_SKILL_CATEGORIES
+))
+
+const skillCategoryOf = (row) => (
+  row?.category || SKILL_CATEGORY_FALLBACK[row?.id] || (row?.intent === 'talk' ? 'channel' : row?.intent === 'act' ? 'device' : 'flow')
+)
+
+const matchSkill = (row, q) => {
+  if (!q) return true
+  const roles = (row.role_ids || []).map((id) => roleById(id)?.label || id)
+  return [row.label, row.summary, row.category_label, skillCategoryOf(row), ...roles].join(' ').toLowerCase().includes(q)
+}
+
 const currentList = computed(() => {
-  if (activeTab.value === 'playbook') return []
-  const rows = activeTab.value === 'runtime'
-    ? catalog.value.runtime
-    : [...(catalog.value.abstract || []), ...(catalog.value.product || []).filter((p) => p.group !== 'abstract')]
   const q = keyword.value.trim().toLowerCase()
-  if (!q) return rows || []
-  return (rows || []).filter((row) =>
-    [row.label, row.summary, row.source, ...(row.used_in || [])].join(' ').toLowerCase().includes(q),
+  if (!q) return allRoles.value
+  return allRoles.value.filter((row) =>
+    [row.label, row.summary, ...(row.used_in || []), ...(row.skill_ids || [])].join(' ').toLowerCase().includes(q),
   )
 })
 
-const selectedTree = computed(() => {
-  const sel = selected.value
-  if (!sel || sel.group === 'runtime') return null
-  return (catalog.value.trees || []).find((t) => t.id === sel.id) || null
+const skillGroups = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  return skillCategories.value.map((cat) => {
+    const rows = allSkills.value.filter((row) => (
+      skillCategoryOf(row) === cat.id && matchSkill(row, q)
+    ))
+    return { ...cat, rows }
+  }).filter((group) => group.rows.length)
 })
-const ownerRole = computed(() => {
-  const id = selected.value?.owner
-  if (!id || selected.value?.group !== 'runtime') return null
-  return (catalog.value.product || []).find((row) => row.id === id) || null
+
+const visibleSkillGroups = computed(() => (
+  skillFilter.value === 'all'
+    ? skillGroups.value
+    : skillGroups.value.filter((group) => group.id === skillFilter.value)
+))
+
+const skillRowClass = ({ row }) => (row.id === selectedId.value ? 'is-current' : '')
+
+const categoryFilters = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  const matched = allSkills.value.filter((row) => matchSkill(row, q))
+  return [
+    { id: 'all', label: '全部', desc: '', count: matched.length },
+    ...skillCategories.value.map((cat) => ({
+      ...cat,
+      count: matched.filter((row) => skillCategoryOf(row) === cat.id).length,
+    })),
+  ]
 })
-const playbooks = computed(() => catalog.value.playbooks || [])
+
+const skillById = (id) => allSkills.value.find((row) => row.id === id) || null
+const roleById = (id) => allRoles.value.find((row) => row.id === id) || null
+const boundSkills = (row) => (row?.skill_ids || []).map(skillById).filter(Boolean)
+const skillRoles = (row) => (row?.role_ids || []).map(roleById).filter(Boolean)
+const skillNames = (row) => boundSkills(row).map((s) => s.label).join(' · ') || '未绑定技能'
 const tokenLabel = computed(() => {
   const s = tokenStats.value
   if (!s.turns) return '本轮对话还没有 token'
@@ -73,12 +132,16 @@ const tokenLabel = computed(() => {
 })
 
 const selected = computed(() => {
-  const all = [...(catalog.value.product || []), ...(catalog.value.runtime || [])]
-  return all.find((row) => row.id === selectedId.value) || currentList.value[0] || null
+  return allRoles.value.find((row) => row.id === selectedId.value) || currentList.value[0] || null
 })
+const selectedSkills = computed(() => boundSkills(selected.value))
+const isSkillTab = computed(() => activeTab.value === 'skills')
+const roleCount = computed(() => allRoles.value.length)
+const headerPill = computed(() => (
+  isSkillTab.value ? `${allSkills.value.length} 项技能` : `${roleCount.value} 个角色`
+))
 
 const starters = computed(() => STARTERS[selected.value?.id] || DEFAULT_STARTERS)
-const counts = computed(() => catalog.value.counts || {})
 const promptDirty = computed(() => {
   if (!selected.value?.editable) return false
   return promptDraft.value.trim() !== String(selected.value.system_prompt || '').trim()
@@ -100,8 +163,8 @@ const calledClass = (row) => {
 }
 
 const syncQuery = () => {
-  const tab = ['runtime', 'playbook'].includes(route.query.tab) ? route.query.tab : 'product'
-  activeTab.value = tab
+  const raw = String(route.query.tab || '')
+  activeTab.value = raw === 'skills' || raw === 'runtime' ? 'skills' : 'product'
   const role = String(route.query.role || '').trim()
   if (role) selectedId.value = role
 }
@@ -116,9 +179,17 @@ const resetTokens = () => {
   tokenStats.value = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, turns: 0 }
 }
 
-const selectCapability = (cap) => {
-  const live = (catalog.value.runtime || []).find((r) => r.id === cap.id)
-  selectRole(live || selected.value)
+const selectSkill = (row) => {
+  if (!row?.id) return
+  selectedId.value = row.id
+  skillFilter.value = skillCategoryOf(row)
+  keyword.value = ''
+  activeTab.value = 'skills'
+  pushQuery()
+}
+
+const setSkillFilter = (id) => {
+  skillFilter.value = id
 }
 
 const addUsage = (usage) => {
@@ -133,27 +204,23 @@ const addUsage = (usage) => {
 
 const selectRole = (row) => {
   if (!row?.id) return
-  if (selectedId.value !== row.id) {
+  if (selectedId.value !== row.id || activeTab.value !== 'product') {
     selectedId.value = row.id
     messages.value = []
     draft.value = ''
     resetTokens()
   }
-  if (row.group === 'runtime') activeTab.value = 'runtime'
-  else if (activeTab.value === 'runtime') activeTab.value = 'product'
+  activeTab.value = 'product'
   pushQuery()
 }
 
 const setTab = (id) => {
   activeTab.value = id
   keyword.value = ''
-  if (id === 'playbook') {
-    pushQuery()
-    return
-  }
-  const first = (id === 'runtime' ? catalog.value.runtime : catalog.value.product)?.[0]
-  if (first && selected.value?.group !== id && !(id === 'product' && selected.value)) {
-    selectedId.value = first.id
+  if (id === 'skills') {
+    skillFilter.value = 'all'
+  } else if (allRoles.value.length && !allRoles.value.some((row) => row.id === selectedId.value)) {
+    selectedId.value = allRoles.value[0].id
     messages.value = []
     resetTokens()
   }
@@ -194,20 +261,64 @@ const send = async (text) => {
   }
 }
 
+const mergeStack = (rolesData, stack) => {
+  const next = {
+    ...(rolesData || {}),
+    product: [...(rolesData?.product || [])],
+    skills: [...(rolesData?.skills || [])],
+    skill_categories: rolesData?.skill_categories || [],
+  }
+  const stackSkills = stack?.skills || []
+  if (stackSkills.length) {
+    const extra = Object.fromEntries((next.skills || []).map((row) => [row.id, row]))
+    next.skills = stackSkills.map((row) => ({
+      ...row,
+      system_prompt: extra[row.id]?.system_prompt || row.system_prompt || '',
+      prompt_role_id: extra[row.id]?.prompt_role_id || row.owner,
+    }))
+  }
+  if (stack?.skill_categories?.length) next.skill_categories = stack.skill_categories
+  const byRole = Object.fromEntries((stack?.roles || []).map((row) => [row.id, row.skill_ids || []]))
+  next.product = next.product.map((row) => ({
+    ...row,
+    skill_ids: byRole[row.id] || row.skill_ids || [],
+  }))
+  return next
+}
+
 const load = async () => {
   loading.value = true
   try {
-    const res = await listAIRoles()
-    catalog.value = res?.data || { product: [], runtime: [], counts: {} }
-    const all = [...(catalog.value.product || []), ...(catalog.value.runtime || [])]
-    if (selectedId.value && !all.some((row) => row.id === selectedId.value)) {
-      selectedId.value = catalog.value.product?.[0]?.id || catalog.value.runtime?.[0]?.id || ''
+    const [rolesRes, stackRes] = await Promise.all([
+      listAIRoles(),
+      getLayerStack().catch(() => null),
+    ])
+    catalog.value = mergeStack(rolesRes?.data || { product: [], skills: [], skill_categories: [], counts: {} }, stackRes?.data)
+    if (!isSkillTab.value && selectedId.value && !allRoles.value.some((row) => row.id === selectedId.value)) {
+      selectedId.value = allRoles.value[0]?.id || ''
     }
     promptDraft.value = selected.value?.system_prompt || ''
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '加载角色目录失败')
   } finally {
     loading.value = false
+  }
+}
+
+const persistSkills = async (roleId, skillIds) => {
+  if (!roleId || skillSaving.value) return
+  skillSaving.value = true
+  try {
+    const role_skills = Object.fromEntries(
+      allRoles.value.map((row) => [row.id, row.id === roleId ? skillIds : [...(row.skill_ids || [])]]),
+    )
+    await saveLayerStack({ role_skills })
+    ElMessage.success('技能绑定已保存')
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存技能失败')
+  } finally {
+    skillSaving.value = false
   }
 }
 
@@ -219,7 +330,7 @@ const savePrompt = async () => {
   promptSaving.value = true
   try {
     await saveRolePrompt(role.id, { system_prompt: text })
-    ElMessage.success('prompt 已保存，飞书和下次对话都会用这份')
+    ElMessage.success('prompt 已保存')
     await load()
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
@@ -263,9 +374,9 @@ onMounted(async () => {
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">角色</h2>
-        <p class="settings-page-desc">角色是测试流转里的自动工人。飞书只负责收发；对话和提缺陷的 prompt 在这里改。其它角色仍可观察原文。</p>
+        <p class="settings-page-desc">角色是测试流转里的自动工人。每个角色绑定一组技能。</p>
       </div>
-      <div class="settings-summary-pill">{{ counts.total || 0 }} 个角色</div>
+      <div class="settings-summary-pill">{{ headerPill }}</div>
     </header>
 
     <div class="settings-tabbar is-compact">
@@ -284,39 +395,91 @@ onMounted(async () => {
 
     <section class="settings-info-card">
       <div class="settings-kicker">怎么用</div>
-      <p>
-        分析师只调度，不执行。具体能力挂在需求分析师、脑图、用例编写、两位 BM 和测试工程师下面。
-        IM 对话 / 提缺陷两份 prompt 在对应角色里改，飞书、企业微信只是通道。
-        执行用例时每一步调谁，看「执行剧本」。
-      </p>
+      <p v-if="isSkillTab">按分类看技能。点角色名回到「角色」页改绑定。</p>
+      <p v-else>分析师理解任务后，调用某个角色上绑定的技能。改绑定后立刻保存。</p>
     </section>
 
-    <div v-if="activeTab === 'playbook'" class="playbook-list">
-      <section v-for="book in playbooks" :key="book.id" class="settings-card playbook-card">
-        <div class="settings-kicker">{{ book.id }}</div>
-        <h3>{{ book.label }}</h3>
-        <p>{{ book.summary }}</p>
-        <ol class="play-steps">
-          <li v-for="(step, idx) in book.steps" :key="idx">
-            <span class="play-n">{{ idx + 1 }}</span>
-            <div class="play-copy">
-              <strong>{{ step.phase }}</strong>
-              {{ step.label }}
-            </div>
-            <small>{{ step.role_id }} · {{ step.capability_id }}</small>
-          </li>
-        </ol>
+    <div v-if="isSkillTab" class="skills-board">
+      <div class="settings-toolbar">
+        <el-input
+          v-model="keyword"
+          class="skill-search"
+          clearable
+          :prefix-icon="Search"
+          placeholder="搜索技能、角色"
+        />
+        <button
+          v-for="cat in categoryFilters"
+          :key="cat.id"
+          type="button"
+          class="cat-filter"
+          :class="{ active: skillFilter === cat.id }"
+          @click="setSkillFilter(cat.id)"
+        >
+          {{ cat.label }} {{ cat.count }}
+        </button>
+      </div>
+
+      <section v-if="!visibleSkillGroups.length" class="settings-info-card">
+        <div class="settings-kicker">没有匹配的技能</div>
+        <p>换个分类，或清空搜索。</p>
+      </section>
+
+      <section
+        v-for="group in visibleSkillGroups"
+        :key="group.id"
+        class="settings-table-card"
+      >
+        <div class="skill-group-head">
+          <div>
+            <div class="settings-kicker">{{ group.label }}</div>
+            <p>{{ group.desc }}</p>
+          </div>
+          <div class="settings-summary-pill">{{ group.rows.length }}</div>
+        </div>
+        <el-table
+          :data="group.rows"
+          size="small"
+          border
+          stripe
+          highlight-current-row
+          :row-class-name="skillRowClass"
+        >
+          <el-table-column label="技能" min-width="140">
+            <template #default="{ row }">
+              <strong>{{ row.label }}</strong>
+            </template>
+          </el-table-column>
+          <el-table-column label="说明" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.summary || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="绑定角色" min-width="200">
+            <template #default="{ row }">
+              <div class="skill-roles">
+                <button
+                  v-for="role in skillRoles(row)"
+                  :key="role.id"
+                  type="button"
+                  class="cap-chip"
+                  @click="selectRole(role)"
+                >
+                  {{ role.label }}
+                </button>
+                <span v-if="!skillRoles(row).length" class="empty-hint">未绑定</span>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
       </section>
     </div>
 
     <div v-else class="roles-split">
       <aside class="settings-card roles-list">
         <el-input
-          v-if="activeTab === 'runtime'"
           v-model="keyword"
           clearable
           :prefix-icon="Search"
-          placeholder="搜索角色、文件、用途"
+          placeholder="搜索角色、技能"
         />
         <button
           v-for="row in currentList"
@@ -329,10 +492,10 @@ onMounted(async () => {
           <div class="role-item-head">
             <strong>{{ row.label }}</strong>
             <span class="role-tag" :class="row.editable ? 'is-edit' : calledClass(row)">
-              {{ row.editable ? (row.prompt_custom ? '已改 prompt' : '可改 prompt') : calledLabel(row) }}
+              {{ (row.skill_ids || []).length }} 项技能
             </span>
           </div>
-          <p>{{ row.summary }}</p>
+          <p>{{ skillNames(row) }}</p>
         </button>
         <p v-if="!currentList.length" class="empty-hint">没有匹配的角色</p>
       </aside>
@@ -341,7 +504,7 @@ onMounted(async () => {
         <section class="settings-card role-meta">
           <div class="role-meta-head">
             <div>
-              <div class="settings-kicker">{{ selected.group === 'abstract' ? '分析师' : (selected.group === 'runtime' ? '能力' : '角色') }}</div>
+              <div class="settings-kicker">{{ selected.group === 'abstract' ? '分析师' : '角色' }}</div>
               <h3>{{ selected.label }}</h3>
               <p>{{ selected.summary }}</p>
             </div>
@@ -351,42 +514,48 @@ onMounted(async () => {
           </div>
           <dl class="role-facts">
             <div>
-              <dt>来源</dt>
-              <dd>{{ selected.source }}</dd>
+              <dt>何时调用</dt>
+              <dd>{{ (selected.triggers || []).join('；') || '设置页对话' }}</dd>
+            </div>
+            <div>
+              <dt>绑定技能</dt>
+              <dd>{{ selectedSkills.length ? selectedSkills.map((s) => s.label).join(' · ') : '未绑定' }}</dd>
             </div>
             <div>
               <dt>用途</dt>
               <dd>{{ (selected.used_in || []).join(' · ') || '—' }}</dd>
             </div>
-            <div>
-              <dt>何时调用</dt>
-              <dd>{{ (selected.triggers || []).join('；') || '设置页对话' }}</dd>
-            </div>
           </dl>
-          <div v-if="ownerRole" class="related">
-            <span>所属角色</span>
-            <button type="button" class="cap-chip" @click="selectRole(ownerRole)">
-              {{ ownerRole.label }}
-            </button>
-          </div>
-          <div v-else-if="selectedTree?.capabilities?.length" class="related">
-            <span>下属能力</span>
+          <div class="related">
+            <span>绑定的技能</span>
             <button
-              v-for="cap in selectedTree.capabilities"
-              :key="cap.id"
+              v-for="skill in selectedSkills"
+              :key="skill.id"
               type="button"
               class="cap-chip"
-              @click="selectCapability(cap)"
+              @click="selectSkill(skill)"
             >
-              {{ cap.label }}
+              {{ skill.label }}
             </button>
+            <span v-if="!selectedSkills.length" class="empty-hint">分析师只调度，或还没绑技能。</span>
+            <el-select
+              class="skill-picker"
+              :model-value="selected.skill_ids || []"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              :disabled="skillSaving"
+              placeholder="添加或移除技能"
+              @change="(ids) => persistSkills(selected.id, ids)"
+            >
+              <el-option v-for="skill in allSkills" :key="skill.id" :label="skill.label" :value="skill.id" />
+            </el-select>
           </div>
           <div v-if="selected.editable" class="prompt-edit">
             <div class="prompt-edit-head">
               <div class="settings-kicker">{{ selected.prompt_custom ? '已改过的 prompt' : 'System prompt' }}</div>
-              <p v-if="selected.id === 'im-qa-assistant'">飞书里日常问答走这份。通道开关在插件页。</p>
-              <p v-else-if="selected.id === 'im-defect-assistant'">对方说「提缺陷」时走这份。设置页沙盒只看 JSON，不真建禅道单。</p>
-              <p v-else>改完保存后，这个角色的对话会用这份。</p>
+              <p>改完保存后，这个角色的对话会用这份。</p>
             </div>
             <el-input
               v-model="promptDraft"
@@ -415,7 +584,7 @@ onMounted(async () => {
               </button>
             </div>
           </div>
-          <details v-else class="prompt-box">
+          <details v-else-if="selected.system_prompt" class="prompt-box">
             <summary>查看 system prompt</summary>
             <pre>{{ selected.system_prompt }}</pre>
           </details>
@@ -508,6 +677,61 @@ onMounted(async () => {
   min-height: min(62vh, 640px);
 }
 
+.skills-board {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.skill-search {
+  width: 220px;
+}
+
+.cat-filter {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--settings-muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cat-filter.active {
+  border-color: color-mix(in srgb, var(--settings-primary) 45%, white);
+  background: var(--settings-primary-soft);
+  color: #4338ca;
+}
+
+.skill-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.skill-group-head p {
+  margin: 6px 0 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.skill-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.skills-board :deep(.el-table .is-current > td) {
+  background: var(--settings-primary-soft);
+}
+
 .playbook-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
@@ -571,6 +795,15 @@ onMounted(async () => {
   padding: 14px;
   max-height: min(70vh, 760px);
   overflow: auto;
+}
+
+.skill-picker {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.roles-list :deep(.el-input) {
+  margin-bottom: 4px;
 }
 
 .role-item {

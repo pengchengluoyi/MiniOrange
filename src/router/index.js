@@ -14,7 +14,6 @@ const AgentHistory = () => import('../views/AgentHistory/index.vue')
 const TestingHome = () => import('../views/Testing/AppList.vue')
 const TestingApp = () => import('../views/Testing/AppShell.vue')
 const SettingsLayout = () => import('../views/Settings/index.vue')
-const SettingsSkills = () => import('../views/Settings/SkillsPage.vue')
 const SettingsPacks = () => import('../views/Settings/PacksPage.vue')
 const SettingsKeys = () => import('../views/Settings/KeysPage.vue')
 const SettingsRuntime = () => import('../views/Settings/RuntimeStatusPage.vue')
@@ -49,7 +48,7 @@ const routes = [
             { path: 'runtime', name: 'SettingsRuntime', component: SettingsRuntime, meta: { title: '运行状态' } },
             { path: 'runtime/device/:sn', name: 'SettingsDeviceDetail', component: SettingsDeviceDetail, meta: { title: '设备详情' } },
             { path: 'schedule', name: 'SettingsSchedule', component: Schedule, meta: { title: '定时任务' } },
-            { path: 'skills', name: 'SettingsSkills', component: SettingsSkills, meta: { title: '能力目录' } },
+            { path: 'skills', name: 'SettingsSkills', redirect: { name: 'SettingsRoles', query: { tab: 'skills' } } },
             { path: 'roles', name: 'SettingsRoles', component: SettingsRoles, meta: { title: '角色' } },
             { path: 'dispatch', name: 'SettingsDispatch', component: SettingsDispatch, meta: { title: '调用记录' } },
             { path: 'dispatch/:callId', name: 'SettingsDispatchJob', component: SettingsDispatchJob, meta: { title: '调用详情' } },
