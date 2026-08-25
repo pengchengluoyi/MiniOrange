@@ -273,6 +273,7 @@ export function flattenMindmap(root) {
         detail: String(node.detail || '').trim(),
         isLeaf,
         isPoint,
+        orphan: Boolean(node.orphan),
       })
     }
     for (const child of children) walk(child, depth + (kind === 'root' || kind === 'platform' ? 0 : 1))
@@ -296,17 +297,54 @@ export function coverReady(req) {
   const cases = req?.draft_cases || []
   if (!points.length) return { ok: false, reason: '测试脑图还没写完，请等待或重试' }
   if (!cases.length) return { ok: false, reason: '用例还没写完，请等待或重试' }
-  const { gaps } = coverageStats(req)
+  const { gaps, stubbed, aspectGaps } = coverageStats(req)
   if (gaps) return { ok: false, reason: `还有 ${gaps} 个测试点没挂用例（可标「本版本不测」）` }
+  // 模板兜底不算覆盖：以前这里放行，界面显示 100%，人打开一看全是「1. 打开应用 2. 按正向路径覆盖」。
+  if (stubbed) return { ok: false, reason: `${stubbed} 个测试点只有模板兜底用例，请补写或标「本版本不测」` }
+  if (aspectGaps.length) {
+    return { ok: false, reason: `${aspectGaps.length} 个测试点缺情况（正向/异常/边界），请补写` }
+  }
   return { ok: true }
+}
+
+/** case_id → origin（llm / stub / human / import）。缺省当 llm。 */
+function caseOriginMap(req) {
+  const map = new Map()
+  for (const c of req?.draft_cases || []) {
+    if (c?.case_id) map.set(String(c.case_id), String(c.origin || 'llm'))
+  }
+  return map
 }
 
 export function coverageStats(req) {
   const points = req?.understanding?.points || []
-  const total = points.length
-  const covered = points.filter((p) => p.waived || (p.case_ids || []).length).length
+  const origins = caseOriginMap(req)
+  const realCaseIds = (p) => (p.case_ids || []).filter((id) => origins.get(String(id)) !== 'stub')
+
+  const waived = points.filter((p) => p.waived)
+  const real = points.filter((p) => !p.waived && realCaseIds(p).length)
+  // 只有模板兜底的点：有 case_ids，但没有一条不是 stub
+  const stubbed = points.filter(
+    (p) => !p.waived && !realCaseIds(p).length && (p.case_ids || []).length,
+  )
   const gaps = points.filter((p) => !p.waived && !(p.case_ids || []).length)
-  return { total, covered, gaps: gaps.length, gapItems: gaps }
+
+  return {
+    total: points.length,
+    // covered = 不用再管的点。模板兜底**不算**覆盖，否则覆盖率虚高。
+    covered: waived.length + real.length,
+    real: real.length,
+    waived: waived.length,
+    stubbed: stubbed.length,
+    gaps: gaps.length,
+    gapItems: gaps,
+    stubItems: stubbed,
+    // 后端确定性校验的结果：每个点该有的情况齐不齐
+    aspectGaps: req?.case_aspect_gaps || [],
+    failures: req?.case_failures || [],
+    mindmapFailures: req?.mindmap_failures || [],
+    analyzeFailures: req?.analyze_failures || [],
+  }
 }
 
 export function linkedCaseIds(req) {

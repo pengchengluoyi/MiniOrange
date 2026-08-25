@@ -1,6 +1,6 @@
 // electron/main.js - 完整的 Electron 主进程代码 (使用纯 JS 实现 scrcpy 转发)
 
-const {app, BrowserWindow, ipcMain, nativeImage, Notification, dialog, Tray, Menu} = require('electron')
+const {app, BrowserWindow, ipcMain, nativeImage, Notification, dialog, Tray, Menu, shell} = require('electron')
 const path = require('path')
 
 const {autoUpdater} = require('electron-updater')
@@ -665,6 +665,22 @@ if (!gotTheLock) {
         }
     })
 }
+
+const openExternalUrl = async (url) => {
+    const s = String(url || '').trim()
+    if (!/^https?:\/\//i.test(s)) return false
+    await shell.openExternal(s)
+    return true
+}
+
+app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(({url}) => {
+        openExternalUrl(url)
+        return {action: 'deny'}
+    })
+})
+
+ipcMain.handle('open-external', (_event, url) => openExternalUrl(url))
 
 // ----------------------------------------------------
 // IPC 处理器 (只保留与串流相关的部分，其他保持不变)

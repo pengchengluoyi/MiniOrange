@@ -83,18 +83,6 @@ export function useQaProcess(appIdRef) {
     persistTimer = setTimeout(() => { persist() }, 400)
   }
 
-  const apply = (doc) => {
-    requirements.value = Array.isArray(doc?.requirements) ? doc.requirements : []
-    releases.value = Array.isArray(doc?.releases) ? doc.releases : []
-    schedule.value = Array.isArray(doc?.schedule) ? doc.schedule : []
-    workflow.value = doc?.workflow && typeof doc.workflow === 'object' ? doc.workflow : null
-    features.value = Array.isArray(doc?.features) ? doc.features : []
-    appAtlas.value = doc?.app_atlas && typeof doc.app_atlas === 'object' ? doc.app_atlas : { modules: [] }
-    atlasPatches.value = Array.isArray(doc?.atlas_patches) ? doc.atlas_patches : []
-    autonomy.value = doc?.autonomy && typeof doc.autonomy === 'object' ? doc.autonomy : null
-    roleLog.value = Array.isArray(doc?.role_log) ? doc.role_log : []
-  }
-
   const hasProcessData = (doc) => Boolean(
     doc
     && (
@@ -105,6 +93,21 @@ export function useQaProcess(appIdRef) {
       || (doc.app_atlas?.modules || []).length
     ),
   )
+
+  const apply = (doc) => {
+    requirements.value = Array.isArray(doc?.requirements) ? doc.requirements : []
+    releases.value = Array.isArray(doc?.releases) ? doc.releases : []
+    schedule.value = Array.isArray(doc?.schedule) ? doc.schedule : []
+    workflow.value = doc?.workflow && typeof doc.workflow === 'object' ? doc.workflow : null
+    features.value = Array.isArray(doc?.features) ? doc.features : []
+    appAtlas.value = doc?.app_atlas && typeof doc.app_atlas === 'object' ? doc.app_atlas : { modules: [] }
+    atlasPatches.value = Array.isArray(doc?.atlas_patches) ? doc.atlas_patches : []
+    autonomy.value = doc?.autonomy && typeof doc.autonomy === 'object' ? doc.autonomy : null
+    roleLog.value = Array.isArray(doc?.role_log) ? doc.role_log : []
+    // 服务端回传的结果也要落进本地缓存，不然刷新时旧缓存会把它盖回去
+    const appId = appIdRef.value
+    if (appId && hasProcessData(doc)) writeCache(appId, state.value)
+  }
 
   const load = async () => {
     const appId = appIdRef.value

@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     control: (deviceId, params) => ipcRenderer.send('device-control', {deviceId, params}),
 
+    openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
     // 🔥 核心修复: 暴露 invoke 方法，用于调用 ipcMain.handle 定义的接口
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),

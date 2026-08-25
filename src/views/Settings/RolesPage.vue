@@ -31,6 +31,7 @@ const DEFAULT_SKILL_CATEGORIES = [
   { id: 'device', label: '设备操作', desc: '真机上规划、点按、定位和断言' },
   { id: 'channel', label: '通道对话', desc: 'IM 里回答、下令、提缺陷，或问人' },
   { id: 'sync', label: '外部同步', desc: '写到 Wiki 等外部系统' },
+  { id: 'prompt', label: '提示词辅件', desc: 'user 模板、厂商补丁、遗留与观察叠加' },
 ]
 
 const SKILL_CATEGORY_FALLBACK = {
@@ -45,6 +46,20 @@ const SKILL_CATEGORY_FALLBACK = {
   'single-step-replan': 'device',
   'persona-task': 'device',
   publish_wiki: 'sync',
+  'legacy-im-dialogue': 'prompt',
+  'explain-overlay': 'prompt',
+  'volcengine-doubao-coord-append': 'prompt',
+  'volcengine-doubao-json-append': 'prompt',
+  'user-plan-overview': 'prompt',
+  'user-single-step-replan': 'prompt',
+  'user-locate-vision': 'prompt',
+  'user-assert-vision': 'prompt',
+  'user-hitl-composer': 'prompt',
+  'user-persona-task': 'prompt',
+  'user-goal-extract': 'prompt',
+  'user-agent-decide': 'prompt',
+  'user-agent-restart': 'prompt',
+  'user-ai-plan': 'prompt',
 }
 
 const catalog = ref({ product: [], skills: [], skill_categories: [], counts: {} })

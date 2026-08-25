@@ -118,6 +118,21 @@ const accept = () => {
     </template>
 
     <HintFold
+      v-if="(patch.aliases || []).length"
+      title="命名对齐建议"
+      :summary="`${(patch.aliases || []).length} 条 · 确认后以后自动对齐`"
+    >
+      <div class="mind-table">
+        <div v-for="(row, idx) in (patch.aliases || []).slice(0, 8)" :key="row.target_id || idx" class="mind-row is-case">
+          <div class="mind-name">脑图「{{ row.alias || row.text }}」</div>
+          <div class="mind-kind">→</div>
+          <div class="mind-note">图谱「{{ row.atlas_name || row.target_id }}」{{ row.score ? ` · ${row.score}%` : '' }}</div>
+        </div>
+      </div>
+      <p class="empty-hint">确认后写入别名表；驳回后不会再提同一对。</p>
+    </HintFold>
+
+    <HintFold
       v-if="(patch.case_changes || []).length"
       title="可能要改的旧用例"
       :summary="`${(patch.case_changes || []).length} 条提醒`"

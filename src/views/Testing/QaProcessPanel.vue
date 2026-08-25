@@ -4,8 +4,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useQaProcess } from '@/composables/useQaProcess'
 import QaScheduleBoard from '@/views/Testing/QaScheduleBoard.vue'
 import QaFlowPipeline from '@/views/Testing/QaFlowPipeline.vue'
-import { assistQaProcess, reviewAtlasPatch, tickQaProcess } from '@/api/appAutomation'
+import { assistQaProcess, cancelQaProcessJob, publishQaMindmap, reviewAtlasPatch, runQaProcessTick } from '@/api/appAutomation'
+import { openExternalUrl } from '@/utils/openExternal'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
+import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
+import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import { suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import {
@@ -155,6 +158,8 @@ const assisting = ref(false)
 const assistJob = ref('')
 const ticking = ref(false)
 const tickLabel = ref('')
+const tickProgress = ref(null) // { done, total, phase, label, job_id }
+let tickAbort = null
 let assistChain = Promise.resolve()
 const createOpen = ref(false)
 const creatingRel = ref(false)
@@ -297,9 +302,100 @@ const mindRows = computed(() => flattenMindmap(selectedReq.value?.mindmap))
 const mindPointCount = computed(() => mindRows.value.filter((r) => r.isPoint).length)
 const draftCaseRows = computed(() => selectedReq.value?.draft_cases || [])
 const mindmapBackfill = computed(() => selectedReq.value?.mindmap_backfill || [])
-const coveredPointCount = computed(() => coverageStats(selectedReq.value).covered)
+const coverStats = computed(() => coverageStats(selectedReq.value))
+const coveredPointCount = computed(() => coverStats.value.covered)
+// 生成过程中的失败：截断、解析失败、模型报错、撞安全阀。以前这些是静默的。
+const caseFailures = computed(() => coverStats.value.failures || [])
+const caseAspectGaps = computed(() => coverStats.value.aspectGaps || [])
+const mindmapFailures = computed(() => coverStats.value.mindmapFailures || [])
+const CASE_ORIGIN_LABEL = {
+  llm: '模型',
+  stub: '模板兜底',
+  human: '人工',
+  import: '导入',
+}
+const caseOriginLabel = (row) => CASE_ORIGIN_LABEL[String(row?.origin || 'llm')] || '模型'
+const isStubCase = (row) => String(row?.origin || 'llm') === 'stub'
+const FAILURE_REASON_LABEL = {
+  truncated: '输出被截断',
+  parse_failed: '返回的不是合法 JSON',
+  llm_error: '模型调用失败',
+  deadline: '撞到生成安全阀',
+  incomplete: '模型没覆盖这些点',
+  backfilled_point: '反推补的新测试点',
+  llm_failed: '模型没写成',
+}
+const failureLabel = (row) => FAILURE_REASON_LABEL[String(row?.reason || '')] || String(row?.reason || '未知')
 const mindHistory = computed(() => coverHistory(selectedReq.value, 'draft_mindmap'))
 const caseHistory = computed(() => coverHistory(selectedReq.value, 'draft_cases'))
+const coverImportOpen = ref(false)
+const coverImportKind = ref('mindmap')
+const coverHistKind = (row) => {
+  if (row?.kind === 'import') return '导入'
+  if (row?.kind === 'retry') return '重试'
+  return '生成'
+}
+const openCoverImport = (kind) => {
+  if (!selectedReq.value) {
+    ElMessage.warning('请先选一条需求')
+    return
+  }
+  coverImportKind.value = kind
+  coverImportOpen.value = true
+}
+const onCoverImported = (data) => {
+  if (data?.qa_process) apply(data.qa_process)
+  // 导入产生了待确认的图谱变更就直接切过去 —— 不切的话人停在脑图面板上，
+  // 看到的还是旧骨架，而且 tick 在 patch 处理完之前不会再提新建议。
+  if (data?.atlas === 'patch' || data?.atlas === 'pending') stageJobId.value = 'propose_atlas'
+}
+const wikiPublishing = ref(false)
+const wikiHistoryOpen = ref(false)
+const wikiHistoryReq = ref(null)
+const wikiWriteCount = (req) => {
+  const rows = req?.mindmap_wiki_history
+  if (Array.isArray(rows) && rows.length) return rows.length
+  return req?.mindmap_wiki?.url ? 1 : 0
+}
+const wikiHistoryCount = computed(() => wikiWriteCount(selectedReq.value))
+const openWikiHistory = (row) => {
+  wikiHistoryReq.value = row || selectedReq.value
+  wikiHistoryOpen.value = true
+}
+const onWikiHistoryUpdated = (qa) => {
+  if (qa) apply(qa)
+  const rid = wikiHistoryReq.value?.id || selectedReq.value?.id
+  wikiHistoryReq.value = requirements.value.find((r) => r.id === rid) || selectedReq.value
+}
+const publishMindmapToWiki = async () => {
+  const req = selectedReq.value
+  if (!req) {
+    ElMessage.warning('请先选一条需求')
+    return
+  }
+  if (!mindRows.value.length) {
+    ElMessage.warning('这条需求还没有脑图')
+    return
+  }
+  if (wikiPublishing.value || workflowBusy.value) return
+  wikiPublishing.value = true
+  try {
+    const res = await publishQaMindmap(props.appId, {
+      requirement_id: req.id,
+      release_id: req.release_id || '',
+    })
+    const data = res?.data || res || {}
+    if (data.qa_process) apply(data.qa_process)
+    const url = data.url || data.wiki?.url || ''
+    const count = data.nodes || data.wiki?.nodes || 0
+    ElMessage.success(`${data.created ? '已写入' : '已更新'}飞书脑图${count ? ` · ${count} 个节点` : ''}`)
+    if (url) await openExternalUrl(url)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '写入飞书 Wiki 失败')
+  } finally {
+    wikiPublishing.value = false
+  }
+}
 const workflowBusy = computed(() => ticking.value || assisting.value)
 const coverCheck = computed(() => coverReady(selectedReq.value))
 const canLeaveCover = computed(() => !workflowBusy.value && coverCheck.value.ok)
@@ -340,7 +436,18 @@ const liveReqTasks = computed(() => {
 })
 const workBanner = computed(() => {
   if (reviewingPatch.value) return { title: '正在确认图谱', detail: '骨架写入中，确认图谱不等于评审通过。' }
-  if (ticking.value) return { title: tickLabel.value || '正在跑流程工作流', detail: '脑图和用例写完后会出现在「用例准备」。' }
+  if (ticking.value) {
+    const p = tickProgress.value
+    const frac = p?.total ? `${p.done || 0}/${p.total}` : ''
+    return {
+      title: tickLabel.value || p?.label || '正在跑流程工作流',
+      detail: frac
+        ? `${frac} · ${p?.label || '脑图和用例写完后会出现在「用例准备」。'}`
+        : (p?.label || '脑图和用例写完后会出现在「用例准备」。'),
+      progress: p?.total ? Math.min(100, Math.round(((p.done || 0) / p.total) * 100)) : null,
+      cancellable: true,
+    }
+  }
   if (assisting.value) return { title: `正在跑「${jobMeta(assistJob.value).label}」`, detail: '跑完后这一步的内容会更新。' }
   if (liveReqTasks.value.length) {
     const t = liveReqTasks.value[0]
@@ -843,16 +950,64 @@ const runAssistNow = async (job, kind, { force = false } = {}) => {
 
 const runTick = async (reqId, label = '正在跑流程工作流', extra = {}) => {
   if (!props.appId || !reqId) return
+  if (ticking.value) {
+    ElMessage.info('已有推进任务在跑')
+    return
+  }
   ticking.value = true
   tickLabel.value = label
+  tickProgress.value = null
+  tickAbort = new AbortController()
   try {
-    const res = await tickQaProcess(props.appId, { requirement_id: reqId, ...extra })
-    if (res?.data?.qa_process) apply(res.data.qa_process)
-  } catch (_) { /* 规则拆点仍在本地 */ }
-  finally {
+    const data = await runQaProcessTick(
+      props.appId,
+      { requirement_id: reqId, ...extra },
+      {
+        signal: tickAbort.signal,
+        onProgress: (snap) => {
+          const job = snap?.job || {}
+          tickProgress.value = {
+            job_id: job.job_id,
+            done: job.done || 0,
+            total: job.total || 0,
+            phase: job.phase || '',
+            label: job.label || label,
+          }
+          if (job.label) tickLabel.value = job.label
+          if (snap?.qa_process) apply(snap.qa_process)
+        },
+      },
+    )
+    if (data?.qa_process) apply(data.qa_process)
+    if (data?.job?.status === 'cancelled') ElMessage.info('已取消')
+    else if (data?.job?.status === 'error') ElMessage.error(data.job.error || '推进失败')
+  } catch (e) {
+    if (e?.name === 'AbortError') return
+    const detail = e?.response?.data?.detail
+    if (e?.response?.status === 409 && detail?.job) {
+      tickProgress.value = detail.job
+      ElMessage.warning(detail.message || '已有推进任务在跑')
+      return
+    }
+    ElMessage.error(typeof detail === 'string' ? detail : (e?.message || '推进失败'))
+  } finally {
     ticking.value = false
     tickLabel.value = ''
+    tickProgress.value = null
+    tickAbort = null
   }
+}
+
+const cancelTick = async () => {
+  const jobId = tickProgress.value?.job_id
+  if (!jobId) {
+    tickAbort?.abort()
+    return
+  }
+  try {
+    await cancelQaProcessJob(jobId)
+    tickAbort?.abort()
+  } catch (_) { /* 轮询会看到 cancelled */ }
 }
 
 const acceptMap = async (pointId) => {
@@ -1031,38 +1186,63 @@ const waivePoint = async (point) => {
   } catch { /* cancel */ }
 }
 
-const retryCover = async (job) => {
+const retryCover = async (job, extra = {}) => {
   const req = selectedReq.value
   if (!req || workflowBusy.value) return
   const isMind = job === 'draft_mindmap'
+  const skipPrompt = Boolean(extra.skipPrompt)
   try {
-    const { value } = await ElMessageBox.prompt(
-      isMind
-        ? '指出漏掉的能力、入口、端（含运营平台/Web）、异常兜底。有评论会先重做需求理解再写脑图。'
-        : '指出漏掉的场景、路径和断言。有评论会先重做需求理解再写用例。',
-      isMind ? '重试测试脑图' : '重试用例',
-      {
-        confirmButtonText: '开始重试',
-        cancelButtonText: '取消',
-        inputType: 'textarea',
-        inputPlaceholder: isMind
-          ? '例如：传图定制是上传本地图下单；创意定制走 agent 对话；入口在我的→定制模版页；漏了运营平台的模型管理和定制专区；缺上传失败兜底'
-          : '例如：传图失败兜底、创意定制仍走对话、运营平台模型管理未覆盖',
-        inputValidator: () => true,
-      },
-    )
-    const note = String(value || '').trim()
-    await runTick(req.id, note
-      ? (isMind ? '正在按评论重做需求理解、脑图和用例' : '正在按评论重做需求理解和用例')
-      : (isMind ? '正在重试测试脑图' : '正在重试用例'), {
-      jobs: note ? ['analyze_req', job] : [job],
+    let note = String(extra.user_note || '').trim()
+    if (!skipPrompt) {
+      const { value } = await ElMessageBox.prompt(
+        isMind
+          ? '指出漏掉的能力、入口、端或异常兜底。评论会写入测试知识库（直接通过），并交给脑图角色在上一版上修订；不会重做需求理解，也不会整表重写用例。'
+          : '指出漏掉的场景、路径和断言。已有真用例和锁定用例会留下，只补模板兜底和缺口。',
+        extra.title || (isMind ? '重试测试脑图' : '补写用例'),
+        {
+          confirmButtonText: extra.confirmText || '开始',
+          cancelButtonText: '取消',
+          inputType: 'textarea',
+          inputPlaceholder: isMind
+            ? '例如：入口在「我的」而不是首页；漏了后台配置；缺上传失败兜底'
+            : '例如：失败兜底没写清楚、列表空态没覆盖',
+          inputValidator: () => true,
+        },
+      )
+      note = String(value || '').trim()
+    }
+    const pointIds = extra.point_ids || []
+    const busy = pointIds.length
+      ? `正在重写 ${pointIds.length} 个测试点的用例`
+      : (isMind ? (note ? '正在按评论修订脑图' : '正在按上一版修订脑图') : (note ? '正在按评论补写用例' : '正在补写用例'))
+    await runTick(req.id, busy, {
+      jobs: [job],
       user_note: note,
       force: true,
+      point_ids: pointIds,
+      rewrite_stubs: extra.rewrite_stubs ?? (!isMind && !pointIds.length),
+      replace_cases: Boolean(extra.replace_cases),
     })
     ElMessage.success(isMind
-      ? (note ? '已按评论重做需求理解、脑图和用例，请核对入口、新能力和运营平台。' : '脑图已重试，请核对测试点；若用例对不上请再重试用例。')
-      : '用例已重试，请核对覆盖。')
+      ? (note ? '评论已入库，脑图已按上一版修订。用例没动；对不上再点补写用例。' : '脑图已按上一版修订。用例没动。')
+      : (pointIds.length ? '已定点重写这些测试点的用例。' : '已补写缺口，已有真用例未改。'))
   } catch { /* cancel */ }
+}
+
+const rewriteStubCases = () => retryCover('draft_cases', {
+  skipPrompt: true,
+  rewrite_stubs: true,
+  title: '补写模板兜底',
+})
+
+const rewritePointCases = (pointId) => {
+  const pid = String(pointId || '').trim()
+  if (!pid) return
+  retryCover('draft_cases', {
+    skipPrompt: true,
+    point_ids: [pid],
+    rewrite_stubs: false,
+  })
 }
 
 const historyRows = (row) => {
@@ -1478,6 +1658,18 @@ watch(() => props.projectId, loadEnvSnap)
             <el-table-column label="更新" width="108">
               <template #default="{ row }">{{ formatShortTime(row.updated_at) }}</template>
             </el-table-column>
+            <el-table-column v-if="board === 'req'" label="测试用例地址" width="150">
+              <template #default="{ row }">
+                <a
+                  v-if="wikiWriteCount(row)"
+                  href="#"
+                  class="wiki-cell"
+                  :title="row.mindmap_wiki?.title || ''"
+                  @click.stop.prevent="openWikiHistory(row)"
+                >{{ row.mindmap_wiki?.title || '飞书脑图' }} · {{ wikiWriteCount(row) }} 次</a>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="72" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click.stop="selectRow(row)">查看</el-button>
@@ -1535,8 +1727,20 @@ watch(() => props.projectId, loadEnvSnap)
           <span v-if="!viewingReqCurrent" class="muted">查看中 · 当前停在「{{ reqStep?.label }}」</span>
         </p>
         <div v-if="workBanner" class="work-banner">
-          <strong>{{ workBanner.title }}</strong>
-          <span>{{ workBanner.detail }}</span>
+          <div class="work-banner-main">
+            <strong>{{ workBanner.title }}</strong>
+            <span>{{ workBanner.detail }}</span>
+          </div>
+          <div v-if="workBanner.progress != null" class="work-banner-bar">
+            <div class="work-banner-fill" :style="{ width: `${workBanner.progress}%` }" />
+          </div>
+          <el-button
+            v-if="workBanner.cancellable"
+            size="small"
+            text
+            type="danger"
+            @click="cancelTick"
+          >取消</el-button>
         </div>
         <p v-else-if="reqAssistArt?.suggest" class="assist-inline">{{ reqAssistArt.suggest }}</p>
         <p v-if="detailEditing" class="edit-banner">正在改这一步的内容，改完点右上角「完成修改」。</p>
@@ -1662,26 +1866,56 @@ watch(() => props.projectId, loadEnvSnap)
             <section v-if="showJobPanel('draft_mindmap')" class="cover-block">
               <div class="cover-head">
                 <h4>测试脑图 · {{ mindPointCount }} 个测试点</h4>
-                <el-button size="small" :disabled="workflowBusy" @click="retryCover('draft_mindmap')">重试脑图</el-button>
+                <div class="cover-head-actions">
+                  <el-button size="small" :disabled="!selectedReq || workflowBusy || wikiPublishing" @click="openCoverImport('mindmap')">导入脑图</el-button>
+                  <el-button size="small" :disabled="workflowBusy || wikiPublishing" @click="retryCover('draft_mindmap')">重试脑图</el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    :loading="wikiPublishing"
+                    :disabled="!selectedReq || !mindRows.length || workflowBusy"
+                    @click="publishMindmapToWiki"
+                  >{{ selectedReq?.mindmap_wiki?.url ? '更新飞书 Wiki' : '写入飞书 Wiki' }}</el-button>
+                  <el-button
+                    v-if="wikiHistoryCount"
+                    size="small"
+                    :disabled="wikiPublishing"
+                    @click="openWikiHistory()"
+                  >写入历史 · {{ wikiHistoryCount }}</el-button>
+                </div>
               </div>
               <p v-if="ticking && !mindRows.length" class="muted">正在写脑图…</p>
-              <p v-else-if="!mindRows.length" class="muted">还没有脑图。可点右上角重试。</p>
-              <ul v-else class="mind-list">
-                <li v-for="(row, idx) in mindRows" :key="idx" :style="{ paddingLeft: `${row.depth * 16}px` }">
+              <p v-else-if="!mindRows.length" class="muted">还没有脑图。可导入外部文件，或点右上角重试。</p>
+              <p v-if="selectedReq?.mindmap_wiki?.url" class="muted">
+                已写入飞书：
+                <a href="#" @click.prevent="openExternalUrl(selectedReq.mindmap_wiki.url)">{{ selectedReq.mindmap_wiki.title || '打开飞书脑图' }}</a>
+              </p>
+              <ul v-if="mindRows.length" class="mind-list">
+                <li
+                  v-for="(row, idx) in mindRows"
+                  :key="idx"
+                  :class="{ 'is-orphan': row.orphan }"
+                  :style="{ paddingLeft: `${row.depth * 16}px` }"
+                >
                   <em v-if="row.isPoint">测试点</em>
+                  <em v-else-if="row.orphan" class="orphan-tag">已失联</em>
                   {{ row.name }}
                   <span v-if="row.detail" class="muted"> · {{ row.detail }}</span>
                 </li>
               </ul>
+              <p v-for="(f, i) in mindmapFailures" :key="`mf-${i}`" class="cover-alert">
+                ⚠ {{ failureLabel(f) }}：{{ f.detail }}
+                <span v-if="f.fallback === 'rule_tree'">（当前显示的是规则兜底树，不是模型写的脑图）</span>
+              </p>
               <details v-if="mindHistory.length" class="cover-log">
                 <summary>生成记录 · {{ mindHistory.length }}</summary>
                 <ol>
                   <li v-for="row in mindHistory" :key="row.id">
-                    <strong>{{ row.kind === 'retry' ? '重试' : '生成' }}</strong>
+                    <strong>{{ coverHistKind(row) }}</strong>
                     {{ formatShortTime(row.at) }}
                     · {{ row.summary || '—' }}
                     <span v-if="row.engine" class="muted"> · {{ row.engine }}</span>
-                    <p v-if="row.note" class="cover-note">评论：{{ row.note }}</p>
+                    <p v-if="row.note && row.kind !== 'import'" class="cover-note">评论：{{ row.note }}</p>
                     <details v-if="historyRows(row).length" class="cover-log-inner">
                       <summary>查看这一版</summary>
                       <ul class="mind-list">
@@ -1698,13 +1932,57 @@ watch(() => props.projectId, loadEnvSnap)
             <section v-if="showJobPanel('draft_cases')" class="cover-block">
               <div class="cover-head">
                 <h4>本需求生成的用例 · {{ draftCaseRows.length }}</h4>
-                <el-button size="small" :disabled="workflowBusy" @click="retryCover('draft_cases')">重试用例</el-button>
+                <el-button size="small" :disabled="!selectedReq || workflowBusy" @click="openCoverImport('cases')">导入用例</el-button>
+                <el-button
+                  v-if="coverStats.stubbed"
+                  size="small"
+                  type="primary"
+                  :disabled="workflowBusy"
+                  @click="rewriteStubCases"
+                >补写模板兜底</el-button>
+                <el-button size="small" :disabled="workflowBusy" @click="retryCover('draft_cases')">补写缺口</el-button>
               </div>
-              <p class="muted">已覆盖 {{ coveredPointCount }}/{{ mindPointCount || 0 }} 个测试点。一个点可有多条用例。</p>
+              <p class="muted">
+                真实覆盖 {{ coverStats.real }}/{{ coverStats.total || 0 }} 个测试点。一个点可有多条用例。
+                <span v-if="coverStats.waived"> · 本版不测 {{ coverStats.waived }}</span>
+              </p>
+              <p v-if="coverStats.stubbed" class="cover-alert">
+                ⚠ {{ coverStats.stubbed }} 个测试点只有<strong>模板兜底</strong>用例（不是模型写的）。
+                <el-button size="small" type="primary" link :disabled="workflowBusy" @click="rewriteStubCases">只补写这些</el-button>
+              </p>
+              <p v-if="caseAspectGaps.length" class="cover-alert">
+                ⚠ {{ caseAspectGaps.length }} 个测试点缺情况：
+                <span v-for="(g, i) in caseAspectGaps.slice(0, 6)" :key="g.point_id">
+                  {{ i ? '；' : '' }}{{ g.text }}（缺 {{ (g.missing_aspects || []).join('/') }}）
+                  <el-button size="small" type="primary" link :disabled="workflowBusy" @click="rewritePointCases(g.point_id)">重写</el-button>
+                </span>
+                <span v-if="caseAspectGaps.length > 6"> … 共 {{ caseAspectGaps.length }} 个</span>
+              </p>
+              <ul v-if="caseFailures.length" class="cover-fail-list">
+                <li v-for="(f, i) in caseFailures" :key="i">
+                  <strong>{{ failureLabel(f) }}</strong>
+                  · {{ (f.point_ids || []).length }} 个测试点
+                  <span class="muted">{{ f.detail }}</span>
+                </li>
+              </ul>
               <p v-if="mindmapBackfill.length" class="cover-note">写用例时反推补了 {{ mindmapBackfill.length }} 个脑图测试点。</p>
               <p v-if="ticking && !draftCaseRows.length" class="muted">正在写用例…</p>
-              <el-table v-else :data="draftCaseRows" border stripe size="small" empty-text="还没有生成用例，可点右上角重试">
+              <el-table
+                v-else
+                :data="draftCaseRows"
+                border
+                stripe
+                size="small"
+                :row-class-name="({ row }) => (isStubCase(row) ? 'stub-case-row' : '')"
+                empty-text="还没有用例。可导入或点右上角重试"
+              >
                 <el-table-column label="编号" width="120" prop="case_id" />
+                <el-table-column label="来源" width="88">
+                  <template #default="{ row }">
+                    <span :class="{ 'stub-tag': isStubCase(row) }">{{ caseOriginLabel(row) }}</span>
+                    <span v-if="row.locked" title="人工锁定，重试不会被覆盖"> 🔒</span>
+                  </template>
+                </el-table-column>
                 <el-table-column label="情况" width="72">
                   <template #default="{ row }">{{ row.aspect || '正向' }}</template>
                 </el-table-column>
@@ -1723,16 +2001,28 @@ watch(() => props.projectId, loadEnvSnap)
                 <el-table-column label="预期" min-width="160" show-overflow-tooltip>
                   <template #default="{ row }">{{ row.expected || '—' }}</template>
                 </el-table-column>
+                <el-table-column label="" width="72" align="right" fixed="right">
+                  <template #default="{ row }">
+                    <el-button
+                      v-if="!row.locked && (row.point_ids || [])[0]"
+                      size="small"
+                      type="primary"
+                      link
+                      :disabled="workflowBusy"
+                      @click="rewritePointCases((row.point_ids || [])[0])"
+                    >重写</el-button>
+                  </template>
+                </el-table-column>
               </el-table>
               <details v-if="caseHistory.length" class="cover-log">
                 <summary>生成记录 · {{ caseHistory.length }}</summary>
                 <ol>
                   <li v-for="row in caseHistory" :key="row.id">
-                    <strong>{{ row.kind === 'retry' ? '重试' : '生成' }}</strong>
+                    <strong>{{ coverHistKind(row) }}</strong>
                     {{ formatShortTime(row.at) }}
                     · {{ row.summary || '—' }}
                     <span v-if="row.engine" class="muted"> · {{ row.engine }}</span>
-                    <p v-if="row.note" class="cover-note">评论：{{ row.note }}</p>
+                    <p v-if="row.note && row.kind !== 'import'" class="cover-note">评论：{{ row.note }}</p>
                     <details v-if="historyRows(row).length" class="cover-log-inner">
                       <summary>查看这一版</summary>
                       <ul class="mind-list">
@@ -2034,6 +2324,20 @@ watch(() => props.projectId, loadEnvSnap)
         </div>
       </section>
 
+    <CoverImportDialog
+      v-model="coverImportOpen"
+      :app-id="appId"
+      :kind="coverImportKind"
+      :requirement-id="selectedReq?.id || ''"
+      :requirements="requirements"
+      @imported="onCoverImported"
+    />
+    <WikiHistoryDialog
+      v-model="wikiHistoryOpen"
+      :requirement="wikiHistoryReq"
+      :app-id="appId"
+      @updated="onWikiHistoryUpdated"
+    />
     <el-dialog
       v-model="createOpen"
       :title="creatingRel ? '新建版本' : '新建需求'"
@@ -2204,11 +2508,33 @@ watch(() => props.projectId, loadEnvSnap)
 .work-banner {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 12px;
-  align-items: baseline;
+  gap: 8px 12px;
+  align-items: center;
   background: #eef2ff;
   color: #3730a3;
   font-size: 13px;
+}
+.work-banner-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.work-banner-bar {
+  flex: 1 1 120px;
+  max-width: 220px;
+  height: 6px;
+  border-radius: 999px;
+  background: #c7d2fe;
+  overflow: hidden;
+}
+.work-banner-fill {
+  height: 100%;
+  background: #4f46e5;
+  border-radius: inherit;
+  transition: width 0.25s ease;
 }
 .edit-banner {
   margin: 0;
@@ -2274,6 +2600,12 @@ watch(() => props.projectId, loadEnvSnap)
   gap: 12px;
   margin: 0 0 8px;
 }
+.cover-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .cover-log {
   margin-top: 10px;
   padding: 8px 10px;
@@ -2301,6 +2633,33 @@ watch(() => props.projectId, loadEnvSnap)
   margin: 4px 0 0;
   color: #92400e;
 }
+/* 生成失败 / 模板兜底：必须显眼。以前这些是静默的，界面覆盖率照样满格。 */
+.cover-alert {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #fef2f2;
+  border-left: 3px solid #dc2626;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cover-fail-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #991b1b;
+}
+.cover-fail-list .muted {
+  color: #9ca3af;
+}
+.stub-tag {
+  color: #dc2626;
+  font-weight: 600;
+}
+:deep(.stub-case-row) {
+  background: #fff7ed !important;
+}
 .read-recap p {
   margin: 0 0 6px;
   font-size: 13px;
@@ -2321,6 +2680,15 @@ watch(() => props.projectId, loadEnvSnap)
   font-style: normal;
   font-size: 11px;
   font-weight: 700;
+}
+.mind-list li.is-orphan {
+  color: #b45309;
+}
+.mind-list .orphan-tag {
+  color: #b45309;
+  background: #fff7ed;
+  border-radius: 4px;
+  padding: 0 4px;
 }
 .stage-line {
   margin: 0;
@@ -2438,6 +2806,14 @@ watch(() => props.projectId, loadEnvSnap)
 .qa-list :deep(.el-table .el-table__row) { cursor: pointer; }
 .qa-list :deep(.el-table .is-current) { background: #eef2ff !important; }
 .task-name { font-weight: 600; color: #111827; }
+.wiki-cell {
+  display: block;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .detail-head {
   display: flex;
   justify-content: space-between;

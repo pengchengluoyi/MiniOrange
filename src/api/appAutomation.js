@@ -9,11 +9,71 @@ export const listQaProcessSummary = () =>
 export const assistQaProcess = (appId, data) =>
   request({ url: `/app-automation/qa-process/assist/${appId}`, method: 'post', data, timeout: 120000 })
 
+/** 投递推进任务，立刻返回 job_id（不再同步等 10 分钟）。 */
 export const tickQaProcess = (appId, data = {}) =>
-  request({ url: `/app-automation/qa-process/tick/${appId}`, method: 'post', data, timeout: 600000 })
+  request({ url: `/app-automation/qa-process/tick/${appId}`, method: 'post', data, timeout: 30000 })
+
+export const getQaProcessJob = (jobId) =>
+  request({ url: `/app-automation/qa-process/job/${jobId}`, method: 'get', timeout: 15000 })
+
+export const cancelQaProcessJob = (jobId) =>
+  request({ url: `/app-automation/qa-process/job/${jobId}/cancel`, method: 'post', timeout: 15000 })
+
+/**
+ * 投递 + 轮询直到结束。onProgress({ job, qa_process }) 每次有更新都回调。
+ * 返回最后一次 data（含 actions / usage / qa_process）。
+ */
+export const runQaProcessTick = async (appId, data = {}, { onProgress, signal, pollMs = 1200 } = {}) => {
+  const started = await tickQaProcess(appId, data)
+  const jobId = started?.data?.job_id || started?.data?.job?.job_id
+  if (!jobId) {
+    // 兼容万一还是同步回包
+    if (started?.data?.qa_process) return started.data
+    throw new Error('没有返回任务 id')
+  }
+  if (onProgress) onProgress(started.data || {})
+  const sleep = (ms) => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      return
+    }
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener?.('abort', () => {
+      clearTimeout(t)
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    }, { once: true })
+  })
+  let last = started.data || {}
+  for (;;) {
+    await sleep(pollMs)
+    const res = await getQaProcessJob(jobId)
+    last = res?.data || {}
+    if (onProgress) onProgress(last)
+    const status = last.job?.status || ''
+    if (status === 'done' || status === 'cancelled' || status === 'error') return last
+  }
+}
+
+export const importQaCover = (appId, data) =>
+  request({ url: `/app-automation/qa-process/import/${appId}`, method: 'post', data, timeout: 60000 })
+
+export const publishQaMindmap = (appId, data) =>
+  request({ url: `/app-automation/qa-process/publish-mindmap/${appId}`, method: 'post', data, timeout: 120000 })
+
+export const hideQaMindmapWiki = (appId, data) =>
+  request({ url: `/app-automation/qa-process/hide-mindmap-wiki/${appId}`, method: 'post', data, timeout: 60000 })
 
 export const reviewAtlasPatch = (appId, data) =>
   request({ url: `/app-automation/qa-process/atlas-patch/${appId}`, method: 'post', data, timeout: 180000 })
+
+export const listAtlasAliases = (appId, params = {}) =>
+  request({ url: `/app-automation/qa-process/atlas-aliases/${appId}`, method: 'get', params })
+
+export const updateAtlasAlias = (appId, aliasId, data) =>
+  request({ url: `/app-automation/qa-process/atlas-aliases/${appId}/${aliasId}`, method: 'patch', data })
+
+export const deleteAtlasAlias = (appId, aliasId) =>
+  request({ url: `/app-automation/qa-process/atlas-aliases/${appId}/${aliasId}`, method: 'delete' })
 
 export const updateAppAutomationConfig = (appId, data) =>
   request({ url: `/app-automation/config/${appId}`, method: 'put', data })

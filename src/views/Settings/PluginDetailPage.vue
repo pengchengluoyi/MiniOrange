@@ -41,7 +41,7 @@ const wikiForm = ref({
   space_id: '',
   root_node_token: '',
   folder_pattern: '{project}/版本/{version}',
-  childrenText: '测试报告、测试用例、需求、缺陷',
+    childrenText: '测试报告、测试用例、测试脑图、需求、缺陷',
 })
 const wikiDebug = ref({
   busy: false,
@@ -338,7 +338,7 @@ const applyConfig = (data) => {
     space_id: wiki.space_id || '',
     root_node_token: wiki.root_node_token || '',
     folder_pattern: wiki.folder_pattern || '{project}/版本/{version}',
-    childrenText: (wiki.children || ['测试报告', '测试用例', '需求', '缺陷']).join('、'),
+    childrenText: (wiki.children || ['测试报告', '测试用例', '测试脑图', '需求', '缺陷']).join('、'),
   }
   notifyForm.value = {
     bot_id: cfg.notify?.bot_id || '',
@@ -933,8 +933,8 @@ onUnmounted(() => {
       <div class="wiki-page">
       <section class="settings-info-card">
         <div class="settings-kicker">现在怎么用</div>
-        <p>这里只存「写到哪个知识空间、文件夹怎么排」。人确认过的报告 / 用例 / 需求 / 缺陷，以后由文档维护按这份规则落一份飞书副本；MiniOrange 里的数据仍是源。</p>
-        <p>自动写入还没接到流程上。顶部「已连接」只说明机器人凭证在，不代表这个知识空间一定有权限。下面调试用来验空间、列目录、建一个可删的调试页。</p>
+        <p>知识空间和文件夹规则在这里配。需求的测试脑图可以从流程或用例页点「写入飞书 Wiki」，会按规则在对应目录下建一篇文档，在里面嵌一块画板，把脑图画成思维导图节点。需要给应用开通「画板节点创建」（board:whiteboard:node:create）权限。报告 / 用例 / 需求 / 缺陷的自动落副本还没全部接到流程上。</p>
+        <p>顶部「已连接」只说明机器人凭证在，不代表这个知识空间一定有权限。下面调试用来验空间、列目录、建一个可删的调试页。</p>
       </section>
 
       <section class="settings-card">
@@ -951,7 +951,7 @@ onUnmounted(() => {
             <el-input v-model="wikiForm.folder_pattern" placeholder="{project}/版本/{version}" />
           </el-form-item>
           <el-form-item label="版本下的子目录">
-            <el-input v-model="wikiForm.childrenText" placeholder="测试报告、测试用例、需求、缺陷" />
+            <el-input v-model="wikiForm.childrenText" placeholder="测试报告、测试用例、测试脑图、需求、缺陷" />
           </el-form-item>
           <div>
             <button type="button" class="settings-action-pill" :disabled="saving" @click="saveWiki">

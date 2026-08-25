@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { reviewAtlasPatch, tickQaProcess } from '@/api/appAutomation'
+import { cancelQaProcessJob, deleteAtlasAlias, listAtlasAliases, publishQaMindmap, reviewAtlasPatch, runQaProcessTick, updateAtlasAlias } from '@/api/appAutomation'
+import { openExternalUrl } from '@/utils/openExternal'
 import { useQaProcess } from '@/composables/useQaProcess'
 import {
   assignCasesToAtlas,
@@ -23,6 +24,8 @@ import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import AtlasBoardView from '@/views/Testing/AtlasBoardView.vue'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
+import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
+import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import HintFold from '@/components/HintFold.vue'
 import '@/views/Settings/settings-ui.css'
 
@@ -57,6 +60,42 @@ const {
 
 const ticking = ref(false)
 const lastTick = ref('')
+const tickProgress = ref(null)
+let tickAbort = null
+const aliasRows = ref([])
+const aliasLoading = ref(false)
+const aliasFilter = ref('approved')
+
+const loadAliases = async () => {
+  if (!props.appId) return
+  aliasLoading.value = true
+  try {
+    const res = await listAtlasAliases(props.appId, { status: aliasFilter.value || undefined })
+    aliasRows.value = res?.data?.items || []
+  } catch (_) {
+    aliasRows.value = []
+  } finally {
+    aliasLoading.value = false
+  }
+}
+
+const setAliasStatus = async (row, status) => {
+  try {
+    await updateAtlasAlias(props.appId, row.id, { review_status: status })
+    await loadAliases()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '更新失败')
+  }
+}
+
+const removeAlias = async (row) => {
+  try {
+    await deleteAtlasAlias(props.appId, row.id)
+    await loadAliases()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  }
+}
 const view = ref('atlas')
 const selectedReqId = ref('')
 const cases = computed(() => generatedCasesFromProcess(requirements.value))
@@ -67,6 +106,59 @@ const casePage = ref(1)
 const casePageSize = ref(20)
 const atlasVersionId = ref('')
 const selectedPlatform = ref('')
+const coverImportOpen = ref(false)
+const coverImportKind = ref('mindmap')
+const openCoverImport = (kind) => {
+  if (!requirements.value.length) {
+    ElMessage.warning('请先有一条需求')
+    return
+  }
+  coverImportKind.value = kind
+  coverImportOpen.value = true
+}
+const onCoverImported = (data) => {
+  if (data?.qa_process) apply(data.qa_process)
+  // 待确认的图谱变更只在「应用图谱」页显示，导入完停在脑图页就看不到它。
+  if (data?.atlas === 'patch' || data?.atlas === 'pending') setView('atlas')
+}
+const wikiPublishing = ref(false)
+const wikiHistoryOpen = ref(false)
+const wikiHistoryCount = computed(() => {
+  const rows = selectedReq.value?.mindmap_wiki_history
+  if (Array.isArray(rows) && rows.length) return rows.length
+  return selectedReq.value?.mindmap_wiki?.url ? 1 : 0
+})
+const publishMindmapToWiki = async () => {
+  const req = selectedReq.value
+  if (!req) {
+    ElMessage.warning('请先选一条需求')
+    return
+  }
+  const mind = req.mindmap
+  const hasMind = mind && typeof mind === 'object' && (mind.children?.length || mind.text || mind.title)
+  if (!hasMind) {
+    ElMessage.warning('这条需求还没有脑图')
+    return
+  }
+  if (wikiPublishing.value || ticking.value) return
+  wikiPublishing.value = true
+  try {
+    const res = await publishQaMindmap(props.appId, {
+      requirement_id: req.id,
+      release_id: req.release_id || atlasVersionId.value || '',
+    })
+    const data = res?.data || res || {}
+    if (data.qa_process) apply(data.qa_process)
+    const url = data.url || data.wiki?.url || ''
+    const count = data.nodes || data.wiki?.nodes || 0
+    ElMessage.success(`${data.created ? '已写入' : '已更新'}飞书脑图${count ? ` · ${count} 个节点` : ''}`)
+    if (url) await openExternalUrl(url)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '写入飞书 Wiki 失败')
+  } finally {
+    wikiPublishing.value = false
+  }
+}
 
 const selectedReq = computed(() => {
   if (selectedReqId.value) return requirements.value.find((r) => r.id === selectedReqId.value) || null
@@ -232,6 +324,7 @@ const reviewPatch = async (patch, action, extra = {}) => {
       rerun: extra.rerun !== false && action === 'reject',
     })
     if (res?.data?.qa_process) apply(res.data.qa_process)
+    if (action === 'accept' || action === 'reject') await loadAliases()
     if (action === 'reject') {
       ElMessage.success(extra.rerun !== false ? '已驳回，正在按你的说明重跑分析' : '已驳回这次变更')
     } else {
@@ -264,10 +357,36 @@ const submitReject = async () => {
 const tick = async (requirementId = '') => {
   if (!props.appId || ticking.value) return
   ticking.value = true
+  tickProgress.value = null
+  tickAbort = new AbortController()
   try {
-    const res = await tickQaProcess(props.appId, { requirement_id: requirementId })
-    const data = res?.data || {}
-    if (data.qa_process) apply(data.qa_process)
+    const data = await runQaProcessTick(
+      props.appId,
+      { requirement_id: requirementId },
+      {
+        signal: tickAbort.signal,
+        onProgress: (snap) => {
+          const job = snap?.job || {}
+          tickProgress.value = job
+          if (snap?.qa_process) apply(snap.qa_process)
+          if (job.total) {
+            lastTick.value = `${job.label || '推进中'} · ${job.done || 0}/${job.total}`
+          } else if (job.label) {
+            lastTick.value = job.label
+          }
+        },
+      },
+    )
+    if (data?.qa_process) apply(data.qa_process)
+    if (data?.job?.status === 'cancelled') {
+      lastTick.value = '已取消'
+      return
+    }
+    if (data?.job?.status === 'error') {
+      lastTick.value = data.job.error || '推进失败'
+      ElMessage.error(lastTick.value)
+      return
+    }
     const did = (data.actions || []).filter((a) => a.action && a.action !== 'skip' && a.action !== 'blocked')
     const usage = data.usage || {}
     const proposed = did.filter((a) => a.action === 'propose_atlas')
@@ -283,10 +402,27 @@ const tick = async (requirementId = '') => {
       lastTick.value = '这一轮没有新步骤'
     }
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '角色推进失败')
+    if (e?.name === 'AbortError') return
+    const detail = e?.response?.data?.detail
+    if (e?.response?.status === 409 && detail?.job) {
+      lastTick.value = detail.message || '已有推进任务在跑'
+      ElMessage.warning(lastTick.value)
+      return
+    }
+    ElMessage.error(typeof detail === 'string' ? detail : (e?.message || '角色推进失败'))
   } finally {
     ticking.value = false
+    tickProgress.value = null
+    tickAbort = null
   }
+}
+
+const cancelTick = async () => {
+  const jobId = tickProgress.value?.job_id
+  if (jobId) {
+    try { await cancelQaProcessJob(jobId) } catch (_) { /* ignore */ }
+  }
+  tickAbort?.abort()
 }
 
 const openNewRun = (caseId = '') => {
@@ -310,11 +446,13 @@ watch(versionOptions, (rows) => {
 watch(() => props.appId, async () => {
   lastTick.value = ''
   await load()
+  await loadAliases()
 })
 
 onMounted(async () => {
   syncViewFromRoute()
   await load()
+  await loadAliases()
   if (!selectedReqId.value && requirements.value[0]) selectedReqId.value = requirements.value[0].id
 })
 </script>
@@ -341,7 +479,10 @@ onMounted(async () => {
             :value="rel.id"
           />
         </el-select>
-        <div v-if="ticking" class="settings-summary-pill">角色推进中</div>
+        <div v-if="ticking" class="settings-summary-pill tick-pill">
+          {{ lastTick || '角色推进中' }}
+          <button type="button" class="tick-cancel" @click="cancelTick">取消</button>
+        </div>
         <div v-else-if="lastTick" class="settings-summary-pill">{{ lastTick }}</div>
         <button type="button" class="settings-action-pill" :disabled="ticking" @click="tick(selectedReq?.id || '')">
           继续分析
@@ -391,6 +532,27 @@ onMounted(async () => {
         <el-option label="全部端" value="" />
         <el-option v-for="p in MIND_PLATFORMS" :key="p.id" :label="p.label" :value="p.id" />
       </el-select>
+      <el-button v-if="view === 'mindmap'" size="small" @click="openCoverImport('mindmap')">导入脑图</el-button>
+      <el-button
+        v-if="view === 'mindmap'"
+        size="small"
+        type="primary"
+        :loading="wikiPublishing"
+        :disabled="wikiPublishing || ticking"
+        @click="publishMindmapToWiki"
+      >{{ selectedReq?.mindmap_wiki?.url ? '更新飞书 Wiki' : '写入飞书 Wiki' }}</el-button>
+      <el-button
+        v-if="view === 'mindmap' && wikiHistoryCount"
+        size="small"
+        :disabled="wikiPublishing"
+        @click="wikiHistoryOpen = true"
+      >写入历史 · {{ wikiHistoryCount }}</el-button>
+      <a
+        v-if="view === 'mindmap' && selectedReq?.mindmap_wiki?.url"
+        class="wiki-link"
+        href="#"
+        @click.prevent="openExternalUrl(selectedReq.mindmap_wiki.url)"
+      >打开飞书脑图</a>
     </div>
 
     <section v-if="view === 'library'" class="library-wrap is-table">
@@ -404,7 +566,8 @@ onMounted(async () => {
       <section v-if="!libraryRows.length" class="settings-info-card">
         <div class="settings-kicker">还没有可挂的用例</div>
         <p v-if="pendingPatches.length">先在应用图谱页确认变更，确认后才会生成用例草稿。</p>
-        <p v-else>贴需求或点「继续分析」。确认图谱后才会写入用例草稿。</p>
+        <p v-else>可贴需求生成，或直接导入外部用例。</p>
+        <el-button size="small" style="margin-top: 8px" @click="openCoverImport('cases')">导入用例</el-button>
       </section>
       <section v-else class="settings-table-card is-fill">
         <div class="settings-toolbar">
@@ -419,6 +582,7 @@ onMounted(async () => {
               class="cascade-filter"
             />
             <el-input v-model="caseQuery" size="small" clearable placeholder="搜索编号、名称、端" class="lib-search" />
+            <el-button size="small" @click="openCoverImport('cases')">导入用例</el-button>
           </div>
         </div>
         <div class="table-fill">
@@ -462,6 +626,33 @@ onMounted(async () => {
     </section>
 
     <section v-else class="mind-page">
+      <HintFold
+        v-if="view === 'atlas'"
+        title="命名别名"
+        :summary="aliasRows.length ? `${aliasRows.length} 条（确认图谱变更后沉淀）` : '还没有学到的别名'"
+      >
+        <div class="alias-toolbar">
+          <button type="button" class="ghost-pill" :class="{ on: aliasFilter === 'approved' }" @click="aliasFilter = 'approved'; loadAliases()">已通过</button>
+          <button type="button" class="ghost-pill" :class="{ on: aliasFilter === 'rejected' }" @click="aliasFilter = 'rejected'; loadAliases()">已驳回</button>
+          <button type="button" class="ghost-pill" :class="{ on: !aliasFilter }" @click="aliasFilter = ''; loadAliases()">全部</button>
+          <el-button size="small" :loading="aliasLoading" @click="loadAliases">刷新</el-button>
+        </div>
+        <p v-if="!aliasRows.length" class="empty-hint">导入脑图出现模糊对齐并确认后，会写到这里；下次同名自动对齐。</p>
+        <div v-else class="alias-table">
+          <div v-for="row in aliasRows" :key="row.id" class="alias-row">
+            <div class="alias-main">
+              <strong>「{{ row.alias }}」</strong>
+              <span>→ {{ (row.target_path || []).join(' / ') || row.target_id }}</span>
+              <span class="muted"> · 命中 {{ row.hits || 0 }} · {{ row.review_status }}</span>
+            </div>
+            <div class="alias-acts">
+              <button v-if="row.review_status !== 'approved'" type="button" class="tiny" @click="setAliasStatus(row, 'approved')">启用</button>
+              <button v-if="row.review_status !== 'rejected'" type="button" class="tiny" @click="setAliasStatus(row, 'rejected')">停用</button>
+              <button type="button" class="tiny danger" @click="removeAlias(row)">删除</button>
+            </div>
+          </div>
+        </div>
+      </HintFold>
       <HintFold
         v-if="view === 'mindmap'"
         :title="selectedReq ? `需求 · ${selectedReq.title}` : '全部需求 · 覆盖清单'"
@@ -536,6 +727,20 @@ onMounted(async () => {
         <el-button type="primary" :loading="reviewingPatch" @click="submitReject">驳回并重跑</el-button>
       </template>
     </el-dialog>
+    <CoverImportDialog
+      v-model="coverImportOpen"
+      :app-id="appId"
+      :kind="coverImportKind"
+      :requirement-id="selectedReqId || selectedReq?.id || ''"
+      :requirements="requirements"
+      @imported="onCoverImported"
+    />
+    <WikiHistoryDialog
+      v-model="wikiHistoryOpen"
+      :requirement="selectedReq"
+      :app-id="appId"
+      @updated="(qa) => qa && apply(qa)"
+    />
   </div>
 </template>
 
@@ -972,6 +1177,76 @@ h4 {
   color: #6b7280;
 }
 
+.tick-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tick-cancel {
+  border: 0;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.tick-cancel:hover {
+  text-decoration: underline;
+}
+
+.alias-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.alias-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.alias-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+}
+
+.alias-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.alias-acts {
+  display: flex;
+  gap: 6px;
+}
+
+.alias-acts .tiny {
+  border: 0;
+  background: transparent;
+  color: #4f46e5;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.alias-acts .tiny.danger {
+  color: #b91c1c;
+}
+
 @media (max-width: 900px) {
   .atlas-diff {
     grid-template-columns: 1fr;
@@ -999,5 +1274,12 @@ h4 {
   font-size: 13px;
   line-height: 1.55;
   color: var(--settings-muted);
+}
+
+.wiki-link {
+  font-size: 12px;
+  color: var(--el-color-primary);
+  white-space: nowrap;
+  align-self: center;
 }
 </style>

@@ -29,6 +29,7 @@ const showReqTag = (node) => {
 const cardTitle = (node) => {
   const bits = [rawLabel(node)]
   if (node?.kind === 'platform') bits.unshift('端')
+  if (node?.orphan) bits.push('图谱里已找不到对应节点')
   if (node?.reqTitles?.length) bits.push(`需求：${node.reqTitles.join('、')}`)
   if (node?.change === 'new') bits.push('相对上一版新增')
   else if (node?.change === 'kept') bits.push('上一版已有')
@@ -36,11 +37,14 @@ const cardTitle = (node) => {
 }
 
 const labelClass = (node) => {
-  if (node?.kind === 'root') return 'is-root'
-  if (node?.kind === 'platform') return 'is-plat'
-  if (node?.kind === 'feature') return 'is-feat'
-  if (node?.kind === 'point') return 'is-point'
-  return 'is-module'
+  const bits = []
+  if (node?.kind === 'root') bits.push('is-root')
+  else if (node?.kind === 'platform') bits.push('is-plat')
+  else if (node?.kind === 'feature') bits.push('is-feat')
+  else if (node?.kind === 'point') bits.push('is-point')
+  else bits.push('is-module')
+  if (node?.orphan) bits.push('is-orphan')
+  return bits.join(' ')
 }
 
 const changeClass = (node) => {
@@ -351,6 +355,19 @@ const onUp = () => { dragging.value = false }
 
 .mm-card.is-new {
   box-shadow: inset 0 0 0 1px #f59e0b;
+}
+
+.mm-card.is-orphan {
+  opacity: 0.75;
+  box-shadow: inset 0 0 0 1px #d97706;
+}
+
+.mm-card.is-orphan::after {
+  content: '已失联';
+  margin-left: 6px;
+  font-size: 11px;
+  color: #b45309;
+  font-weight: 700;
 }
 
 .mm-branch {

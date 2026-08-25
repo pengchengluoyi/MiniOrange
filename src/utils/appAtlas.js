@@ -281,6 +281,16 @@ function namesMatch(a, b) {
   return names.some((n) => other.includes(n))
 }
 
+function findById(node, id) {
+  if (!node || !id) return null
+  if (node.id === id) return node
+  for (const child of node.children || []) {
+    const hit = findById(child, id)
+    if (hit) return hit
+  }
+  return null
+}
+
 function findDeep(node, name) {
   if (!node || !name) return null
   if (normName(node.name) === normName(name) || normName(node.full) === normName(name)) return node
@@ -317,10 +327,17 @@ function walkPath(node, parts) {
   return cur
 }
 
+function refIdOf(node) {
+  return String(node?.atlasRef?.feature_id || node?.atlasRef?.module_id || '')
+}
+
 function mergeChild(parent, child) {
   if (!parent || !child) return
   if (!parent.children) parent.children = []
-  const exist = parent.children.find((c) => namesMatch(c, child))
+  // 名字被改过时（别名命中）只有 id 能对上，所以 id 优先于名字。少了这一层，
+  // 图谱里叫「本地上传提交」、脑图里叫「图片上传」的同一个功能会在看板上并排出现两份。
+  const refId = refIdOf(child)
+  const exist = (refId && parent.children.find((c) => c.id === refId)) || parent.children.find((c) => namesMatch(c, child))
   if (!exist) {
     parent.children.push(child)
     return
@@ -423,6 +440,16 @@ export function summarizeMindDiff(root) {
 }
 
 function placeBranch(root, branch) {
+  // 后端对齐层的结论写在 atlas_ref 上，那是权威的：前端再靠 findLoose 猜一遍，看板画的
+  // 归属就会和实际合并进图谱的归属不一致，而人只能在「图谱变更」里改后者，无从干预前者。
+  // 所以 id 优先、path 次之，findDeep / findLoose 只兜没走过对齐层的老数据。
+  const refId = refIdOf(branch)
+  const byId = refId ? findById(root, refId) : null
+  if (byId && byId !== root) {
+    mergeMeta(byId, branch)
+    for (const child of branch.children || []) mergeChild(byId, child)
+    return
+  }
   const path = Array.isArray(branch.path) ? branch.path.map((x) => String(x || '').trim()).filter(Boolean) : []
   if (path.length >= 2) {
     const host = walkPath(root, path.slice(0, -1)) || walkPath(root, path) || findDeep(root, path[0])
@@ -475,6 +502,8 @@ function mindNode(raw) {
     kind,
     platform: platform || undefined,
     path: Array.isArray(raw.path) ? raw.path : undefined,
+    atlasRef: raw.atlas_ref && typeof raw.atlas_ref === 'object' ? raw.atlas_ref : undefined,
+    orphan: Boolean(raw.orphan),
     children,
   }
 }
