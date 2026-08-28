@@ -144,6 +144,7 @@ export function taskJudgedCount(task) {
     + Number(task?.failed || 0)
     + Number(task?.blocked || 0)
     + Number(task?.declined || 0)
+    + Number(task?.untestable || 0)
   )
 }
 
@@ -154,6 +155,8 @@ export function displayTaskStatus(task) {
   const passed = Number(task?.passed || 0)
   if (s === 'running' || s === 'queued') return s
   if (s === 'cancelled') return 'cancelled'
+  const untestable = Number(task?.untestable || 0)
+  if (failed === 0 && passed === 0 && untestable > 0) return 'untestable'
   if (failed > 0 && passed > 0) return 'partial_fail'
   if (s === 'failed' || s === 'fail') return 'failed'
   if ((s === 'done' || s === 'pass' || s === 'success') && failed > 0) {
@@ -180,7 +183,20 @@ export function taskProgressPct(task) {
 }
 
 export function taskPassRate(task) {
-  const judged = taskJudgedCount(task)
+  if (task?.pass_rate != null && task.pass_rate !== '') {
+    const n = Number(task.pass_rate)
+    if (!Number.isNaN(n)) return Math.round(n)
+  }
+  const cases = task?.cases || []
+  if (cases.length) {
+    const judged = cases.filter((c) => !['pending', 'queued', 'cancelled', 'skipped', 'untestable'].includes(c.status))
+    if (!judged.length) return null
+    return Math.round((judged.filter((c) => c.status === 'pass').length / judged.length) * 100)
+  }
+  const judged = Number(task?.passed || 0)
+    + Number(task?.failed || 0)
+    + Number(task?.blocked || 0)
+    + Number(task?.declined || 0)
   if (!judged) return null
   return Math.round((Number(task?.passed || 0) / judged) * 100)
 }
@@ -267,8 +283,14 @@ export function casePlatformKind(c) {
 }
 
 export function devicePlatformKind(device) {
-  const ch = String(device?.execChannel || device?.device_type || '').toLowerCase()
-  if (ch.includes('ios') || ch.includes('iphone') || ch.includes('ipad')) return 'ios'
+  const blob = [
+    device?.execChannel,
+    device?.device_type,
+    device?.type,
+    device?.platform,
+    device?.model,
+  ].map((x) => String(x || '')).join(' ').toLowerCase()
+  if (blob.includes('ios') || blob.includes('iphone') || blob.includes('ipad')) return 'ios'
   return 'android'
 }
 
@@ -304,10 +326,10 @@ export function normalizeCase(raw = {}, taskId = '') {
     skipped: raw.skipped,
     module: raw.module || '',
     precondition: raw.precondition || raw.precondition_raw || '',
-    steps: raw.steps || [],
-    expected: raw.expected || [],
-    steps_raw: raw.steps_raw || '',
-    expected_raw: raw.expected_raw || '',
+    steps: Array.isArray(raw.steps) ? raw.steps : [],
+    expected: Array.isArray(raw.expected) ? raw.expected : [],
+    steps_raw: raw.steps_raw || (typeof raw.steps === 'string' ? raw.steps : ''),
+    expected_raw: raw.expected_raw || (typeof raw.expected === 'string' ? raw.expected : ''),
     platform: raw.platform || '',
     device_platform: raw.device_platform || '',
     failure_category: raw.failure_category || '',
@@ -328,13 +350,17 @@ export function normalizeTask(raw, { source = '' } = {}) {
   const failed = Number(raw.failed || 0)
   const blocked = Number(raw.blocked || 0)
   const declined = Number(raw.declined || 0)
+  const untestable = Number(raw.untestable || 0)
   const status = normalizeTaskStatus(raw.status)
   const progress = raw.progress != null
     ? Number(raw.progress)
     : (total > 0 ? Math.round((completed / total) * 100) : (status === 'done' ? 100 : 0))
   const passRate = raw.pass_rate != null
     ? Number(raw.pass_rate)
-    : (completed > 0 ? Math.round((passed / completed) * 100) : 0)
+    : (() => {
+      const judged = Math.max(0, completed - untestable)
+      return judged > 0 ? Math.round((passed / judged) * 100) : 0
+    })()
   const cases = Array.isArray(raw.cases) ? raw.cases.map((c) => normalizeCase(c, taskId)) : []
   return {
     taskId,
@@ -354,6 +380,7 @@ export function normalizeTask(raw, { source = '' } = {}) {
     failed,
     blocked,
     declined,
+    untestable,
     progress,
     passRate,
     startedAt: raw.started_at || raw.startedAt || '',
@@ -429,6 +456,7 @@ export function groupTracesIntoTasks(traces = [], { appId = '' } = {}) {
     if (status === 'pass') task.passed += 1
     else if (status === 'blocked') task.blocked += 1
     else if (status === 'declined') task.declined += 1
+    else if (status === 'untestable') task.untestable = Number(task.untestable || 0) + 1
     else if (status !== 'running' && status !== 'pending') task.failed += 1
     if (!task.sn && t.sn) task.sn = t.sn
     if (t.created_at && (!task.started_at || t.created_at < task.started_at)) task.started_at = t.created_at
@@ -519,7 +547,7 @@ export function statusTagType(s, row = null) {
   if (['pass', 'done', 'success'].includes(vis)) return 'success'
   if (['fail', 'failed'].includes(vis)) return 'danger'
   if (vis === 'partial_fail') return 'warning'
-  if (['blocked', 'partial', 'cancelled'].includes(vis)) return 'warning'
+  if (['blocked', 'partial', 'cancelled', 'untestable'].includes(vis)) return 'warning'
   if (vis === 'running') return 'primary'
   if (vis === 'pending' || vis === 'queued' || vis === 'skipped') return 'info'
   return 'info'
@@ -542,6 +570,7 @@ export function statusLabel(s, row = null) {
     declined: '拒绝',
     cancelled: '已取消',
     skipped: '跳过',
+    untestable: '测不了',
     manual: '手工',
     feishu: '飞书',
     schedule: '定时',
@@ -559,6 +588,7 @@ export function runTypeLabel(t) {
     req_test: '功能测试',
     release_regression: '预发回归',
     release_smoke: '生产冒烟',
+    copilot: '对话',
   })[key] || statusLabel(key)
 }
 
@@ -570,6 +600,7 @@ export function sortCasesForRail(cases = []) {
     if (s === 'blocked') return 1
     if (s === 'pending') return 2
     if (['fail', 'declined', 'partial'].includes(s)) return 3
+    if (s === 'untestable') return 3.5
     if (s === 'pass') return 4
     if (s === 'cancelled' || s === 'skipped') return 5
     return 6

@@ -28,8 +28,8 @@ export const deleteRobotIntegration = (botId) =>
 export const getFeishuBotSettings = () =>
   request({ url: '/settings/feishu', method: 'get' })
 
-export const getTestingKnowledge = () =>
-  request({ url: '/settings/knowledge', method: 'get' })
+export const getTestingKnowledge = (appId = '') =>
+  request({ url: '/settings/knowledge', method: 'get', params: appId ? { app_id: appId } : {} })
 
 export const saveTestingKnowledge = (items) =>
   request({ url: '/settings/knowledge', method: 'put', data: { items } })
@@ -47,6 +47,12 @@ export const reviewKnowledgeItem = (id, data) =>
 
 export const autoReviewKnowledge = (appId = '') =>
   request({ url: '/settings/knowledge/auto-review', method: 'post', data: { app_id: appId || '' }, timeout: 180000 })
+
+export const getKnowledgeJobSettings = () =>
+  request({ url: '/settings/knowledge/jobs', method: 'get' })
+
+export const saveKnowledgeJobSettings = (data) =>
+  request({ url: '/settings/knowledge/jobs', method: 'put', data })
 
 export const analyzeFailureKnowledge = (data) =>
   request({ url: '/settings/knowledge/analyze-failure', method: 'post', data })

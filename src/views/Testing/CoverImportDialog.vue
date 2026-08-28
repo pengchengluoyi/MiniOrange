@@ -41,7 +41,7 @@ const title = computed(() => (isMind.value ? '导入测试脑图' : '导入用�
 const hint = computed(() => (
   isMind.value
     ? '支持 Markdown 大纲、缩进列表、OPML、JSON 树。导入后覆盖当前需求的脑图，并自动对齐应用图谱。'
-    : '支持 Excel（.xlsx / .xls）、CSV / TSV、Markdown 表、JSON，或「标题 + 步骤：/预期：」分段。可覆盖或追加到当前需求的用例草稿。首行建议含：编号、名称、模块、步骤、预期。'
+    : '支持 Excel（.xlsx / .xls，Numbers 请先导出）、CSV / TSV、Markdown 表、JSON。单元格内换行会保留。首行建议含：编号、名称、模块、前置条件、测试步骤、预期效果。'
 ))
 const mindTip = '第一层写端（App / Web / 运营平台…），中间层写模块和功能的短名，叶子写一句能判定的话。'
 const fileAccept = computed(() => (
@@ -71,15 +71,35 @@ const pickFile = () => fileRef.value?.click()
 
 const isExcelName = (name) => /\.(xlsx|xls)$/i.test(String(name || ''))
 
-/** Excel 首表转成 TSV，走现有用例表头解析。 */
-const excelToCsv = async (file) => {
+const normalizeExcelCell = (v) => {
+  if (v == null) return ''
+  return String(v)
+    .replace(/_x([0-9A-Fa-f]{4})_/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u2028/g, '\n')
+    .replace(/\u2029/g, '\n')
+}
+
+/** 用 JSON 表格提交，避免 sheet_to_csv 把单元格内换行弄丢。 */
+const excelToTableJson = async (file) => {
   const XLSX = await import('xlsx')
   const buf = await file.arrayBuffer()
-  const wb = XLSX.read(buf, { type: 'array', cellDates: true })
-  const sheetName = wb.SheetNames?.[0]
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true, cellText: false })
+  const names = wb.SheetNames || []
+  const sheetName = names.find((n) => /测试用例|用例/.test(n)) || names[0]
   if (!sheetName) throw new Error('Excel 里没有工作表')
   const sheet = wb.Sheets[sheetName]
-  return XLSX.utils.sheet_to_csv(sheet, { FS: '\t', blankrows: false })
+  const table = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    raw: true,
+    defval: '',
+    blankrows: false,
+  })
+    .map((row) => (Array.isArray(row) ? row.map(normalizeExcelCell) : []))
+    .filter((row) => row.some((c) => String(c).trim()))
+  if (!table.length) throw new Error('工作表是空的')
+  return JSON.stringify({ table })
 }
 
 const onFile = async (event) => {
@@ -89,8 +109,8 @@ const onFile = async (event) => {
   filename.value = file.name
   try {
     if (!isMind.value && isExcelName(file.name)) {
-      text.value = await excelToCsv(file)
-      ElMessage.success(`已读取 Excel「${file.name}」首个工作表`)
+      text.value = await excelToTableJson(file)
+      ElMessage.success(`已读取 Excel「${file.name}」，单元格内换行会保留`)
     } else {
       text.value = await file.text()
     }
@@ -120,9 +140,7 @@ const submit = async () => {
       requirement_id: pickedReqId.value,
       kind: isMind.value ? 'mindmap' : 'cases',
       text: text.value,
-      filename: isExcelName(filename.value)
-        ? filename.value.replace(/\.(xlsx|xls)$/i, '.tsv')
-        : filename.value,
+      filename: filename.value,
       replace: isMind.value ? true : replace.value,
     })
     const data = res?.data || {}

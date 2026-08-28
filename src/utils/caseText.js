@@ -11,13 +11,15 @@ function stripNumberPrefix(s) {
 /** 执行结果行与缓存用例行字段名不一致时统一结构 */
 export function normalizeCaseRow(row) {
   const r = row || {}
-  const stepList = Array.isArray(r.steps) ? r.steps : (Array.isArray(r.step_lines) ? r.step_lines : [])
-  const expectedList = Array.isArray(r.expected) ? r.expected : (Array.isArray(r.expected_lines) ? r.expected_lines : [])
   const stepsRaw = r.steps_raw
     || (typeof r.steps === 'string' ? r.steps : '')
     || (typeof r.step === 'string' ? r.step : '')
   const expectedRaw = r.expected_raw
     || (typeof r.expected === 'string' ? r.expected : '')
+  const stepFromList = Array.isArray(r.steps) ? r.steps : (Array.isArray(r.step_lines) ? r.step_lines : [])
+  const expectedFromList = Array.isArray(r.expected) ? r.expected : (Array.isArray(r.expected_lines) ? r.expected_lines : [])
+  const stepList = stepFromList.length ? stepFromList : splitNumberedLines(stepsRaw)
+  const expectedList = expectedFromList.length ? expectedFromList : splitNumberedLines(expectedRaw)
   return {
     ...r,
     steps: stepList,
@@ -25,8 +27,8 @@ export function normalizeCaseRow(row) {
     step_nums: r.step_nums || [],
     expected_nums: r.expected_nums || [],
     expected_by_step: r.expected_by_step || {},
-    steps_raw: stepsRaw,
-    expected_raw: expectedRaw,
+    steps_raw: stepsRaw || (stepList.length ? stepList.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
+    expected_raw: expectedRaw || (expectedList.length ? expectedList.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
     precondition: r.precondition || r.precondition_raw || '',
   }
 }

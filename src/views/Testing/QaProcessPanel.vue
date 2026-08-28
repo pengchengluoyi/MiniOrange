@@ -8,6 +8,8 @@ import { assistQaProcess, cancelQaProcessJob, publishQaMindmap, reviewAtlasPatch
 import { openExternalUrl } from '@/utils/openExternal'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
+import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
+import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import { suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
@@ -1969,6 +1971,7 @@ watch(() => props.projectId, loadEnvSnap)
               <p v-if="ticking && !draftCaseRows.length" class="muted">正在写用例…</p>
               <el-table
                 v-else
+                class="draft-case-table"
                 :data="draftCaseRows"
                 border
                 stripe
@@ -1976,6 +1979,24 @@ watch(() => props.projectId, loadEnvSnap)
                 :row-class-name="({ row }) => (isStubCase(row) ? 'stub-case-row' : '')"
                 empty-text="还没有用例。可导入或点右上角重试"
               >
+                <el-table-column type="expand">
+                  <template #default="{ row }">
+                    <div class="draft-case-expand">
+                      <section>
+                        <h5>前置条件</h5>
+                        <CaseMultilineCell :row="row" raw-key="precondition" :clamp="0" />
+                      </section>
+                      <section>
+                        <h5>测试步骤</h5>
+                        <CaseAlignedFieldCell :row="row" field="step" :clamp="0" />
+                      </section>
+                      <section>
+                        <h5>预期效果</h5>
+                        <CaseAlignedFieldCell :row="row" field="expected" :clamp="0" />
+                      </section>
+                    </div>
+                  </template>
+                </el-table-column>
                 <el-table-column label="编号" width="120" prop="case_id" />
                 <el-table-column label="来源" width="88">
                   <template #default="{ row }">
@@ -1992,14 +2013,20 @@ watch(() => props.projectId, loadEnvSnap)
                 <el-table-column label="模块" min-width="160" show-overflow-tooltip>
                   <template #default="{ row }">{{ row.module || '—' }}</template>
                 </el-table-column>
-                <el-table-column label="前置" min-width="140" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.precondition || '—' }}</template>
+                <el-table-column label="前置" min-width="180">
+                  <template #default="{ row }">
+                    <CaseMultilineCell :row="row" raw-key="precondition" :clamp="0" />
+                  </template>
                 </el-table-column>
-                <el-table-column label="步骤" min-width="200" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.steps || '—' }}</template>
+                <el-table-column label="步骤" min-width="220">
+                  <template #default="{ row }">
+                    <CaseAlignedFieldCell :row="row" field="step" :clamp="0" />
+                  </template>
                 </el-table-column>
-                <el-table-column label="预期" min-width="160" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.expected || '—' }}</template>
+                <el-table-column label="预期" min-width="220">
+                  <template #default="{ row }">
+                    <CaseAlignedFieldCell :row="row" field="expected" :clamp="0" />
+                  </template>
                 </el-table-column>
                 <el-table-column label="" width="72" align="right" fixed="right">
                   <template #default="{ row }">
@@ -2592,6 +2619,28 @@ watch(() => props.projectId, loadEnvSnap)
 .cover-block h4 {
   margin: 0;
   font-size: 14px;
+}
+.cover-block :deep(.draft-case-table td.el-table__cell) {
+  vertical-align: top;
+  height: auto;
+}
+.cover-block :deep(.draft-case-table .cell) {
+  overflow: visible;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+}
+.draft-case-expand {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  padding: 8px 12px 12px;
+}
+.draft-case-expand h5 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #6b7280;
 }
 .cover-head {
   display: flex;

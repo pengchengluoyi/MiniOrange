@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Hide, View } from '@element-plus/icons-vue'
 import { getProjectAccounts, pickProjectAccounts, saveProjectAccounts } from '@/api/workReport'
 import '@/views/Settings/settings-ui.css'
 
@@ -16,12 +17,6 @@ const props = defineProps({
 const TABS = [
   { id: 'accounts', label: '测试账号', desc: '号池 · 标签 · 环境' },
   { id: 'trial', label: '效果测试', desc: '用场景句子试筛号' },
-]
-const KINDS = [
-  { id: 'phone', label: '手机号' },
-  { id: 'email', label: '邮箱' },
-  { id: 'username', label: '用户名' },
-  { id: 'mixed', label: '混合' },
 ]
 
 const tab = ref(props.section === 'trial' ? 'trial' : 'accounts')
@@ -48,12 +43,11 @@ const ranked = ref([])
 const dialogOpen = ref(false)
 const editingId = ref('')
 const form = ref(emptyForm())
+const pwdOpen = ref(new Set())
 
 function emptyForm(env = '') {
   return {
-    name: '',
     env: env || (environments.value[0]?.key || 'test'),
-    kind: 'mixed',
     phone: '',
     email: '',
     username: '',
@@ -65,8 +59,21 @@ function emptyForm(env = '') {
 }
 
 const envLabel = (key) => environments.value.find((e) => e.key === key)?.label || key || '未分环境'
-const kindLabel = (id) => KINDS.find((k) => k.id === id)?.label || id
-const identity = (row) => [row.phone, row.email, row.username].filter(Boolean).join(' / ') || '—'
+const cell = (v) => String(v || '').trim() || '—'
+const rowPassword = (row) => String(row?.password || '').trim()
+const hasPassword = (row) => Boolean(rowPassword(row) || row?.has_password)
+const pwdShown = (id) => pwdOpen.value.has(id)
+const togglePwd = (id) => {
+  const next = new Set(pwdOpen.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  pwdOpen.value = next
+}
+const maskedPwd = (row) => {
+  const pwd = rowPassword(row)
+  if (pwd) return '•'.repeat(Math.max(6, pwd.length))
+  return row?.password_masked || '••••••••'
+}
 const visibleRows = computed(() => {
   if (!envFilter.value) return accounts.value
   return accounts.value.filter((r) => r.env === envFilter.value)
@@ -110,13 +117,11 @@ const openCreate = () => {
 const openEdit = (row) => {
   editingId.value = row.id
   form.value = {
-    name: row.name || '',
     env: row.env || 'test',
-    kind: row.kind || 'mixed',
     phone: row.phone || '',
     email: row.email || '',
     username: row.username || '',
-    password: '',
+    password: row.password || '',
     tags: [...(row.tags || [])],
     note: row.note || '',
     locked: Boolean(row.locked),
@@ -125,10 +130,6 @@ const openEdit = (row) => {
 }
 
 const saveForm = async () => {
-  if (!form.value.name.trim()) {
-    ElMessage.warning('先写账号名称')
-    return
-  }
   if (!form.value.phone && !form.value.email && !form.value.username) {
     ElMessage.warning('至少填手机号、邮箱或用户名之一')
     return
@@ -136,7 +137,6 @@ const saveForm = async () => {
   const row = {
     id: editingId.value || undefined,
     ...form.value,
-    name: form.value.name.trim(),
     tags: (form.value.tags || []).map((t) => String(t).trim()).filter(Boolean),
   }
   const next = editingId.value
@@ -148,7 +148,11 @@ const saveForm = async () => {
 
 const removeRow = async (row) => {
   try {
-    await ElMessageBox.confirm(`删除「${row.name}」？`, '删除测试账号', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `删除「${envLabel(row.env)} ${row.phone || row.username || row.email || '未填'}」？`,
+      '删除测试账号',
+      { type: 'warning' },
+    )
   } catch {
     return
   }
@@ -219,20 +223,37 @@ onMounted(load)
 
       <section class="settings-table-card is-fill">
         <el-table :data="visibleRows" size="small" border stripe height="100%" row-key="id" empty-text="这个环境下还没有测试账号">
-          <el-table-column label="名称" min-width="140" show-overflow-tooltip>
+          <el-table-column label="环境" width="100">
+            <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          </el-table-column>
+          <el-table-column label="用户名" min-width="120" show-overflow-tooltip>
             <template #default="{ row }">
-              <strong>{{ row.name }}</strong>
+              {{ cell(row.username) }}
               <em v-if="row.locked" class="lock-tag">占用</em>
             </template>
           </el-table-column>
-          <el-table-column label="环境" width="88">
-            <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          <el-table-column label="手机号" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ cell(row.phone) }}</template>
           </el-table-column>
-          <el-table-column label="类型" width="80">
-            <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
+          <el-table-column label="邮箱" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ cell(row.email) }}</template>
           </el-table-column>
-          <el-table-column label="手机号 / 邮箱 / 用户名" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }">{{ identity(row) }}</template>
+          <el-table-column label="密码" min-width="150">
+            <template #default="{ row }">
+              <span v-if="!hasPassword(row)" class="muted">—</span>
+              <span v-else class="pwd-cell">
+                <span class="pwd-text">{{ pwdShown(row.id) ? rowPassword(row) || maskedPwd(row) : maskedPwd(row) }}</span>
+                <button
+                  v-if="rowPassword(row)"
+                  type="button"
+                  class="pwd-eye"
+                  :title="pwdShown(row.id) ? '隐藏密码' : '显示密码'"
+                  @click.stop="togglePwd(row.id)"
+                >
+                  <el-icon><Hide v-if="pwdShown(row.id)" /><View v-else /></el-icon>
+                </button>
+              </span>
+            </template>
           </el-table-column>
           <el-table-column label="标签" min-width="180">
             <template #default="{ row }">
@@ -268,8 +289,8 @@ onMounted(load)
 
       <section v-if="chosen" class="settings-card chosen-card">
         <div class="settings-kicker">首选</div>
-        <h3>{{ chosen.name }}</h3>
-        <p>{{ envLabel(chosen.env) }} · {{ kindLabel(chosen.kind) }} · {{ identity(chosen) }}</p>
+        <h3>{{ chosen.phone || chosen.username || chosen.email || '未填号码' }}</h3>
+        <p>{{ envLabel(chosen.env) }}</p>
         <p class="hit">{{ chosen.reason || '—' }} · 分 {{ chosen.score ?? 0 }}</p>
         <div class="tag-row">
           <el-tag v-for="t in chosen.tags || []" :key="t" size="small" class="tag-chip">{{ t }}</el-tag>
@@ -281,18 +302,21 @@ onMounted(load)
           <el-table-column label="#" width="52">
             <template #default="{ $index }">{{ $index + 1 }}</template>
           </el-table-column>
-          <el-table-column label="名称" min-width="140" show-overflow-tooltip>
+          <el-table-column label="环境" width="88">
+            <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          </el-table-column>
+          <el-table-column label="用户名" min-width="120" show-overflow-tooltip>
             <template #default="{ row, $index }">
-              <strong>{{ row.name }}</strong>
+              {{ cell(row.username) }}
               <em v-if="$index === 0" class="lock-tag is-pick">首选</em>
               <em v-if="row.locked" class="lock-tag">占用</em>
             </template>
           </el-table-column>
-          <el-table-column label="环境" width="88">
-            <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          <el-table-column label="手机号" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ cell(row.phone) }}</template>
           </el-table-column>
-          <el-table-column label="账号" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">{{ identity(row) }}</template>
+          <el-table-column label="邮箱" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ cell(row.email) }}</template>
           </el-table-column>
           <el-table-column label="分" width="64">
             <template #default="{ row }">{{ row.score ?? 0 }}</template>
@@ -308,18 +332,13 @@ onMounted(load)
 
     <el-dialog v-model="dialogOpen" :title="editingId ? '编辑测试账号' : '新增测试账号'" width="560px" class="mo-fit-dialog" align-center append-to-body>
       <el-form label-width="92px">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="例如：已领新人礼-安卓" />
-        </el-form-item>
         <el-form-item label="环境">
           <el-select v-model="form.env" style="width: 100%">
             <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
           </el-select>
         </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="form.kind" style="width: 100%">
-            <el-option v-for="k in KINDS" :key="k.id" :label="k.label" :value="k.id" />
-          </el-select>
+        <el-form-item label="用户名">
+          <el-input v-model="form.username" placeholder="可空" />
         </el-form-item>
         <el-form-item label="手机号">
           <el-input v-model="form.phone" placeholder="可空" />
@@ -327,11 +346,8 @@ onMounted(load)
         <el-form-item label="邮箱">
           <el-input v-model="form.email" placeholder="可空" />
         </el-form-item>
-        <el-form-item label="用户名">
-          <el-input v-model="form.username" placeholder="可空" />
-        </el-form-item>
         <el-form-item label="密码">
-          <el-input v-model="form.password" type="password" show-password placeholder="留空则保持原密码" />
+          <el-input v-model="form.password" type="password" show-password :placeholder="editingId ? '留空则保持原密码' : '可空'" />
         </el-form-item>
         <el-form-item label="标签">
           <el-select
@@ -340,7 +356,7 @@ onMounted(load)
             filterable
             allow-create
             default-first-option
-            placeholder="例如：2024注册、已领取新人礼、造物秀白名单"
+            placeholder="尽量 5 字内，如：已注册、已登录、未领礼"
             style="width: 100%"
           />
         </el-form-item>
@@ -406,6 +422,38 @@ onMounted(load)
 .lock-tag.is-pick {
   background: #e0e7ff;
   color: #3730a3;
+}
+.pwd-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.pwd-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+.pwd-eye {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+}
+.pwd-eye:hover {
+  background: #eef2ff;
+  color: #4f46e5;
 }
 .muted { color: #9ca3af; }
 .hit { color: #4f46e5; font-weight: 650; }

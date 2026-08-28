@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { listAIProviders, saveAIProvider, deleteAIProvider, saveAIUsage, getMailSettings, saveMailSettings, testMailSettings } from '@/api/settings'
+import { listAIProviders, saveAIProvider, deleteAIProvider, saveAIUsage, getMailSettings, saveMailSettings, testMailSettings, getKnowledgeJobSettings, saveKnowledgeJobSettings } from '@/api/settings'
 import './settings-ui.css'
 
 const KEY_TABS = [
@@ -36,6 +36,11 @@ const usage = reactive({
   case_execution_enabled: false,
   case_execution_provider_id: '',
 })
+const jobSettings = reactive({
+  capture_enabled: true,
+  review_enabled: true,
+})
+const savingJobs = ref(false)
 
 const configuredCount = computed(() => providers.value.filter((p) => p.configured).length)
 
@@ -158,6 +163,13 @@ const load = async () => {
         password_masked: mail?.data?.password_masked || '',
       })
     } catch (_) { /* 发信配置读失败不挡模型列表 */ }
+    try {
+      const jobs = await getKnowledgeJobSettings()
+      Object.assign(jobSettings, {
+        capture_enabled: jobs?.data?.capture_enabled !== false,
+        review_enabled: jobs?.data?.review_enabled !== false,
+      })
+    } catch (_) { /* 知识任务开关读失败不挡模型列表 */ }
   } finally {
     loading.value = false
   }
@@ -221,6 +233,22 @@ const saveUsage = async () => {
     await load()
   } finally {
     savingUsage.value = false
+  }
+}
+
+const saveJobSettings = async () => {
+  savingJobs.value = true
+  try {
+    await saveKnowledgeJobSettings({
+      capture_enabled: jobSettings.capture_enabled,
+      review_enabled: jobSettings.review_enabled,
+    })
+    ElMessage.success('已生效')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+    await load()
+  } finally {
+    savingJobs.value = false
   }
 }
 
@@ -406,6 +434,32 @@ watch(() => route.query.tab, syncTabFromRoute)
           :loading="savingUsage"
           @change="saveUsage"
         />
+      </section>
+
+      <section class="settings-card settings-job-card">
+        <span class="settings-kicker">用例执行后</span>
+        <div class="settings-job-row">
+          <div class="settings-job-copy">
+            <h3>沉淀知识</h3>
+            <p>每条用例结束、整次任务结束时，根据执行结果生成待审核知识草稿。关闭后执行中不再调用。</p>
+          </div>
+          <el-switch
+            v-model="jobSettings.capture_enabled"
+            :loading="savingJobs"
+            @change="saveJobSettings"
+          />
+        </div>
+        <div class="settings-job-row">
+          <div class="settings-job-copy">
+            <h3>知识机审</h3>
+            <p>草稿写入后自动机审。关闭后执行中不机审，仍可在知识库点「机审待审」。</p>
+          </div>
+          <el-switch
+            v-model="jobSettings.review_enabled"
+            :loading="savingJobs"
+            @change="saveJobSettings"
+          />
+        </div>
       </section>
 
       <p class="keys-tip">

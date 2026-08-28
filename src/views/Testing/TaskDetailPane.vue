@@ -490,7 +490,6 @@ const retryOne = async (c) => {
       platform: taskPlatformOfSn(task.value, c.sn) || 'android',
       case_ids: [c.case_id],
       async_exec: true,
-      execution_mode: 'auto',
       run_type: 'manual',
     })
     const nid = r?.data?.run_id || r?.data?.task_id

@@ -1,10 +1,12 @@
 import { sendWsRequest } from '@/api/mWebSocket'
 
-/** 对话规划：自然语言 → steps + navigate */
-export function copilotChat({ text, sn, context, planningMode = 'local', providerId = '' } = {}) {
+/** 对话规划：自然语言 → Agent 任务（与 /case-runner/run 同一引擎） */
+export function copilotChat({ text, sn, context, appId = '', planningMode = 'local', providerId = '' } = {}) {
+  const ctx = { ...(context || {}) }
+  if (appId && !ctx.app_id) ctx.app_id = appId
   return sendWsRequest(
     'copilot/chat',
-    { text, sn, context, planning_mode: planningMode, provider_id: providerId },
+    { text, sn, context: ctx, app_id: appId || ctx.app_id, planning_mode: planningMode, provider_id: providerId },
     { timeout: 60000 },
   )
 }

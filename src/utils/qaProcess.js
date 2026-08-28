@@ -1,5 +1,6 @@
 /** 需求测试 / 版本测试流程：阶段、验收标准抽取、用例覆盖。阶段顺序读应用 workflow。 */
 
+import { splitNumberedLines } from './caseText'
 import {
   DEFAULT_WORKFLOW,
   DISPATCH_RUNS,
@@ -380,8 +381,8 @@ export function generatedCasesFromProcess(requirements = []) {
         source: 'generated',
         requirement_id: req.id || raw.requirement_id || '',
         requirement_title: title,
-        steps: Array.isArray(raw.steps) ? raw.steps : [],
-        expected: Array.isArray(raw.expected) ? raw.expected : [],
+        steps: Array.isArray(raw.steps) ? raw.steps : splitNumberedLines(stepsRaw),
+        expected: Array.isArray(raw.expected) ? raw.expected : splitNumberedLines(expectedRaw),
         steps_raw: stepsRaw,
         expected_raw: expectedRaw,
         precondition: raw.precondition || raw.pre || '',

@@ -3,15 +3,20 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElIcon, ElButton, ElInput, ElMessage } from 'element-plus'
 import { Promotion, MagicStick, User } from '@element-plus/icons-vue'
-import { copilotChat, copilotExecute } from '@/api/copilot'
-import { initWebSocket, whenWebSocketReady } from '@/api/mWebSocket'
-import { wsGetDeviceList } from '@/api/wsAppGraph'
+import { copilotChat } from '@/api/copilot'
 import { getDeviceList } from '@/api/device'
+import { getProjects } from '@/api/workReport'
+import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
+import { cancelTestingTask, listCaseRunnerDevices } from '@/api/caseRunner'
 import { listAIProviders } from '@/api/settings'
+import { flattenProjectApps, belongsToAgentTask } from '@/utils/copilotAgent'
+import { devicePlatformKind } from '@/utils/testingTasks'
+import { filterExecutableDevices, formatDeviceMeta, devicePrimaryName } from '@/utils/testingDevices'
+import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 import { copilotCommands } from '@/logic/CopilotCommands'
 import { createAgentSession, pullAgentSessions, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
 import { getBaseUrl } from '@/utils/config'
-import { selectableExecutionDevices, pickDefaultDeviceSn, applyOnlineStatusGrace, dedupeDevicesForUi } from '@/utils/devices'
+import { pickDefaultDeviceSn } from '@/utils/devices'
 import WorkShell from '@/layouts/WorkShell.vue'
 import PayloadView from '@/components/PayloadView.vue'
 import { rememberAgentPath } from '@/utils/workMode'
@@ -32,13 +37,14 @@ const isLoading = ref(false)
 const busyPhase = ref('')
 const chatRef = ref(null)
 const selectedSn = ref('')
+const selectedAppId = ref('')
 const devices = ref([])
+const apps = ref([])
 const devicesLoading = ref(false)
 const stepLog = ref([])
 const currentSessionId = ref('')
 const agentSessions = ref([])
-const aiProviders = ref([])
-const planningEngine = ref('local')
+const liveTaskId = ref('')
 let devicePollTimer = null
 
 const showSlashMenu = ref(false)
@@ -49,6 +55,8 @@ const deviceMenuOpen = ref(false)
 const showScrollToBottom = ref(false)
 const sendInFlight = ref(false)
 const modelResponseRun = ref(null)
+const aiProviders = ref([])
+const planningEngine = ref('local')
 
 const currentSession = computed(() => ({
   id: currentSessionId.value,
@@ -61,6 +69,7 @@ const currentSession = computed(() => ({
     run: run || null,
   })),
   deviceSn: selectedSn.value,
+  appId: selectedAppId.value,
   planningEngine: planningEngine.value,
 }))
 const hasUserMessages = computed(() => messages.value.some((item) => item.role === 'user' && String(item.content || '').trim()))
@@ -84,6 +93,23 @@ const openHistorySearch = async () => {
 }
 const isDraftAgent = computed(() => !hasUserMessages.value)
 const isBusy = computed(() => !!busyPhase.value || sendInFlight.value)
+const selectedAppLabel = computed(() => {
+  const app = apps.value.find((item) => item.id === selectedAppId.value)
+  return app ? (app.projectName ? `${app.name} · ${app.projectName}` : app.name) : '选择应用'
+})
+const selectedDeviceLabel = computed(() => {
+  const device = devices.value.find((item) => item.sn === selectedSn.value)
+  if (!device) return '选择设备'
+  const name = devicePrimaryName(device)
+  const shortSn = device.sn?.length > 8 ? `${device.sn.slice(0, 8)}…` : device.sn
+  return `${name} · ${shortSn}`
+})
+
+const selectedPlanning = computed(() => {
+  if (planningEngine.value === 'local') return { planningMode: 'local', providerId: '' }
+  const providerId = planningEngine.value.replace(/^provider:/, '')
+  return { planningMode: 'ai', providerId }
+})
 const configuredPlanningOptions = computed(() =>
   aiProviders.value
     .filter((provider) => provider.configured && provider.enabled !== false)
@@ -91,6 +117,7 @@ const configuredPlanningOptions = computed(() =>
       value: `provider:${provider.id}`,
       label: provider.name || provider.id,
       providerId: provider.id,
+      model: provider.model || '',
       disabled: false,
     })),
 )
@@ -99,21 +126,9 @@ const planningOptions = computed(() => [
   ...configuredPlanningOptions.value,
   { value: '__configure_ai', label: '配置大模型 Key...', providerId: '', disabled: false },
 ])
-const selectedPlanning = computed(() => {
-  if (planningEngine.value === 'local') return { planningMode: 'local', providerId: '' }
-  const providerId = planningEngine.value.replace(/^provider:/, '')
-  return { planningMode: 'ai', providerId }
-})
 const selectedPlanningLabel = computed(() =>
   planningOptions.value.find((option) => option.value === planningEngine.value)?.label || 'Local Plan',
 )
-const selectedDeviceLabel = computed(() => {
-  const device = devices.value.find((item) => item.sn === selectedSn.value)
-  if (!device) return '选择设备'
-  const model = device.model || device.type || 'device'
-  const shortSn = device.sn?.length > 8 ? `${device.sn.slice(0, 8)}…` : device.sn
-  return `${model} · ${shortSn}`
-})
 
 const formatDeviceChip = (device) => {
   if (!device?.sn) return ''
@@ -122,22 +137,24 @@ const formatDeviceChip = (device) => {
   return `${model} · ${shortSn}`
 }
 
-const formatPlannerChip = (run) => {
-  const planner = run?.planner || {}
-  if (planner.mode === 'local' || (!planner.mode && !run?.aiDebug)) return 'Local Plan'
-  const provider = planner.provider_id || planner.providerId || run?.aiDebug?.provider || 'AI'
-  const model = run?.aiDebug?.model || planner.model || ''
-  return model ? `${provider} · ${model}` : String(provider)
-}
-
 const busyStatusText = computed(() => {
-  if (busyPhase.value === 'executing') return '执行中…'
-  if (busyPhase.value === 'planning' || isLoading.value) return '规划中…'
+  if (busyPhase.value === 'executing') return 'Agent 执行中…'
+  if (busyPhase.value === 'planning' || isLoading.value) return '正在下发…'
   return '处理中…'
 })
 
-const openPlannerSettings = () => {
-  router.push({ name: 'SettingsKeys', query: { tab: 'model-keys' } })
+const appMenuOpen = ref(false)
+const toggleAppMenu = () => {
+  appMenuOpen.value = !appMenuOpen.value
+  if (appMenuOpen.value) {
+    deviceMenuOpen.value = false
+    modelMenuOpen.value = false
+  }
+}
+const selectApp = (app) => {
+  selectedAppId.value = app?.id || ''
+  appMenuOpen.value = false
+  persistSession()
 }
 
 const handlePlanningChange = (value) => {
@@ -157,6 +174,14 @@ const selectPlanningOption = (option) => {
   handlePlanningChange(option.value)
 }
 
+const toggleModelMenu = () => {
+  modelMenuOpen.value = !modelMenuOpen.value
+  if (modelMenuOpen.value) {
+    appMenuOpen.value = false
+    deviceMenuOpen.value = false
+  }
+}
+
 const selectDevice = (device) => {
   selectedSn.value = device?.sn || ''
   deviceMenuOpen.value = false
@@ -165,13 +190,18 @@ const selectDevice = (device) => {
 
 const toggleDeviceMenu = () => {
   deviceMenuOpen.value = !deviceMenuOpen.value
-  if (deviceMenuOpen.value) loadDevices()
+  if (deviceMenuOpen.value) {
+    appMenuOpen.value = false
+    modelMenuOpen.value = false
+    loadDevices()
+  }
 }
 
 const closeFloatingMenus = (event) => {
   const target = event.target
-  if (!target?.closest?.('.model-picker')) modelMenuOpen.value = false
+  if (!target?.closest?.('.app-picker')) appMenuOpen.value = false
   if (!target?.closest?.('.device-picker')) deviceMenuOpen.value = false
+  if (!target?.closest?.('.llm-picker')) modelMenuOpen.value = false
 }
 
 const filteredSlash = computed(() => {
@@ -234,7 +264,10 @@ const startNewAgent = () => {
 
 const restoreMessages = (session) => {
   messages.value = Array.isArray(session.messages)
-    ? session.messages.map((item, index) => ({ id: `${session.id}-${index}`, ...item }))
+    ? session.messages.map((item, index) => {
+      const run = item.run ? { ...item.run, live: false } : item.run
+      return { id: `${session.id}-${index}`, ...item, run }
+    })
     : []
 }
 
@@ -242,6 +275,7 @@ const openAgentSession = (session) => {
   currentSessionId.value = session.id
   restoreMessages(session)
   selectedSn.value = session.deviceSn || selectedSn.value
+  selectedAppId.value = session.appId || selectedAppId.value
   planningEngine.value = session.planningEngine || planningEngine.value
   stepLog.value = []
   router.replace({ name: 'Dialogue', query: { sessionId: session.id } })
@@ -266,6 +300,7 @@ const restoreSession = () => {
     currentSessionId.value = matched.id
     restoreMessages(matched)
     selectedSn.value = matched.deviceSn || selectedSn.value
+    selectedAppId.value = matched.appId || selectedAppId.value
     planningEngine.value = matched.planningEngine || planningEngine.value
     scrollBottom()
     refreshAgentSessions()
@@ -276,6 +311,7 @@ const restoreSession = () => {
     currentSessionId.value = latest.id
     restoreMessages(latest)
     selectedSn.value = latest.deviceSn || selectedSn.value
+    selectedAppId.value = latest.appId || selectedAppId.value
     planningEngine.value = latest.planningEngine || planningEngine.value
     router.replace({ name: 'Dialogue', query: { sessionId: latest.id } })
     scrollBottom()
@@ -293,23 +329,12 @@ const restoreSession = () => {
 const loadDevices = async () => {
   devicesLoading.value = true
   try {
-    let list = []
-    try {
-      const res = await wsGetDeviceList()
-      list = normalizeDeviceList(res)
-    } catch (wsErr) {
-      console.warn('WS device list failed, try HTTP', wsErr)
-      initWebSocket()
-      try {
-        await whenWebSocketReady(2500)
-        const res = await wsGetDeviceList()
-        list = normalizeDeviceList(res)
-      } catch {
-        const httpRes = await getDeviceList()
-        list = normalizeDeviceList(httpRes)
-      }
-    }
-    devices.value = selectableExecutionDevices(applyOnlineStatusGrace(dedupeDevicesForUi(list), devices.value))
+    const res = await listCaseRunnerDevices(true)
+    const items = Array.isArray(res?.data?.items) ? res.data.items : normalizeDeviceList(res)
+    devices.value = filterExecutableDevices(items).map((d) => ({
+      ...d,
+      type: d.device_type || d.type || '',
+    }))
     if (selectedSn.value && !devices.value.some((d) => d.sn === selectedSn.value)) {
       selectedSn.value = pickDefaultDeviceSn(devices.value)
       persistSession()
@@ -318,12 +343,18 @@ const loadDevices = async () => {
       selectedSn.value = pickDefaultDeviceSn(devices.value)
       persistSession()
     }
-    if (!devices.value.length) {
-      ElMessage.info('暂无在线设备，请 USB 连接手机并在「运行状态」中确认在线')
-    }
   } catch (e) {
     console.warn('load devices', e)
-    ElMessage.warning('获取设备列表失败，请确认后端已启动且 WebSocket 已连接')
+    try {
+      const httpRes = await getDeviceList()
+      const list = normalizeDeviceList(httpRes)
+      devices.value = filterExecutableDevices(list).map((d) => ({
+        ...d,
+        type: d.device_type || d.type || '',
+      }))
+    } catch (fallbackErr) {
+      console.warn('load devices fallback failed', fallbackErr)
+    }
   } finally {
     devicesLoading.value = false
   }
@@ -336,11 +367,26 @@ const loadAIProviders = async () => {
     aiProviders.value = data.providers || []
     const defaultProvider = data.default_provider
     const defaultRow = aiProviders.value.find((item) => item.id === defaultProvider && item.configured && item.enabled !== false)
-    if (defaultRow && !currentSessionId.value && !hasUserMessages.value && planningEngine.value === 'local') {
-      planningEngine.value = `provider:${defaultRow.id}`
+    const caseRow = aiProviders.value.find((item) => item.configured && item.enabled !== false && item.case_execution_use)
+    const pick = defaultRow || caseRow
+    if (pick && !currentSessionId.value && !hasUserMessages.value && planningEngine.value === 'local') {
+      planningEngine.value = `provider:${pick.id}`
     }
   } catch (e) {
     console.warn('load AI providers failed', e)
+  }
+}
+
+const loadApps = async () => {
+  try {
+    const res = await getProjects()
+    const projects = Array.isArray(res) ? res : (res?.data || [])
+    apps.value = flattenProjectApps(projects)
+    const fromRoute = String(route.params.appId || '').trim()
+    if (!selectedAppId.value && fromRoute) selectedAppId.value = fromRoute
+    if (!selectedAppId.value && apps.value.length) selectedAppId.value = apps.value[0].id
+  } catch (e) {
+    console.warn('load apps failed', e)
   }
 }
 
@@ -424,15 +470,18 @@ const pushRunRecord = ({ request, plan, execution }) => {
   messages.value.push({
     id: Date.now() + Math.random(),
     role: 'run',
-    content: plan?.reply || '已生成执行计划',
+    content: plan?.reply || '已下发 Agent 任务',
     run: {
       request,
       reply: plan?.reply || '',
-      planner: plan?.planner || null,
+      engine: plan?.engine || (execution?.runId ? 'agent' : 'navigate'),
+      planner: { mode: plan?.engine || 'agent' },
       aiDebug: plan?.ai_debug || null,
       aiErrorInfo: plan?.ai_error_info || null,
       steps: plan?.steps || [],
       execution: execution || null,
+      taskId: plan?.task_id || plan?.run_id || '',
+      runId: execution?.runId || plan?.run_id || '',
       device: device
         ? { sn: device.sn, type: device.type, model: device.model }
         : { sn: selectedSn.value, type: '', model: '' },
@@ -474,29 +523,58 @@ const runPlan = async (plan) => {
     router.push({ name: plan.navigate.name })
     return { ok: true, type: 'navigate', results: [], msg: `已跳转到 ${plan.navigate.name}` }
   }
-  const steps = plan.steps || []
-  if (!steps.length) return { ok: true, results: [], msg: '无可执行步骤' }
-
-  if (!selectedSn.value && steps.some((s) => ['click', 'swipe', 'open_app', 'close_app', 'system_key'].includes(s.kind))) {
-    ElMessage.warning('请先选择在线设备')
-    return { ok: false, results: [], msg: '请先选择在线设备' }
+  const taskId = plan.run_id || plan.task_id
+  if (plan.engine !== 'agent' || !taskId) {
+    return { ok: false, results: [], msg: plan.reply || '未下发 Agent 任务' }
   }
+  liveTaskId.value = taskId
+  return new Promise((resolve) => {
+    let unitId = ''
+    const finish = (payload) => {
+      cleanup()
+      liveTaskId.value = ''
+      resolve({ ...payload, runId: payload.runId || unitId || taskId })
+    }
+    const onMsg = (msg) => {
+      const type = msg?.type || msg?.action
+      const d = msg?.data || {}
+      if (type === 'agent_step' && belongsToAgentTask(d, taskId)) {
+        if (d.run_id) unitId = d.run_id
+        if (d.phase === 'done' || d.overall) {
+          const ok = d.overall === 'pass'
+          finish({ ok, results: [], msg: d.summary || d.overall || 'Agent 已结束', raw: d, runId: d.run_id || unitId })
+        }
+        return
+      }
+      if (type === 'testing_task' && belongsToAgentTask(d, taskId) && ['task_finished', 'cancelled'].includes(d.event)) {
+        const ok = d.event === 'task_finished' && Number(d.failed || 0) === 0
+        finish({
+          ok,
+          results: [],
+          msg: ok ? 'Agent 执行完成' : 'Agent 已结束',
+          raw: d,
+          runId: d.case?.report_run_id || unitId,
+        })
+      }
+    }
+    const cleanup = () => {
+      removeMessageListener(onMsg)
+      if (timer) clearTimeout(timer)
+    }
+    addMessageListener(onMsg)
+    const timer = setTimeout(() => {
+      finish({ ok: false, results: [], msg: '等待超时', runId: unitId || taskId })
+    }, 10 * 60 * 1000)
+  })
+}
 
+const stopLiveRun = async () => {
+  const id = liveTaskId.value
+  if (!id) return
   try {
-    const execRes = await copilotExecute({
-      steps,
-      sn: selectedSn.value,
-      platform: 'android',
-      runId: `copilot-${Date.now()}`,
-      captureScreenshots: true,
-    })
-    const results = execRes?.data?.results || []
-    stepLog.value = results
-    if (!execRes?.data?.ok) ElMessage.warning('部分步骤未成功')
-    return { ok: !!execRes?.data?.ok, results, raw: execRes?.data || {}, msg: execRes?.data?.ok ? '执行完成' : '部分步骤未成功' }
+    await cancelTestingTask(id)
   } catch (e) {
-    ElMessage.error('执行失败')
-    return { ok: false, results: [], msg: e?.message || String(e) }
+    ElMessage.warning(e?.message || '取消失败')
   }
 }
 
@@ -524,6 +602,17 @@ const sendMessage = async () => {
     }
   }
 
+  if (!selectedAppId.value) {
+    ElMessage.warning('请选择应用后再下发')
+    sendInFlight.value = false
+    return
+  }
+  if (!selectedSn.value) {
+    ElMessage.warning('请选择在线设备后再下发')
+    sendInFlight.value = false
+    return
+  }
+
   pushUser(text)
   inputValue.value = ''
   showSlashMenu.value = false
@@ -531,21 +620,66 @@ const sendMessage = async () => {
   busyPhase.value = 'planning'
 
   try {
+    const device = devices.value.find((item) => item.sn === selectedSn.value)
+    const platform = devicePlatformKind(device)
     const planning = selectedPlanning.value
     const res = await copilotChat({
       text,
       sn: selectedSn.value,
+      appId: selectedAppId.value,
       planningMode: planning.planningMode,
       providerId: planning.providerId,
-      context: { platform: 'android' },
+      context: { platform, app_id: selectedAppId.value, provider_id: planning.providerId },
     })
     const plan = res?.data || {}
-    let execution = null
-    if (plan.auto_run !== false) {
+    if (plan.navigate?.name && plan.engine !== 'agent') {
       busyPhase.value = 'executing'
-      execution = await runPlan(plan)
+      const execution = await runPlan(plan)
+      pushRunRecord({ request: text, plan, execution })
+      return
     }
-    pushRunRecord({ request: text, plan, execution })
+    const taskId = plan.run_id || plan.task_id || ''
+    if (!taskId) {
+      pushAi(plan.reply || plan.display_reply || '未下发 Agent 任务')
+      return
+    }
+    const runMsgId = Date.now() + Math.random()
+    const deviceMeta = device
+      ? { sn: device.sn, type: device.type, model: device.model }
+      : { sn: selectedSn.value, type: '', model: '' }
+    messages.value.push({
+      id: runMsgId,
+      role: 'run',
+      content: plan.reply || '已下发 Agent 任务',
+      run: {
+        request: text,
+        reply: plan.reply || '',
+        engine: 'agent',
+        planner: { mode: 'agent' },
+        aiDebug: plan.ai_debug || null,
+        aiErrorInfo: plan.ai_error_info || null,
+        steps: [],
+        execution: null,
+        live: true,
+        taskId,
+        runId: taskId,
+        device: deviceMeta,
+        createdAt: new Date().toISOString(),
+      },
+    })
+    persistSession()
+    scrollBottom()
+    busyPhase.value = 'executing'
+    const execution = await runPlan(plan)
+    const msg = messages.value.find((item) => item.id === runMsgId)
+    if (msg?.run) {
+      msg.run.execution = execution
+      msg.run.live = false
+      if (execution?.runId) msg.run.runId = execution.runId
+    } else {
+      pushRunRecord({ request: text, plan, execution })
+    }
+    persistSession()
   } catch (e) {
     pushAi(`规划失败: ${e?.message || e}`)
   } finally {
@@ -608,8 +742,8 @@ onMounted(async () => {
   document.addEventListener('click', closeFloatingMenus)
   rememberAgentPath(route.fullPath)
   refreshAgentSessions(await pullAgentSessions())
-  await loadAIProviders()
-  await loadDevices()
+  await loadApps()
+  await Promise.all([loadDevices(), loadAIProviders()])
   restoreSession()
   devicePollTimer = setInterval(loadDevices, 15000)
 })
@@ -658,7 +792,7 @@ onUnmounted(() => {
             <el-icon><MagicStick /></el-icon>
           </div>
           <h1>准备好，我们开始吧</h1>
-          <p>描述你要操作的应用、页面或按钮，我会拆成可执行步骤并下发到所选设备。</p>
+          <p>选择应用和设备，描述要做的操作。我会按 Agent 看图闭环下发到真机，与测试任务同一套引擎。</p>
         </div>
         <div v-for="msg in (isDraftAgent ? [] : messages)" :key="msg.id" class="msg-row" :class="msg.role">
           <div class="avatar">
@@ -669,32 +803,12 @@ onUnmounted(() => {
           <div v-if="msg.role === 'run'" class="run-card">
             <div class="run-card-head">
               <div>
-                <strong>{{ msg.run?.reply || '已生成执行计划' }}</strong>
+                <strong>{{ msg.run?.reply || '已下发 Agent 任务' }}</strong>
                 <span>
-                  Planner:
-                  {{ msg.run?.planner?.mode || '-' }}
-                  <template v-if="msg.run?.planner?.provider_id"> · {{ msg.run.planner.provider_id }}</template>
-                  <template v-if="msg.run?.aiDebug?.model"> · {{ msg.run.aiDebug.model }}</template>
+                  {{ msg.run?.engine === 'agent' ? 'Agent' : (msg.run?.planner?.mode || '-') }}
                 </span>
               </div>
               <div class="run-head-side">
-                <button
-                  v-if="msg.run?.planner?.mode === 'ai' || msg.run?.aiDebug"
-                  type="button"
-                  class="planner-chip"
-                  title="查看或切换大模型"
-                  @click="openPlannerSettings"
-                >
-                  {{ formatPlannerChip(msg.run) }}
-                </button>
-                <button
-                  v-if="msg.run?.aiDebug || msg.run?.aiErrorInfo"
-                  type="button"
-                  class="model-response-btn"
-                  @click="openModelResponse(msg.run)"
-                >
-                  查看 Response
-                </button>
                 <span v-if="msg.run?.device?.sn" class="device-chip" :title="msg.run.device.sn">
                   <span class="device-dot"></span>
                   {{ formatDeviceChip(msg.run.device) }}
@@ -705,7 +819,15 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="run-section">
+            <div v-if="msg.run?.engine === 'agent' && msg.run?.runId" class="run-section">
+              <div class="run-section-title">Agent</div>
+              <ExecutionTimeline
+                :run-id="msg.run.runId"
+                :live="!!msg.run.live && !msg.run.execution"
+                :case-summary="msg.run.reply || ''"
+              />
+            </div>
+            <div v-else class="run-section">
               <div class="run-section-title">Plan</div>
               <div v-if="msg.run?.aiErrorInfo" class="ai-error-card">
                 <strong>{{ msg.run.aiErrorInfo.title }}</strong>
@@ -842,8 +964,31 @@ onUnmounted(() => {
           />
         <div class="input-footer-row">
           <div class="input-pickers">
-            <div class="model-picker">
-              <button type="button" class="model-trigger" @click="modelMenuOpen = !modelMenuOpen">
+            <div class="model-picker app-picker">
+              <button type="button" class="model-trigger" @click="toggleAppMenu">
+                <span>{{ selectedAppLabel }}</span>
+                <span class="model-chevron">⌄</span>
+              </button>
+              <div v-if="appMenuOpen" class="model-menu">
+                <button
+                  v-for="app in apps"
+                  :key="app.id"
+                  type="button"
+                  class="model-option"
+                  :class="{ active: app.id === selectedAppId }"
+                  @click="selectApp(app)"
+                >
+                  <span class="model-option-main">
+                    <strong>{{ app.name }}</strong>
+                    <small v-if="app.projectName">{{ app.projectName }}</small>
+                  </span>
+                  <span v-if="app.id === selectedAppId" class="model-check">✓</span>
+                </button>
+                <div v-if="!apps.length" class="device-empty">暂无应用</div>
+              </div>
+            </div>
+            <div class="model-picker llm-picker">
+              <button type="button" class="model-trigger" @click="toggleModelMenu">
                 <span>{{ selectedPlanningLabel }}</span>
                 <span class="model-chevron">⌄</span>
               </button>
@@ -859,9 +1004,9 @@ onUnmounted(() => {
                 >
                   <span class="model-option-main">
                     <strong>{{ option.label }}</strong>
-                    <small v-if="option.value === 'local'">本地规则规划</small>
+                    <small v-if="option.value === 'local'">未指定时用密钥配置里的用例模型</small>
                     <small v-else-if="option.value === '__configure_ai'">添加或维护模型 Key</small>
-                    <small v-else>大模型规划</small>
+                    <small v-else>{{ option.model ? `本会话使用 ${option.model}` : '本会话使用此模型' }}</small>
                   </span>
                   <span v-if="option.value === planningEngine" class="model-check">✓</span>
                 </button>
@@ -886,8 +1031,8 @@ onUnmounted(() => {
                   @click="selectDevice(device)"
                 >
                   <span class="model-option-main">
-                    <strong>{{ device.model || device.type || 'device' }}</strong>
-                    <small>{{ device.sn }}{{ device.type ? ` · ${device.type}` : '' }}</small>
+                    <strong>{{ devicePrimaryName(device) }}</strong>
+                    <small>{{ formatDeviceMeta(device) }}{{ device.busy_task_id ? ' · 占用中' : '' }}</small>
                   </span>
                   <span v-if="device.sn === selectedSn" class="model-check">✓</span>
                 </button>
@@ -906,6 +1051,7 @@ onUnmounted(() => {
             type="button"
             class="stop-run-btn"
             :title="busyStatusText"
+            @click="stopLiveRun"
           >
             <span></span>
           </button>
@@ -2167,6 +2313,16 @@ onUnmounted(() => {
 
 .model-picker {
   position: relative;
+}
+
+.llm-picker .model-trigger {
+  max-width: 148px;
+}
+
+.llm-picker .model-trigger span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .device-picker {

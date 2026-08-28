@@ -44,7 +44,24 @@
 .settings-toolbar > .el-select,
 .settings-toolbar .filter-item {
   width: 120px;
-  flex: 0 0 auto;
+  max-width: 120px;
+  flex: 0 0 120px;
+}
+
+.settings-toolbar .toolbar-search {
+  width: 240px;
+  max-width: 240px;
+  flex: 0 1 240px;
+}
+
+.settings-toolbar .toolbar-push {
+  margin-left: auto;
+}
+
+.settings-toolbar > .el-input,
+.settings-toolbar > .el-switch,
+.settings-toolbar > .el-button {
+  flex-shrink: 0;
 }
 
 .settings-toolbar.runtime-toolbar {
@@ -535,6 +552,48 @@
   max-width: 720px;
 }
 
+.settings-job-card {
+  margin-bottom: 12px;
+}
+
+.settings-job-card > .settings-kicker {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.settings-job-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0 0;
+}
+
+.settings-job-row + .settings-job-row {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--settings-border);
+}
+
+.settings-job-copy {
+  min-width: 0;
+}
+
+.settings-job-copy h3 {
+  margin: 0 0 4px;
+  color: var(--settings-text);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.settings-job-copy p {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 640px;
+}
+
 @media (max-width: 720px) {
   .settings-page-header {
     align-items: flex-start;
@@ -548,5 +607,10 @@
   .settings-toolbar > .el-select,
   .settings-toolbar .filter-item {
     width: min(160px, 46vw);
+  }
+
+  .settings-job-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

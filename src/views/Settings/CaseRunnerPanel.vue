@@ -131,7 +131,6 @@ const submitRun = async () => {
       app_id: props.appId, sn: runForm.value.sn, platform: runForm.value.platform,
       case_ids: selectedCaseIds.value, async_exec: runForm.value.async_exec,
       use_persisted_baseline: runForm.value.use_persisted_baseline, use_cache: runForm.value.use_cache,
-      execution_mode: 'auto',
     })
     const batch = res?.data?.run_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }

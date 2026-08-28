@@ -8,6 +8,7 @@ const props = defineProps({
   rawKey: { type: String, required: true },
   numsKey: { type: String, default: '' },
   numbered: { type: Boolean, default: true },
+  clamp: { type: Number, default: 3 },
 })
 
 const lines = computed(() =>
@@ -21,7 +22,13 @@ const plain = computed(() => lines.value.map((line) => `${line.num}. ${line.text
 </script>
 
 <template>
-  <div v-if="lines.length" class="case-multiline-cell is-clamp" :title="plain">
+  <div
+    v-if="lines.length"
+    class="case-multiline-cell"
+    :class="{ 'is-clamp': clamp > 0 }"
+    :style="clamp > 0 ? { maxHeight: `calc(1.4em * ${clamp})` } : undefined"
+    :title="plain"
+  >
     <div v-for="(line, i) in lines" :key="i" class="case-multiline-line">
       <span v-if="numbered" class="case-line-no">{{ line.num }}.</span>
       <span class="case-line-text">{{ line.text }}</span>
@@ -42,7 +49,6 @@ const plain = computed(() => lines.value.map((line) => `${line.num}. ${line.text
   color: #374151;
 }
 .case-multiline-cell.is-clamp {
-  max-height: calc(1.4em * 3);
   overflow: hidden;
 }
 .case-multiline-line {

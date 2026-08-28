@@ -3,11 +3,17 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElIcon, ElButton, ElInput, ElSelect, ElOption, ElMessage } from 'element-plus'
 import { Promotion, User, MagicStick, Message } from '@element-plus/icons-vue'
-import { copilotChat, copilotExecute } from '@/api/copilot'
+import { copilotChat } from '@/api/copilot'
 import { getDeviceList } from '@/api/device'
+import { listCaseRunnerDevices } from '@/api/caseRunner'
 import { listAIProviders } from '@/api/settings'
+import { getProjects } from '@/api/workReport'
+import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { actions as registryActions } from '@/logic/ActionRegistry'
 import { createAgentSession, readAgentSessions, titleFromMessages, upsertAgentSession } from '@/utils/agentSessions'
+import { flattenProjectApps, belongsToAgentTask } from '@/utils/copilotAgent'
+import { devicePlatformKind } from '@/utils/testingTasks'
+import { filterExecutableDevices, formatDeviceTag } from '@/utils/testingDevices'
 
 function normalizeDeviceList(res) {
   if (Array.isArray(res)) return res
@@ -28,42 +34,18 @@ const isExpanded = ref(false)
 const chatContainerRef = ref(null)
 const inputRef = ref(null)
 const selectedSn = ref('')
-const devices = ref([])
-const aiProviders = ref([])
+const selectedAppId = ref('')
 const planningEngine = ref('local')
+const aiProviders = ref([])
+const devices = ref([])
+const apps = ref([])
 const currentSessionId = ref('')
 
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
 const shouldShowOrb = computed(() => isSettingsRoute.value && !isExpanded.value)
 const isIdle = computed(() => !isExpanded.value && !isHovered.value && !isFocused.value && !inputValue.value && !showSlashMenu.value)
-const configuredPlanningOptions = computed(() =>
-  aiProviders.value
-    .filter((provider) => provider.configured && provider.enabled !== false)
-    .map((provider) => ({
-      value: `provider:${provider.id}`,
-      label: provider.name || provider.id,
-      providerId: provider.id,
-      disabled: false,
-    })),
-)
-const planningOptions = computed(() => [
-  { value: 'local', label: 'Local', providerId: '', disabled: false },
-  ...configuredPlanningOptions.value,
-  { value: '__configure_ai', label: '配置大模型 Key...', providerId: '', disabled: false },
-])
-const selectedPlanning = computed(() => {
-  if (planningEngine.value === 'local') return { planningMode: 'local', providerId: '' }
-  return { planningMode: 'ai', providerId: planningEngine.value.replace(/^provider:/, '') }
-})
 
-const handlePlanningChange = (value) => {
-  if (value === '__configure_ai') {
-    planningEngine.value = 'local'
-    router.push({ name: 'SettingsKeys', query: { tab: 'model-keys' } })
-    return
-  }
-  persistSession()
-}
+const routeAppId = computed(() => String(route.params.appId || '').trim())
 
 // --- Slash Command Logic ---
 const showSlashMenu = ref(false)
@@ -120,6 +102,7 @@ const persistSession = () => {
     title: titleFromMessages(messages.value),
     messages: messages.value.map(({ role, content, isCommand }) => ({ role, content, isCommand: !!isCommand })),
     deviceSn: selectedSn.value,
+    appId: selectedAppId.value,
     planningEngine: planningEngine.value,
   })
 }
@@ -132,6 +115,7 @@ const restoreLastSession = () => {
   if (last) {
     currentSessionId.value = last.id
     selectedSn.value = last.deviceSn || ''
+    selectedAppId.value = last.appId || routeAppId.value || selectedAppId.value
     planningEngine.value = last.planningEngine || planningEngine.value
     messages.value = (last.messages || []).map((item, index) => ({ id: `${last.id}-${index}`, ...item }))
     return
@@ -140,18 +124,31 @@ const restoreLastSession = () => {
   messages.value = [{
     id: Date.now(),
     role: 'ai',
-    content: '你好，我是 AI 执行助手。描述你想做的操作（打开应用、点击、滑动、切换页面），我会拆解为可执行步骤。',
+    content: '你好，我是 AI 执行助手。选择应用和设备，描述要做的操作，我会按 Agent 看图闭环下发到真机。',
   }]
 }
 
 const loadDevices = async () => {
   try {
-    const res = await getDeviceList()
-    const list = normalizeDeviceList(res)
-    devices.value = list.filter((d) => d.status === 'online')
+    const res = await listCaseRunnerDevices(true)
+    const items = Array.isArray(res?.data?.items) ? res.data.items : normalizeDeviceList(res)
+    devices.value = filterExecutableDevices(items).map((d) => ({
+      ...d,
+      type: d.device_type || d.type || '',
+    }))
     if (!selectedSn.value && devices.value.length) selectedSn.value = devices.value[0].sn
   } catch (e) {
     console.warn('load widget devices failed', e)
+    try {
+      const res = await getDeviceList()
+      const list = normalizeDeviceList(res).filter((d) => d.status === 'online')
+      devices.value = filterExecutableDevices(list).map((d) => ({
+        ...d,
+        type: d.device_type || d.type || '',
+      }))
+    } catch (err) {
+      console.warn('widget device fallback failed', err)
+    }
   }
 }
 
@@ -159,42 +156,78 @@ const loadAIProviders = async () => {
   try {
     const res = await listAIProviders()
     const data = res?.data || {}
-    aiProviders.value = data.providers || []
-    const provider = aiProviders.value.find((item) => item.id === data.default_provider && item.configured && item.enabled !== false)
-    if (provider && !currentSessionId.value && planningEngine.value === 'local') planningEngine.value = `provider:${provider.id}`
+    aiProviders.value = (data.providers || []).filter((p) => p.configured && p.enabled !== false)
+    const pick = aiProviders.value.find((p) => p.id === data.default_provider)
+      || aiProviders.value.find((p) => p.case_execution_use)
+      || aiProviders.value[0]
+    if (pick && planningEngine.value === 'local' && !messages.value.some((item) => item.role === 'user')) {
+      planningEngine.value = `provider:${pick.id}`
+    }
   } catch (e) {
     console.warn('load widget providers failed', e)
   }
 }
+
+const loadApps = async () => {
+  try {
+    const res = await getProjects()
+    const projects = Array.isArray(res) ? res : (res?.data || [])
+    apps.value = flattenProjectApps(projects)
+    if (!selectedAppId.value && routeAppId.value) selectedAppId.value = routeAppId.value
+    if (!selectedAppId.value && apps.value.length) selectedAppId.value = apps.value[0].id
+  } catch (e) {
+    console.warn('load widget apps failed', e)
+  }
+}
+
+const waitForAgentTask = (taskId) => new Promise((resolve) => {
+  const thoughts = []
+  const onMsg = (msg) => {
+    const type = msg?.type || msg?.action
+    const d = msg?.data || {}
+    if (type === 'agent_step' && belongsToAgentTask(d, taskId)) {
+      if (d.thought) thoughts.push(String(d.thought))
+      if (d.phase === 'done' || d.overall) {
+        cleanup()
+        resolve({ thoughts, overall: d.overall || '', summary: d.summary || '' })
+      }
+      return
+    }
+    if (type === 'testing_task' && belongsToAgentTask(d, taskId) && ['task_finished', 'cancelled'].includes(d.event)) {
+      cleanup()
+      resolve({ thoughts, overall: d.status || d.event, summary: d.event })
+    }
+  }
+  const cleanup = () => {
+    removeMessageListener(onMsg)
+    if (timer) clearTimeout(timer)
+  }
+  addMessageListener(onMsg)
+  const timer = setTimeout(() => {
+    cleanup()
+    resolve({ thoughts, overall: 'timeout', summary: '等待超时' })
+  }, 10 * 60 * 1000)
+})
 
 const runPlan = async (plan) => {
   if (plan.navigate?.name) {
     router.push({ name: plan.navigate.name })
     return
   }
-  const steps = plan.steps || []
-  if (!steps.length) return
-  const needsDevice = steps.some((step) => ['click', 'swipe', 'open_app', 'close_app'].includes(step.kind))
-  if (needsDevice && !selectedSn.value) {
-    messages.value.push({ id: Date.now() + Math.random(), role: 'ai', content: '已生成操作步骤，请先在输入框左下角选择在线设备后再执行。' })
+  const taskId = plan.run_id || plan.task_id
+  if (plan.engine === 'agent' && taskId) {
+    const done = await waitForAgentTask(taskId)
+    const last = (done.thoughts || []).slice(-3).join('\n')
+    const line = done.overall
+      ? `Agent 结束：${done.overall}${done.summary ? ` · ${done.summary}` : ''}`
+      : 'Agent 已结束'
+    messages.value.push({
+      id: Date.now() + Math.random(),
+      role: 'ai',
+      content: [last, line].filter(Boolean).join('\n'),
+    })
     persistSession()
-    return
   }
-  const res = await copilotExecute({ steps, sn: selectedSn.value, platform: 'android' })
-  const results = res?.data?.results || []
-  const lines = results.map((r, i) => `${r.ok ? '✓' : '✗'} ${r.summary || steps[i]?.summary}: ${r.msg || ''}`)
-  messages.value.push({ id: Date.now() + Math.random(), role: 'ai', content: lines.join('\n') || '执行完成' })
-  persistSession()
-}
-
-const formatAiDebug = (debug) => {
-  if (!debug) return ''
-  return `模型返回：\n${JSON.stringify({
-    provider: debug.provider,
-    model: debug.model,
-    raw_plan: debug.raw_plan,
-    normalized_steps: debug.normalized_steps,
-  }, null, 2)}`
 }
 
 const sendMessage = async () => {
@@ -207,6 +240,15 @@ const sendMessage = async () => {
     return
   }
 
+  if (!selectedAppId.value) {
+    ElMessage.warning('请选择应用后再下发')
+    return
+  }
+  if (!selectedSn.value) {
+    ElMessage.warning('请选择在线设备后再下发')
+    return
+  }
+
   // Normal Message
   messages.value.push({ id: Date.now(), role: 'user', content: text })
   persistSession()
@@ -216,21 +258,21 @@ const sendMessage = async () => {
   scrollToBottom()
 
   try {
-    const planning = selectedPlanning.value
+    const device = devices.value.find((item) => item.sn === selectedSn.value)
+    const platform = devicePlatformKind(device)
+    const providerId = planningEngine.value.startsWith('provider:') ? planningEngine.value.slice('provider:'.length) : ''
     const res = await copilotChat({
       text,
       sn: selectedSn.value,
-      planningMode: planning.planningMode,
-      providerId: planning.providerId,
-      context: { platform: 'android' },
+      appId: selectedAppId.value,
+      planningMode: providerId ? 'ai' : 'local',
+      providerId,
+      context: { platform, app_id: selectedAppId.value, provider_id: providerId },
     })
     const plan = res?.data || {}
-    messages.value.push({ id: Date.now(), role: 'ai', content: plan.reply || '已处理', plan })
-    if (plan.ai_debug) {
-      messages.value.push({ id: Date.now() + Math.random(), role: 'ai', content: formatAiDebug(plan.ai_debug) })
-    }
+    messages.value.push({ id: Date.now(), role: 'ai', content: plan.reply || plan.display_reply || '已处理', plan })
     persistSession()
-    if (plan.auto_run !== false) await runPlan(plan)
+    if (plan.auto_run !== false || plan.engine === 'agent') await runPlan(plan)
   } catch (e) {
     messages.value.push({ id: Date.now(), role: 'ai', content: `规划失败：${e?.message || e}` })
     persistSession()
@@ -273,7 +315,7 @@ const scrollToBottom = () => {
 
 onMounted(async () => {
   restoreLastSession()
-  await Promise.all([loadDevices(), loadAIProviders()])
+  await Promise.all([loadDevices(), loadApps(), loadAIProviders()])
   scrollToBottom()
 })
 </script>
@@ -338,26 +380,28 @@ onMounted(async () => {
         />
       <div class="input-footer">
         <div class="input-selects">
-          <el-select
-            v-model="planningEngine"
-            size="small"
-            class="mini-select"
-            placeholder="Model"
-            @change="handlePlanningChange"
-          >
+          <el-select v-model="planningEngine" size="small" class="mini-select" placeholder="模型" @change="persistSession">
+            <el-option label="Local Plan" value="local" />
             <el-option
-              v-for="option in planningOptions"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
-              :disabled="option.disabled"
+              v-for="p in aiProviders"
+              :key="p.id"
+              :label="p.name || p.id"
+              :value="`provider:${p.id}`"
+            />
+          </el-select>
+          <el-select v-model="selectedAppId" size="small" class="mini-select" placeholder="应用" filterable>
+            <el-option
+              v-for="app in apps"
+              :key="app.id"
+              :label="app.projectName ? `${app.name} · ${app.projectName}` : app.name"
+              :value="app.id"
             />
           </el-select>
           <el-select v-model="selectedSn" size="small" class="device-select" placeholder="Device">
             <el-option
               v-for="device in devices"
               :key="device.sn"
-              :label="`${device.model || device.type || 'device'} · ${device.sn}`"
+              :label="formatDeviceTag(device)"
               :value="device.sn"
             />
           </el-select>

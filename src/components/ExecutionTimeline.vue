@@ -6,6 +6,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
+import { belongsToAgentTask } from '@/utils/copilotAgent'
 import { normalizeCaseRow } from '@/utils/caseText'
 import { formatElapsed, platformLabel } from '@/utils/testingTasks'
 import {
@@ -127,6 +128,15 @@ function applyAgentEvent(d) {
       parseCheckpointCatalog(d.checkpoints),
     )
   }
+  else if (d.phase === 'think') {
+    upsert(d.step, {
+      status: 'thinking',
+      thought: d.summary || '正在看图决策…',
+      ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
+      ...(knowledge ? { knowledge } : {}),
+    })
+    if (d.step) activeStep.value = d.step
+  }
   else if (d.phase === 'step') {
     upsert(d.step, {
       thought: d.thought,
@@ -156,6 +166,7 @@ function applyAgentEvent(d) {
       ...(d.capability_id ? { cap: d.capability_id } : {}),
       ...(knowledge ? { knowledge } : {}),
     })
+    if (d.step) activeStep.value = d.step
   }
   else if (d.phase === 'recovery') {
     // L0 系统层恢复：把「本步命中了哪些 pack」挂到该步上，供调试溯源
@@ -333,9 +344,9 @@ const onWs = (res) => {
   const type = res.type || res.action
   if (type !== 'agent_step') return
   const d = res.data || {}
-  if (d.run_id !== props.runId) return
+  if (!belongsToAgentTask(d, props.runId)) return
   applyAgentEvent(d)
-  if (d.phase === 'step' || d.phase === 'result') scrollFilmToActive()
+  if (d.phase === 'step' || d.phase === 'result' || d.phase === 'think') scrollFilmToActive()
   if (d.phase === 'done') scrollBottom()
 }
 
@@ -384,13 +395,18 @@ const casePlatform = computed(() => {
   const raw = spec.value.platform || spec.value.client || spec.value.terminal || spec.value.device_platform || ''
   return platformLabel(raw) || raw || ''
 })
+const hasExpected = computed(() => {
+  const s = spec.value || {}
+  if (Array.isArray(s.expected) && s.expected.some((x) => String(x || '').trim())) return true
+  return Boolean(String(s.expected_raw || '').trim())
+})
 const showCaseInfo = computed(() => true)
 
 const statusText = (s) => {
   if (isLimit.value && (s === overall.value || s === 'partial')) return '步数耗尽'
   return ({
     running: '执行中', queued: '排队',
-    continue: '决策', done: '完成', give_up: '放弃', ask_human: '请求人工',
+    continue: '决策', thinking: '看图中', done: '完成', give_up: '放弃', ask_human: '请求人工',
     pass: '成功', fail: '失败', blocked: '阻塞', skipped: '跳过', declined: '拒绝',
     partial: '步数耗尽',
   })[s] || s || ''
@@ -399,7 +415,7 @@ const statusClass = (s) => {
   if (isLimit.value && (s === overall.value || s === 'partial')) return 'limit'
   if (['done', 'pass'].includes(s)) return 'ok'
   if (['give_up', 'fail', 'declined'].includes(s)) return 'bad'
-  if (['ask_human', 'blocked', 'partial'].includes(s)) return 'warn'
+  if (['ask_human', 'blocked', 'partial', 'thinking'].includes(s)) return 'warn'
   return ''
 }
 const fmtAction = (a) => {
@@ -415,7 +431,26 @@ const fmtAction = (a) => {
   return kv ? `${a.capability_id}(${kv})` : a.capability_id
 }
 
-const usedKnowledge = (s) => (s?.knowledge || []).filter((k) => k && k.used !== false)
+const usedKnowledge = (s) => {
+  const seenIds = new Set()
+  const seenTitles = new Set()
+  const seenBody = new Set()
+  const out = []
+  for (const k of s?.knowledge || []) {
+    if (!k || k.used === false) continue
+    const id = String(k.uid || k.id || '').trim()
+    const titleKey = String(k.title || '').replace(/\s+/g, '').toLowerCase()
+    const body = `${String(k.title || '').trim()}\n${String(k.content || '').replace(/\s+/g, ' ').trim()}`
+    if (id && seenIds.has(id)) continue
+    if (titleKey && seenTitles.has(titleKey)) continue
+    if (body !== '\n' && seenBody.has(body)) continue
+    if (id) seenIds.add(id)
+    if (titleKey) seenTitles.add(titleKey)
+    if (body !== '\n') seenBody.add(body)
+    out.push(k)
+  }
+  return out.slice(0, 3)
+}
 
 const checkpointCatalog = computed(() => mergeCheckpointCatalog(
   parseCheckpointCatalog(checkpoints.value),
@@ -629,15 +664,15 @@ defineExpose({ goal, overall, finished })
             <td>{{ casePlatform || '—' }}</td>
             <td>{{ caseModule || '—' }}</td>
             <td>{{ caseName || '—' }}</td>
-            <td class="col-multi"><CaseMultilineCell :row="spec" raw-key="precondition" /></td>
-            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="step" /></td>
-            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="expected" /></td>
+            <td class="col-multi"><CaseMultilineCell :row="spec" raw-key="precondition" :clamp="0" /></td>
+            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="step" :clamp="0" /></td>
+            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="expected" :clamp="0" /></td>
           </tr>
         </tbody>
       </table>
     </section>
 
-    <div v-if="checkpointCatalog.length" class="et-cps">
+    <div v-if="checkpointCatalog.length && !hasExpected" class="et-cps">
       <span class="et-cps-label">检查点</span>
       <ol>
         <li v-for="cp in checkpointCatalog" :key="cp.id">{{ cp.description || cp.id }}</li>
@@ -779,7 +814,7 @@ defineExpose({ goal, overall, finished })
           <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
             <span class="et-packs-label">知识库命中</span>
             <button
-              v-for="k in usedKnowledge(s)" :key="k.uid || k.id"
+              v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
               type="button"
               class="et-pack et-knowledge"
               :title="k.title || k.id"
@@ -842,8 +877,8 @@ defineExpose({ goal, overall, finished })
 .et-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; gap: 10px; box-sizing: border-box; overflow: hidden; }
 .et-case {
   flex: 0 1 auto;
-  min-height: 88px;
-  max-height: 42%;
+  min-height: 140px;
+  max-height: 55%;
   width: 100%;
   box-sizing: border-box;
   overflow: auto;
@@ -878,7 +913,7 @@ defineExpose({ goal, overall, finished })
 .case-spec-table th:nth-child(1),
 .case-spec-table td:nth-child(1) { width: 56px; text-align: center; }
 .case-spec-table th:nth-child(2),
-.case-spec-table td:nth-child(2) { width: 72px; }
+.case-spec-table td:nth-child(2) { width: 16%; }
 .case-spec-table th:nth-child(3),
 .case-spec-table td:nth-child(3) { width: 16%; }
 .case-spec-table th:nth-child(4),
@@ -887,7 +922,7 @@ defineExpose({ goal, overall, finished })
 .case-spec-table td:nth-child(5),
 .case-spec-table th:nth-child(6),
 .case-spec-table td:nth-child(6) { width: 22%; }
-.case-spec-table td.col-multi { min-width: 0; overflow-wrap: anywhere; }
+.case-spec-table td.col-multi { min-width: 0; overflow: visible; overflow-wrap: anywhere; }
 .et-verdict {
   flex-shrink: 0;
   width: 100%;

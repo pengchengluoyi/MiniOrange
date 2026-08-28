@@ -191,7 +191,10 @@ const activeSub = computed(() => {
   }
   if (tab.value === 'assets') return String(route.query.section || 'accounts')
   if (tab.value === 'dispatch') return String(route.query.dview || 'pipeline')
-  if (tab.value === 'knowledge') return String(route.query.kview || 'pending')
+  if (tab.value === 'knowledge') {
+    const raw = String(route.query.kview || 'all')
+    return raw === 'playbook' ? 'all' : raw
+  }
   if (tab.value === 'config') {
     const s = String(configSection.value || 'env')
     if (s === 'flow') return 'flow-req'
@@ -510,7 +513,10 @@ const setTab = async (next) => {
   }
   if (resolved === 'assets') q.section = String(route.query.section || 'accounts')
   if (resolved === 'dispatch') q.dview = String(route.query.dview || 'pipeline')
-  if (resolved === 'knowledge') q.kview = String(route.query.kview || 'pending')
+  if (resolved === 'knowledge') {
+    const raw = String(route.query.kview || 'all')
+    q.kview = raw === 'playbook' ? 'all' : raw
+  }
   Object.keys(q).forEach((k) => {
     if (q[k] === undefined || q[k] === null || q[k] === '') delete q[k]
   })
@@ -852,7 +858,6 @@ const submitRun = async () => {
       async_exec: runForm.value.async_exec,
       use_persisted_baseline: runForm.value.use_persisted_baseline,
       use_cache: runForm.value.use_cache,
-      execution_mode: 'auto',
       run_type: runSeed.value?.kind || 'manual',
       slot_id: runSeed.value?.slotId || '',
       requirement_id: runSeed.value?.requirementId || '',
@@ -1309,7 +1314,14 @@ watch(selectedCaseIds, () => {
       </div>
 
       <div v-else-if="tab === 'knowledge'" class="ws-config fill">
-        <KnowledgePanel embedded hide-nav app-only :app-id="appId" :app-name="appName" :review-filter="activeSub" />
+        <KnowledgePanel
+          embedded
+          hide-nav
+          app-only
+          :app-id="appId"
+          :app-name="appName"
+          :review-filter="activeSub"
+        />
       </div>
 
       <div v-else-if="tab === 'assets'" class="ws-config fill">

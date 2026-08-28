@@ -1,5 +1,11 @@
 import request from '@/utils/request'
 
+export const getAppPlaybook = (appId) =>
+  request({ url: `/app-automation/playbook/${appId}`, method: 'get' })
+
+export const saveAppPlaybook = (appId, playbook) =>
+  request({ url: `/app-automation/playbook/${appId}`, method: 'put', data: { playbook } })
+
 export const getAppAutomationConfig = (appId) =>
   request({ url: `/app-automation/config/${appId}`, method: 'get' })
 

@@ -5,6 +5,7 @@ import { alignCaseStepExpected } from '@/utils/caseText'
 const props = defineProps({
   row: { type: Object, default: () => ({}) },
   field: { type: String, required: true }, // 'step' | 'expected'
+  clamp: { type: Number, default: 3 },
 })
 
 const pairs = computed(() => alignCaseStepExpected(props.row))
@@ -17,7 +18,13 @@ const plain = computed(() => pairs.value
 </script>
 
 <template>
-  <div v-if="pairs.length" class="case-aligned-cell is-clamp" :title="plain">
+  <div
+    v-if="pairs.length"
+    class="case-aligned-cell"
+    :class="{ 'is-clamp': clamp > 0 }"
+    :style="clamp > 0 ? { maxHeight: `calc(1.4em * ${clamp})` } : undefined"
+    :title="plain"
+  >
     <div v-for="p in pairs" :key="p.num" class="case-aligned-line">
       <template v-if="field === 'step' ? p.step : p.expected">
         <span class="case-line-no">{{ p.num }}.</span>
@@ -41,7 +48,6 @@ const plain = computed(() => pairs.value
   color: #374151;
 }
 .case-aligned-cell.is-clamp {
-  max-height: calc(1.4em * 3);
   overflow: hidden;
 }
 .case-aligned-line {

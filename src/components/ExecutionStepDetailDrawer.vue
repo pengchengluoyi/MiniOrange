@@ -84,8 +84,25 @@ const systemMatched = computed(() => recovery.value?.matched === true)
 const packs = computed(() => step.value?.packs || [])
 const knowledge = computed(() => {
   const list = Array.isArray(step.value?.knowledge) ? [...step.value.knowledge] : []
-  list.sort((a, b) => (Number(b.match_pct) || 0) - (Number(a.match_pct) || 0))
-  return list.slice(0, 3)
+  const seenIds = new Set()
+  const seenTitles = new Set()
+  const seenBody = new Set()
+  const unique = []
+  for (const k of list) {
+    if (!k) continue
+    const id = String(k.uid || k.id || '').trim()
+    const titleKey = String(k.title || '').replace(/\s+/g, '').toLowerCase()
+    const body = `${String(k.title || '').trim()}\n${String(k.content || '').replace(/\s+/g, ' ').trim()}`
+    if (id && seenIds.has(id)) continue
+    if (titleKey && seenTitles.has(titleKey)) continue
+    if (body !== '\n' && seenBody.has(body)) continue
+    if (id) seenIds.add(id)
+    if (titleKey) seenTitles.add(titleKey)
+    if (body !== '\n') seenBody.add(body)
+    unique.push(k)
+  }
+  unique.sort((a, b) => (Number(b.match_pct) || 0) - (Number(a.match_pct) || 0))
+  return unique.slice(0, 3)
 })
 const checkpoints = computed(() => {
   const ids = step.value?.checkpoints_hit || step.value?.checkpoint_ids || []
@@ -255,8 +272,8 @@ watch(
             <h5>知识库</h5>
             <div v-if="knowledge.length" class="sd-stack">
               <article
-                v-for="k in knowledge"
-                :key="k.uid || k.id"
+                v-for="(k, ki) in knowledge"
+                :key="k.uid || k.id || ki"
                 class="sd-panel"
                 :class="{ skipped: k.used === false }"
               >
@@ -279,7 +296,7 @@ watch(
           </div>
 
           <div class="sd-block">
-            <h5>检查点</h5>
+            <h5>本步核对的预期</h5>
             <div class="sd-panel">
               <div v-if="checkpoints.length" class="sd-cp-list">
                 <article v-for="cp in checkpoints" :key="cp.id" class="sd-cp">
