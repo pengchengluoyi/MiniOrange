@@ -22,6 +22,7 @@ import { generatedCasesFromProcess, previousRelease, reqVersionImpact, sortRelea
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
+import CasePairedEditor from '@/components/CasePairedEditor.vue'
 import AtlasBoardView from '@/views/Testing/AtlasBoardView.vue'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
@@ -56,6 +57,7 @@ const {
   loading,
   load,
   apply,
+  persistSoon,
 } = useQaProcess(appIdRef)
 
 const ticking = ref(false)
@@ -271,6 +273,19 @@ const visibleCases = computed(() => {
   })
 })
 const pagedCases = computed(() => slicePage(visibleCases.value, casePage.value, casePageSize.value))
+
+const onLibraryCaseChange = (row, fields) => {
+  const reqId = row?.requirement_id
+  if (!reqId) return
+  const req = requirements.value.find((r) => r.id === reqId)
+  if (!req) return
+  const cases = (req.draft_cases || []).map((c) => (
+    String(c.case_id) === String(row.case_id) ? { ...c, ...fields } : c
+  ))
+  const i = requirements.value.findIndex((r) => r.id === req.id)
+  if (i >= 0) requirements.value.splice(i, 1, { ...req, draft_cases: cases })
+  persistSoon()
+}
 
 const syncViewFromRoute = () => {
   const raw = String(route.query.view || '')
@@ -587,6 +602,13 @@ onMounted(async () => {
         </div>
         <div class="table-fill">
           <el-table :data="pagedCases" size="small" border stripe height="100%" row-key="_rowKey" empty-text="没有符合筛选的用例">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="lib-case-expand">
+                  <CasePairedEditor :row="row" @change="(fields) => onLibraryCaseChange(row, fields)" />
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="case_id" label="编号" width="108" show-overflow-tooltip />
             <el-table-column prop="module_label" label="模块" min-width="200" show-overflow-tooltip />
             <el-table-column label="需求" min-width="140" show-overflow-tooltip>
@@ -936,6 +958,9 @@ onMounted(async () => {
 .table-fill {
   flex: 1;
   min-height: 0;
+}
+.lib-case-expand {
+  padding: 8px 12px 12px;
 }
 
 .library-wrap :deep(.el-table td.el-table__cell) {

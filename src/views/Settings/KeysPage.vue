@@ -75,9 +75,9 @@ const apiTypeLabel = (provider) => {
   return 'Chat API'
 }
 
-const roundRatio = (value) => {
+const roundRatio = (value, fallback = 3) => {
   const num = Number(value)
-  if (!Number.isFinite(num)) return 3
+  if (!Number.isFinite(num)) return fallback
   return Math.min(10, Math.max(1, Math.round(num * 10) / 10))
 }
 
@@ -95,7 +95,8 @@ const syncForms = () => {
       model_options: options.length ? options : [savedModel].filter(Boolean),
       enabled: p.configured ? p.enabled !== false : false,
       case_execution_use: p.configured && p.enabled !== false ? p.case_execution_use === true : false,
-      plan_compress_ratio: roundRatio(p.plan_compress_ratio ?? 3),
+      plan_compress_ratio: roundRatio(p.plan_compress_ratio ?? 3, 3),
+      web_compress_ratio: roundRatio(p.web_compress_ratio ?? 2, 2),
       clear_key: false,
       set_default: defaultProvider.value === p.id,
     }
@@ -255,7 +256,8 @@ const saveJobSettings = async () => {
 const save = async (provider) => {
   const form = forms[provider.id]
   if (!form) return
-  form.plan_compress_ratio = roundRatio(form.plan_compress_ratio)
+  form.plan_compress_ratio = roundRatio(form.plan_compress_ratio, 3)
+  form.web_compress_ratio = roundRatio(form.web_compress_ratio, 2)
   form.set_default = provider.id === caseExecutionProviderId.value
   savingId.value = provider.id
   try {
@@ -311,7 +313,12 @@ const onToggleCaseExecution = async (provider, useForCase) => {
 
 const onRatioChange = (provider) => {
   const form = forms[provider.id]
-  if (form) form.plan_compress_ratio = roundRatio(form.plan_compress_ratio)
+  if (form) form.plan_compress_ratio = roundRatio(form.plan_compress_ratio, 3)
+}
+
+const onWebRatioChange = (provider) => {
+  const form = forms[provider.id]
+  if (form) form.web_compress_ratio = roundRatio(form.web_compress_ratio, 2)
 }
 
 const clearKey = async (provider) => {
@@ -346,9 +353,15 @@ const isPreset = (id) => [
 ].includes(id)
 
 const previewSizeHint = (ratio) => {
-  const r = roundRatio(ratio)
+  const r = roundRatio(ratio, 3)
   if (r <= 1) return '1200×2608（不压缩）'
   return `${Math.round(1200 / r)}×${Math.round(2608 / r)}（比例 ${r}）`
+}
+
+const previewWebSizeHint = (ratio) => {
+  const r = roundRatio(ratio, 2)
+  if (r <= 1) return '1280×800（不压缩）'
+  return `${Math.round(1280 / r)}×${Math.round(800 / r)}（比例 ${r}）`
 }
 
 onMounted(() => {
@@ -463,7 +476,7 @@ watch(() => route.query.tab, syncTabFromRoute)
       </section>
 
       <p class="keys-tip">
-        Key 仅保存在本地服务端。压缩比例保留一位小数（如 3 或 2.4），坐标按该整数倍映射到设备分辨率。
+        Key 仅保存在本地服务端。压缩比例保留一位小数（如 3 或 2.4）。移动端默认 3，Web 默认 2；坐标按该整数倍映射到设备分辨率。
       </p>
 
       <el-collapse v-model="expandedProvider" accordion class="provider-accordion">
@@ -557,6 +570,22 @@ watch(() => route.query.tab, syncTabFromRoute)
                 />
                 <p class="ratio-hint">
                   默认 3；1 表示不压缩。示例 1200×2608 → {{ previewSizeHint(forms[p.id].plan_compress_ratio) }}
+                </p>
+              </div>
+            </el-form-item>
+            <el-form-item label="Web 截图压缩比例">
+              <div class="ratio-field">
+                <el-input-number
+                  v-model="forms[p.id].web_compress_ratio"
+                  :min="1"
+                  :max="10"
+                  :step="0.1"
+                  :precision="1"
+                  controls-position="right"
+                  @change="onWebRatioChange(p)"
+                />
+                <p class="ratio-hint">
+                  默认 2；1 表示不压缩。示例 1280×800 → {{ previewWebSizeHint(forms[p.id].web_compress_ratio) }}
                 </p>
               </div>
             </el-form-item>

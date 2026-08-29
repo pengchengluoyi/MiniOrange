@@ -962,8 +962,7 @@ watch(() => runForm.value.sns, (sns) => {
   if (sns.length < 2) runForm.value.coverage = 'once'
   const picked = devices.value.find((d) => d.sn === sns[0])
   if (!picked) return
-  const ch = String(picked.execChannel || picked.device_type || '').toLowerCase()
-  runForm.value.platform = ch.includes('ios') ? 'ios' : 'android'
+  runForm.value.platform = devicePlatformKind(picked) || 'android'
 }, { deep: true })
 
 watch(newRunVisible, (open) => {
@@ -1501,7 +1500,7 @@ watch(selectedCaseIds, () => {
         </div>
         <p v-if="platformConflictCases.length" class="hint">
           {{ platformConflictCases.length }} 条用例标注了另一平台，仍会在当前设备上执行。
-          该端不支持的前置条件可能失败或跳过：
+          该端做不到的前置会标「无法执行」并跳过，只有真实检查没过才停跑：
           {{ platformConflictCases.map((c) => c.case_id).slice(0, 4).join('、') }}{{ platformConflictCases.length > 4 ? '…' : '' }}
         </p>
         <div class="field opts">

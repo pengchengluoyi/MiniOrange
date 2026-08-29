@@ -3,6 +3,8 @@
  * 新契约：GET /case-runner/tasks ；旧内存 run / traces 仅作兼容与 404 回退。
  */
 
+import { summarizeTaskCoverage } from '@/utils/caseCatalog'
+
 export function batchIdFromCaseRunId(runId = '') {
   const s = String(runId || '')
   const i = s.indexOf('::')
@@ -94,10 +96,12 @@ export function taskPlatformOfSn(task, sn = '') {
   if (map && typeof map === 'object' && key && map[key]) {
     const v = String(map[key]).toLowerCase()
     if (v.includes('ios')) return 'ios'
+    if (v.includes('web') || v.includes('browser') || v.includes('playwright')) return 'web'
     if (v.includes('android')) return 'android'
   }
   const p = String(task?.platform || '').toLowerCase()
   if (p.includes('ios')) return 'ios'
+  if (p.includes('web') || p.includes('browser') || p.includes('playwright')) return 'web'
   if (p === 'mixed') return ''
   return p.includes('android') ? 'android' : (p || 'android')
 }
@@ -106,7 +110,8 @@ export function platformLabel(kind) {
   const k = String(kind || '').toLowerCase()
   if (k === 'ios') return 'iOS'
   if (k === 'android') return 'Android'
-  if (k === 'mixed') return 'Android + iOS'
+  if (k === 'web') return 'Web'
+  if (k === 'mixed') return '混合端'
   return ''
 }
 
@@ -156,6 +161,7 @@ export function displayTaskStatus(task) {
   if (s === 'running' || s === 'queued') return s
   if (s === 'cancelled') return 'cancelled'
   const untestable = Number(task?.untestable || 0)
+  if (failed === 0 && passed === 0 && Number(task?.expect_unverifiable || 0) > 0) return 'unverifiable'
   if (failed === 0 && passed === 0 && untestable > 0) return 'untestable'
   if (failed > 0 && passed > 0) return 'partial_fail'
   if (s === 'failed' || s === 'fail') return 'failed'
@@ -183,20 +189,17 @@ export function taskProgressPct(task) {
 }
 
 export function taskPassRate(task) {
-  if (task?.pass_rate != null && task.pass_rate !== '') {
-    const n = Number(task.pass_rate)
-    if (!Number.isNaN(n)) return Math.round(n)
-  }
   const cases = task?.cases || []
   if (cases.length) {
-    const judged = cases.filter((c) => !['pending', 'queued', 'cancelled', 'skipped', 'untestable'].includes(c.status))
-    if (!judged.length) return null
-    return Math.round((judged.filter((c) => c.status === 'pass').length / judged.length) * 100)
+    const s = summarizeTaskCoverage(cases)
+    if (s.productDenom) return s.productPassRate
+    if (task?.pass_rate != null && task.pass_rate !== '') {
+      const n = Number(task.pass_rate)
+      if (!Number.isNaN(n)) return Math.round(n)
+    }
+    return null
   }
-  const judged = Number(task?.passed || 0)
-    + Number(task?.failed || 0)
-    + Number(task?.blocked || 0)
-    + Number(task?.declined || 0)
+  const judged = Number(task?.passed || 0) + Number(task?.failed || 0)
   if (!judged) return null
   return Math.round((Number(task?.passed || 0) / judged) * 100)
 }
@@ -276,9 +279,11 @@ export function casePlatformKind(c) {
   const p = String(c?.platform || c?.client || c?.terminal || '').toLowerCase()
   const ios = p.includes('ios') || p.includes('苹果') || p.includes('iphone') || p.includes('ipad')
   const android = p.includes('android') || p.includes('安卓')
-  if (p.includes('双') || p.includes('both') || (ios && android)) return 'any'
+  const web = p.includes('web') || p.includes('h5') || p.includes('网页') || p.includes('后台') || p.includes('浏览器')
+  if (p.includes('双') || p.includes('both') || (ios && android) || (web && (ios || android))) return 'any'
   if (ios) return 'ios'
   if (android) return 'android'
+  if (web) return 'web'
   return 'any'
 }
 
@@ -289,8 +294,10 @@ export function devicePlatformKind(device) {
     device?.type,
     device?.platform,
     device?.model,
+    device?.sn,
   ].map((x) => String(x || '')).join(' ').toLowerCase()
   if (blob.includes('ios') || blob.includes('iphone') || blob.includes('ipad')) return 'ios'
+  if (blob.includes('web') || blob.includes('playwright') || blob.includes('browser') || blob.includes('浏览器')) return 'web'
   return 'android'
 }
 
@@ -334,6 +341,12 @@ export function normalizeCase(raw = {}, taskId = '') {
     device_platform: raw.device_platform || '',
     failure_category: raw.failure_category || '',
     failure_label: raw.failure_label || '',
+    coverage_class: raw.coverage_class || '',
+    coverage_label: raw.coverage_label || '',
+    coverage: (raw.coverage && typeof raw.coverage === 'object') ? raw.coverage : null,
+    expected_by_step: (raw.expected_by_step && typeof raw.expected_by_step === 'object') ? raw.expected_by_step : {},
+    step_nums: Array.isArray(raw.step_nums) ? raw.step_nums : [],
+    expected_nums: Array.isArray(raw.expected_nums) ? raw.expected_nums : [],
     knowledge_ids: Array.isArray(raw.knowledge_ids) ? raw.knowledge_ids : [],
     knowledge_proposals: Array.isArray(raw.knowledge_proposals) ? raw.knowledge_proposals : [],
   }
@@ -381,6 +394,10 @@ export function normalizeTask(raw, { source = '' } = {}) {
     blocked,
     declined,
     untestable,
+    prep_insufficient: Number(raw.prep_insufficient || 0),
+    step_unexecutable: Number(raw.step_unexecutable || 0),
+    expect_unverifiable: Number(raw.expect_unverifiable || 0),
+    engine_error: Number(raw.engine_error || 0),
     progress,
     passRate,
     startedAt: raw.started_at || raw.startedAt || '',
@@ -492,6 +509,10 @@ export function applyTestingTaskEvent(task, data) {
   if (data.failed != null) next.failed = Number(data.failed)
   if (data.blocked != null) next.blocked = Number(data.blocked)
   if (data.declined != null) next.declined = Number(data.declined)
+  if (data.prep_insufficient != null) next.prep_insufficient = Number(data.prep_insufficient)
+  if (data.step_unexecutable != null) next.step_unexecutable = Number(data.step_unexecutable)
+  if (data.expect_unverifiable != null) next.expect_unverifiable = Number(data.expect_unverifiable)
+  if (data.engine_error != null) next.engine_error = Number(data.engine_error)
   if (data.progress != null) next.progress = Number(data.progress)
   if (data.current_case_id) next.currentCaseId = data.current_case_id
   if (data.error != null) next.error = data.error
@@ -538,23 +559,36 @@ export function isStepLimitCase(row = {}) {
   const cat = String(row.failure_category || '').toLowerCase()
   if (cat === 'budget_exhausted') return true
   const blob = `${row.failure_label || ''} ${row.summary || ''} ${row.status || ''}`
-  return /步数耗尽|步数上限|max_steps/i.test(blob) || String(row.status || '') === 'partial'
+  return /执行超时|时间上限|分钟仍未完成|步数耗尽|步数上限|max_steps/i.test(blob)
+    || String(row.status || '') === 'partial'
 }
 
 export function statusTagType(s, row = null) {
   if (row && isStepLimitCase(row)) return 'warning'
   const vis = row && (row.taskId || row.total != null) ? displayTaskStatus(row) : s
+  const cls = row?.coverage_class
+  if (cls === 'product_fail') return 'danger'
+  if (cls === 'expect_unverifiable' || vis === 'unverifiable') return 'warning'
+  if (['prep_insufficient', 'step_unexecutable', 'engine_error'].includes(cls)) return 'warning'
+  if (cls === 'untestable') return 'info'
   if (['pass', 'done', 'success'].includes(vis)) return 'success'
   if (['fail', 'failed'].includes(vis)) return 'danger'
   if (vis === 'partial_fail') return 'warning'
-  if (['blocked', 'partial', 'cancelled', 'untestable'].includes(vis)) return 'warning'
+  if (['blocked', 'partial', 'cancelled', 'untestable', 'unverifiable'].includes(vis)) return 'warning'
   if (vis === 'running') return 'primary'
   if (vis === 'pending' || vis === 'queued' || vis === 'skipped') return 'info'
   return 'info'
 }
 
 export function statusLabel(s, row = null) {
-  if (row && isStepLimitCase(row)) return '步数耗尽'
+  if (row && isStepLimitCase(row)) return '执行超时'
+  if (row?.coverage_label) return row.coverage_label
+  const cls = row?.coverage_class
+  if (cls === 'prep_insufficient') return '前置不足'
+  if (cls === 'step_unexecutable') return '步骤无法执行'
+  if (cls === 'expect_unverifiable') return '无法验证'
+  if (cls === 'product_fail') return '校验不通过'
+  if (cls === 'engine_error') return '引擎故障'
   const vis = row && (row.taskId || row.total != null) ? displayTaskStatus(row) : s
   return ({
     queued: '排队',
@@ -565,16 +599,17 @@ export function statusLabel(s, row = null) {
     fail: '失败',
     pass: '通过',
     blocked: '等人',
-    partial: '步数耗尽',
+    partial: '执行超时',
     partial_fail: '部分失败',
     declined: '拒绝',
     cancelled: '已取消',
     skipped: '跳过',
     untestable: '测不了',
+    unverifiable: '无法验证',
     manual: '手工',
     feishu: '飞书',
     schedule: '定时',
-    budget_exhausted: '步数耗尽',
+    budget_exhausted: '执行超时',
   })[vis] || vis || '未知'
 }
 
@@ -600,6 +635,7 @@ export function sortCasesForRail(cases = []) {
     if (s === 'blocked') return 1
     if (s === 'pending') return 2
     if (['fail', 'declined', 'partial'].includes(s)) return 3
+    if (s === 'unverifiable') return 3.2
     if (s === 'untestable') return 3.5
     if (s === 'pass') return 4
     if (s === 'cancelled' || s === 'skipped') return 5
@@ -612,7 +648,7 @@ export function progressStatus(task) {
   if (!task) return undefined
   const vis = displayTaskStatus(task)
   if (vis === 'running' || vis === 'queued') return undefined
-  if (vis === 'cancelled' || vis === 'partial_fail') return 'warning'
+  if (vis === 'cancelled' || vis === 'partial_fail' || vis === 'unverifiable') return 'warning'
   if (vis === 'failed') return 'exception'
   if (vis === 'done') return 'success'
   return undefined

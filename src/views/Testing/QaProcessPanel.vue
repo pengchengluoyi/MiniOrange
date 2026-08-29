@@ -10,6 +10,7 @@ import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
+import CasePairedEditor from '@/components/CasePairedEditor.vue'
 import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import { suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
@@ -1247,6 +1248,18 @@ const rewritePointCases = (pointId) => {
   })
 }
 
+const onDraftCaseChange = (row, fields) => {
+  const req = selectedReq.value
+  if (!req || row?.locked) return
+  const cases = (req.draft_cases || []).map((c) => (
+    String(c.case_id) === String(row.case_id) ? { ...c, ...fields } : c
+  ))
+  const next = { ...req, draft_cases: cases }
+  const i = requirements.value.findIndex((r) => r.id === next.id)
+  if (i >= 0) requirements.value.splice(i, 1, next)
+  persistSoon()
+}
+
 const historyRows = (row) => {
   if (row?.job === 'draft_cases') return row.payload?.cases || []
   return flattenMindmap(row?.payload)
@@ -1982,18 +1995,11 @@ watch(() => props.projectId, loadEnvSnap)
                 <el-table-column type="expand">
                   <template #default="{ row }">
                     <div class="draft-case-expand">
-                      <section>
-                        <h5>前置条件</h5>
-                        <CaseMultilineCell :row="row" raw-key="precondition" :clamp="0" />
-                      </section>
-                      <section>
-                        <h5>测试步骤</h5>
-                        <CaseAlignedFieldCell :row="row" field="step" :clamp="0" />
-                      </section>
-                      <section>
-                        <h5>预期效果</h5>
-                        <CaseAlignedFieldCell :row="row" field="expected" :clamp="0" />
-                      </section>
+                      <CasePairedEditor
+                        :row="row"
+                        :editable="!row.locked"
+                        @change="(fields) => onDraftCaseChange(row, fields)"
+                      />
                     </div>
                   </template>
                 </el-table-column>
@@ -2631,16 +2637,7 @@ watch(() => props.projectId, loadEnvSnap)
   word-break: break-word;
 }
 .draft-case-expand {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 16px;
   padding: 8px 12px 12px;
-}
-.draft-case-expand h5 {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 650;
-  color: #6b7280;
 }
 .cover-head {
   display: flex;

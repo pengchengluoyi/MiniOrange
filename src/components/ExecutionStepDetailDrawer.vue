@@ -41,7 +41,7 @@ const statusText = (s) => ({
   blocked: '阻塞',
   skipped: '跳过',
   declined: '拒绝',
-  partial: '步数耗尽',
+  partial: '执行超时',
 })[s] || s || ''
 
 const statusTone = (s) => {

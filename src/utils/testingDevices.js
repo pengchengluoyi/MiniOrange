@@ -19,8 +19,12 @@ export function deviceExecChannel(device) {
   const ch = device?.channels || {}
   const type = String(device?.device_type || device?.type || '').toLowerCase()
   const status = String(device?.status || '').toLowerCase()
+  const sn = String(device?.sn || '').toLowerCase()
   const iosTransport = iosTransportOf(device)
 
+  if (isChannelOnline(ch.playwright_state) || sn.startsWith('web-') || type === 'web' || type === 'browser' || type === 'playwright') {
+    return { ok: isChannelOnline(ch.playwright_state) || (status === 'online' && (sn.startsWith('web-') || type === 'web')), channel: 'playwright', label: '浏览器' }
+  }
   if (isChannelOnline(ch.ios_state) || (status === 'online' && (type.includes('ios') || type.includes('iphone') || type.includes('ipad')))) {
     const via = iosTransport === 'wifi'
       ? 'ios/wifi'
@@ -65,6 +69,7 @@ function channelKindLabel(ch) {
   if (s.includes('ios')) return 'iOS'
   if (s === 'adb') return 'Android'
   if (s.includes('claw')) return 'ClawNode'
+  if (s.includes('playwright') || s.includes('browser') || s.includes('浏览器')) return '浏览器'
   return s || '设备'
 }
 
@@ -79,6 +84,10 @@ export function devicePrimaryName(device) {
   if (sn.startsWith('ios-wifi-')) {
     const tail = sn.slice('ios-wifi-'.length)
     if (tail && !/^[0-9a-f-]{20,}$/i.test(tail)) return tail
+  }
+  const type = String(device?.device_type || device?.type || '').toLowerCase()
+  if (sn === 'web-local' || type === 'web') {
+    return '本机浏览器'
   }
   return shortTaskId(sn) || '未命名设备'
 }

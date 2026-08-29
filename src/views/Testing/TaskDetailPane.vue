@@ -17,6 +17,7 @@ import { generatedCasesFromProcess } from '@/utils/qaProcess'
 import { envLabel } from '@/constants/envProfiles'
 import { normalizeCaseRow } from '@/utils/caseText'
 import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
+import { isGapRow, isProductFailRow, isUnverifiableRow, summarizeTaskCoverage } from '@/utils/caseCatalog'
 import {
   apiErrorDetail,
   applyTestingTaskEvent,
@@ -35,7 +36,6 @@ import {
   statusLabel,
   statusTagType,
   taskCoverage,
-  taskPassRate,
   taskPlatformOfSn,
   taskProgressPct,
   taskSns,
@@ -118,13 +118,13 @@ const railCases = computed(() => (caseTab.value === 'pending' && showPendingTab.
 const pagedRailCases = computed(() => slicePage(railCases.value, casePage.value, casePageSize.value))
 
 const isLive = computed(() => task.value?.status === 'running')
-const failedCases = computed(() =>
-  (task.value?.cases || []).filter((c) => ['fail', 'blocked', 'declined', 'partial'].includes(c.status)),
-)
+const failedCases = computed(() => (task.value?.cases || []).filter(isProductFailRow))
+const unverifiableCases = computed(() => (task.value?.cases || []).filter(isUnverifiableRow))
+const gapCases = computed(() => (task.value?.cases || []).filter(isGapRow))
+const coverageStats = computed(() => summarizeTaskCoverage(task.value?.cases || []))
 const skippedCases = computed(() =>
   (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
 )
-const passRate = computed(() => taskPassRate(task.value))
 const progressPct = computed(() => taskProgressPct(task.value))
 const headStats = computed(() => {
   const cases = task.value?.cases || []
@@ -674,12 +674,17 @@ const saveReview = async () => {
             </div>
             <div class="pane-head-stats">
               <span>全部 {{ headStats.total }}</span>
-              <span class="ok">通过 {{ headStats.passed }}</span>
-              <span class="bad">失败 {{ headStats.failed }}</span>
+              <span class="ok">通过 {{ coverageStats.pass || headStats.passed }}</span>
+              <span class="bad">校验不通过 {{ coverageStats.product_fail }}</span>
+              <span v-if="coverageStats.prep_insufficient">准备不足 {{ coverageStats.prep_insufficient }}</span>
+              <span v-if="coverageStats.step_unexecutable">步骤无法执行 {{ coverageStats.step_unexecutable }}</span>
+              <span v-if="coverageStats.expect_unverifiable" class="warn">无法验证 {{ coverageStats.expect_unverifiable }}</span>
+              <span v-if="coverageStats.engine_error">引擎故障 {{ coverageStats.engine_error }}</span>
+              <span v-if="coverageStats.untestable">测不了 {{ coverageStats.untestable }}</span>
               <span v-if="headStats.blocked">阻塞 {{ headStats.blocked }}</span>
               <span v-if="headStats.running">运行中 {{ headStats.running }}</span>
               <span v-if="headStats.pending">等待 {{ headStats.pending }}</span>
-              <span v-if="passRate != null && displayTaskStatus(task) !== 'cancelled'">通过率 {{ passRate }}%</span>
+              <span v-if="coverageStats.productPassRate != null && displayTaskStatus(task) !== 'cancelled'">产品通过率 {{ coverageStats.productPassRate }}%</span>
               <span v-if="taskSns(task).length">设备 {{ formatTaskDevices(task) }}</span>
             </div>
             <div v-if="headChips.length" class="pane-head-chips">
@@ -705,7 +710,7 @@ const saveReview = async () => {
               plain
               :loading="retrying"
               @click="retryFailed"
-            >重跑失败用例</el-button>
+            >{{ failedCases.length ? '重跑校验不通过' : '重跑失败用例' }}</el-button>
           </div>
         </div>
         <div class="pane-progress">
@@ -765,14 +770,15 @@ const saveReview = async () => {
 
       <template v-else-if="view === 'summary'">
         <div class="metrics">
-          <div class="metric"><div class="k">通过率</div><div class="v">{{ passRate == null ? '—' : `${passRate}%` }}</div></div>
-          <div class="metric"><div class="k">通过</div><div class="v ok">{{ task.passed || 0 }}</div></div>
-          <div class="metric"><div class="k">失败</div><div class="v bad">{{ task.failed || 0 }}</div></div>
-          <div class="metric"><div class="k">阻塞</div><div class="v warn">{{ task.blocked || 0 }}</div></div>
+          <div class="metric"><div class="k">产品通过率</div><div class="v">{{ coverageStats.productPassRate == null ? '—' : `${coverageStats.productPassRate}%` }}</div></div>
+          <div class="metric"><div class="k">通过</div><div class="v ok">{{ coverageStats.pass || 0 }}</div></div>
+          <div class="metric"><div class="k">校验不通过</div><div class="v bad">{{ coverageStats.product_fail || 0 }}</div></div>
+          <div class="metric"><div class="k">无法验证</div><div class="v warn">{{ coverageStats.expect_unverifiable || 0 }}</div></div>
+          <div class="metric"><div class="k">执行期缺口</div><div class="v warn">{{ coverageStats.gaps || 0 }}</div></div>
         </div>
         <div class="fail-block">
-          <h4>失败 / 异常用例</h4>
-          <el-table :data="failedCases" border stripe size="small" empty-text="暂无失败用例">
+          <h4>校验不通过</h4>
+          <el-table :data="failedCases" border stripe size="small" empty-text="没有校验不通过的用例">
             <el-table-column prop="case_id" label="用例" width="100" />
             <el-table-column prop="name" label="名称" min-width="110" />
             <el-table-column label="设备" width="128">
@@ -780,9 +786,9 @@ const saveReview = async () => {
                 {{ [platformLabel(row.device_platform || taskPlatformOfSn(task, row.sn)), shortDeviceLabel(row.sn)].filter(Boolean).join(' · ') || '—' }}
               </template>
             </el-table-column>
-            <el-table-column label="状态" width="80">
+            <el-table-column label="状态" width="108">
               <template #default="{ row }">
-                <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="摘要" min-width="200">
@@ -794,6 +800,50 @@ const saveReview = async () => {
               <template #default="{ row }">
                 <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
                 <el-button link type="primary" :disabled="retrying" @click="retryOne(row)">重跑</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div v-if="unverifiableCases.length" class="fail-block">
+          <h4>无法验证（未观察到该性质：不算通过，也不当产品红）</h4>
+          <el-table :data="unverifiableCases" border stripe size="small">
+            <el-table-column prop="case_id" label="用例" width="100" />
+            <el-table-column prop="name" label="名称" min-width="110" />
+            <el-table-column label="状态" width="108">
+              <template #default="{ row }">
+                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="摘要" min-width="200">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ row.summary || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div v-if="gapCases.length" class="fail-block">
+          <h4>执行期缺口（改用例，不要当产品红重跑）</h4>
+          <el-table :data="gapCases" border stripe size="small">
+            <el-table-column prop="case_id" label="用例" width="100" />
+            <el-table-column prop="name" label="名称" min-width="110" />
+            <el-table-column label="缺口" width="140">
+              <template #default="{ row }">
+                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="摘要" min-width="200">
+              <template #default="{ row }">
+                <span class="fail-summary">{{ row.summary || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1008,6 +1058,7 @@ const saveReview = async () => {
               :case-summary="selectedCase?.summary || ''"
               :case-goal="headerMeta?.goal || selectedCase?.name || ''"
               :case-spec="selectedSpec"
+              :case-coverage="selectedCase?.coverage || null"
             />
           </template>
           <el-empty v-else description="选择左侧用例查看详情" />
@@ -1148,6 +1199,7 @@ const saveReview = async () => {
 }
 .pane-head-stats .ok { background: #ecfdf5; color: #059669; }
 .pane-head-stats .bad { background: #fef2f2; color: #dc2626; }
+.pane-head-stats .warn { background: #fffbeb; color: #d97706; }
 .pane-head-chips {
   display: flex;
   flex-wrap: wrap;

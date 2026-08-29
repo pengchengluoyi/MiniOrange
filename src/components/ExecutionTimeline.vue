@@ -8,16 +8,24 @@ import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { belongsToAgentTask } from '@/utils/copilotAgent'
 import { normalizeCaseRow } from '@/utils/caseText'
-import { formatElapsed, platformLabel } from '@/utils/testingTasks'
+import { formatElapsed } from '@/utils/testingTasks'
 import {
   mergeCheckpointCatalog,
   parseCheckpointCatalog,
   parseCheckpointsFromLlmInput,
   replaceCheckpointIds,
 } from '@/utils/checkpoints'
-import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
-import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import ExecutionStepDetailDrawer from '@/components/ExecutionStepDetailDrawer.vue'
+import { COVERAGE_LABEL, COVERAGE_TONE } from '@/utils/caseCatalog'
+import {
+  buildCaseRunGroups,
+  emptyTaskHint,
+  isLiveEngineStep,
+  runningTaskId,
+  TASK_STATUS_LABEL,
+  taskIdForEngineStep,
+  taskStatusLabel,
+} from '@/utils/caseRunTasks'
 
 const props = defineProps({
   runId: { type: String, default: '' },
@@ -25,6 +33,7 @@ const props = defineProps({
   caseSummary: { type: String, default: '' },
   caseGoal: { type: String, default: '' },
   caseSpec: { type: Object, default: null },
+  caseCoverage: { type: Object, default: null },
 })
 
 const goal = ref('')
@@ -40,6 +49,8 @@ const activeStep = ref(null)
 const hoverStep = ref(null)
 const lightboxSrc = ref('')
 const lightboxMeta = ref('')
+const verdictOpen = ref(false)
+const filmOpen = ref(false)
 
 function isValidThumb(t) {
   if (!t || typeof t !== 'string') return false
@@ -110,6 +121,8 @@ function reset() {
   lightboxSrc.value = ''
   stepDrawerOpen.value = false
   stepDrawerFocusUid.value = ''
+  verdictOpen.value = false
+  filmOpen.value = false
 }
 
 function upsert(stepNo, patch) {
@@ -129,9 +142,10 @@ function applyAgentEvent(d) {
     )
   }
   else if (d.phase === 'think') {
+    const checking = /正在校验/.test(String(d.summary || ''))
     upsert(d.step, {
-      status: 'thinking',
-      thought: d.summary || '正在看图决策…',
+      status: checking ? 'checking' : 'thinking',
+      thought: d.summary || (checking ? '正在校验…' : '正在看图决策…'),
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
       ...(knowledge ? { knowledge } : {}),
     })
@@ -158,8 +172,15 @@ function applyAgentEvent(d) {
     activeStep.value = d.step
   }
   else if (d.phase === 'result') {
+    const rs = String(d.result_status || '').toLowerCase()
+    const settled = ({
+      pass: 'pass', skipped: 'skipped', skip: 'skipped',
+      fail: 'fail', failed: 'fail', blocked: 'blocked',
+      declined: 'declined', done: 'done',
+    })[rs] || (rs || undefined)
     upsert(d.step, {
       result_status: d.result_status,
+      ...(settled ? { status: settled } : {}),
       summary: d.summary,
       elapsed: d.elapsed_ms || d.elapsed,
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
@@ -383,39 +404,92 @@ onUnmounted(() => {
 
 const isLimit = computed(() => {
   const cat = String(failureCategory.value || props.caseSpec?.failure_category || '').toLowerCase()
+  const blob = `${failureLabel.value} ${finalSummary.value} ${props.caseSummary || ''}`
+  const gateFailed = steps.value.some((s) => {
+    const cap = String(s?.cap || s?.action?.capability_id || '')
+    return /session_gate/.test(cap) && ['fail', 'failed'].includes(String(s.result_status || s.status || ''))
+  })
+  if (gateFailed) return false
+  if (/已决策\s*0/.test(blob) && /max_steps/.test(blob)) return false
   if (cat === 'budget_exhausted') return true
   if (String(overall.value) === 'partial') return true
-  return /步数耗尽|步数上限|max_steps/i.test(`${failureLabel.value} ${finalSummary.value} ${props.caseSummary || ''}`)
+  return /执行超时|时间上限|分钟仍未完成|步数耗尽|步数上限|max_steps/i.test(blob)
 })
 
 const spec = computed(() => normalizeCaseRow(props.caseSpec || {}))
-const caseName = computed(() => spec.value.name || spec.value.case_name || spec.value.title || '')
-const caseModule = computed(() => spec.value.module || '')
-const casePlatform = computed(() => {
-  const raw = spec.value.platform || spec.value.client || spec.value.terminal || spec.value.device_platform || ''
-  return platformLabel(raw) || raw || ''
-})
 const hasExpected = computed(() => {
   const s = spec.value || {}
   if (Array.isArray(s.expected) && s.expected.some((x) => String(x || '').trim())) return true
   return Boolean(String(s.expected_raw || '').trim())
 })
-const showCaseInfo = computed(() => true)
+
+const coverageCls = computed(() => props.caseCoverage?.coverage_class || '')
+const coverageHeadLabel = computed(() => props.caseCoverage?.coverage_label || COVERAGE_LABEL[coverageCls.value] || '')
+const caseSettled = computed(() => finished.value || Boolean(coverageCls.value))
+const coverageGaps = computed(() => {
+  const fromCov = Array.isArray(props.caseCoverage?.gaps) ? props.caseCoverage.gaps.filter((g) => g?.tag) : []
+  if (fromCov.length) return fromCov
+  return runGroups.value.flatMap((g) => (
+    g.tasks.filter((t) => t.gapTag).map((t) => ({ tag: t.gapTag, text: t.title, code: t.code }))
+  ))
+})
+
+const runGroups = computed(() => buildCaseRunGroups({
+  spec: spec.value,
+  coverage: props.caseCoverage,
+  engineSteps: steps.value,
+  finished: caseSettled.value,
+  live: props.live && !caseSettled.value,
+}))
+const hasRunTree = computed(() => runGroups.value.some((g) => g.tasks.length))
+const liveTaskId = computed(() => runningTaskId(runGroups.value, steps.value, {
+  finished: caseSettled.value,
+  live: props.live && !caseSettled.value,
+}))
+const openTaskId = ref('')
+
+const verdictTag = computed(() => {
+  if (isLimit.value) return '执行超时'
+  if (coverageHeadLabel.value) return coverageHeadLabel.value
+  return statusText(overall.value) || (caseSettled.value ? '已结束' : '执行中')
+})
+const verdictTone = computed(() => {
+  if (isLimit.value) return 'limit'
+  if (coverageCls.value === 'pass') return 'ok'
+  if (coverageCls.value === 'product_fail') return 'bad'
+  if (['prep_insufficient', 'step_unexecutable', 'expect_unverifiable', 'engine_error', 'untestable'].includes(coverageCls.value)) {
+    return 'warn'
+  }
+  return statusClass(overall.value)
+})
+
+watch(liveTaskId, (id) => {
+  if (id) openTaskId.value = id
+}, { immediate: true })
+
+function toggleTask(id) {
+  openTaskId.value = openTaskId.value === id ? '' : id
+}
+
+function cardsOf(task) {
+  const set = new Set(task?.cardNos || [])
+  return steps.value.filter((s) => set.has(s.step))
+}
 
 const statusText = (s) => {
-  if (isLimit.value && (s === overall.value || s === 'partial')) return '步数耗尽'
+  if (isLimit.value && (s === overall.value || s === 'partial')) return '执行超时'
   return ({
     running: '执行中', queued: '排队',
-    continue: '决策', thinking: '看图中', done: '完成', give_up: '放弃', ask_human: '请求人工',
+    continue: '决策', thinking: '看图中', checking: '校验中', done: '完成', give_up: '放弃', ask_human: '请求人工',
     pass: '成功', fail: '失败', blocked: '阻塞', skipped: '跳过', declined: '拒绝',
-    partial: '步数耗尽',
+    partial: '执行超时',
   })[s] || s || ''
 }
 const statusClass = (s) => {
   if (isLimit.value && (s === overall.value || s === 'partial')) return 'limit'
   if (['done', 'pass'].includes(s)) return 'ok'
   if (['give_up', 'fail', 'declined'].includes(s)) return 'bad'
-  if (['ask_human', 'blocked', 'partial', 'thinking'].includes(s)) return 'warn'
+  if (['ask_human', 'blocked', 'partial', 'thinking', 'checking', 'running', 'continue'].includes(s)) return 'warn'
   return ''
 }
 const fmtAction = (a) => {
@@ -552,7 +626,6 @@ const lastFailThumb = computed(() => {
   const any = [...steps.value].reverse().find((x) => isValidThumb(x.thumb))
   return any?.thumb || ''
 })
-// 默认展开（允许用户再折叠）
 const stepsOpen = ref(true)
 
 // 统一：单条步骤详情页抽屉（包含系统预筛/恢复规则/知识命中）
@@ -591,6 +664,9 @@ watch(drawerThumbSrc, (src) => {
 const selectStep = (stepNo) => {
   activeStep.value = stepNo
   stepsOpen.value = true
+  filmOpen.value = true
+  const tid = taskIdForEngineStep(runGroups.value, stepNo)
+  if (tid) openTaskId.value = tid
   nextTick(() => {
     const el = scrollEl.value?.querySelector(`[data-step="${stepNo}"]`)
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -647,31 +723,6 @@ defineExpose({ goal, overall, finished })
 
 <template>
   <div class="et-wrap">
-    <section v-if="showCaseInfo" class="et-case">
-      <table class="case-spec-table">
-        <thead>
-          <tr>
-            <th>端</th>
-            <th>模块</th>
-            <th>用例名称</th>
-            <th>前置条件</th>
-            <th>步骤</th>
-            <th>预期</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{{ casePlatform || '—' }}</td>
-            <td>{{ caseModule || '—' }}</td>
-            <td>{{ caseName || '—' }}</td>
-            <td class="col-multi"><CaseMultilineCell :row="spec" raw-key="precondition" :clamp="0" /></td>
-            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="step" :clamp="0" /></td>
-            <td class="col-multi"><CaseAlignedFieldCell :row="spec" field="expected" :clamp="0" /></td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
     <div v-if="checkpointCatalog.length && !hasExpected" class="et-cps">
       <span class="et-cps-label">检查点</span>
       <ol>
@@ -679,26 +730,46 @@ defineExpose({ goal, overall, finished })
       </ol>
     </div>
 
-    <div v-if="showVerdict" class="et-verdict" :class="isLimit ? 'limit' : statusClass(overall)">
-      <div v-if="lastFailThumb && statusClass(overall) === 'bad'" class="et-verdict-shot" @click="openStepDetailDrawer(failStepNo)">
-        <img :src="thumbSrc(lastFailThumb)" alt="" />
+    <div v-if="showVerdict" class="et-fold" :class="[isLimit ? 'limit' : verdictTone, { open: verdictOpen }]">
+      <div class="et-log-head">
+        <button type="button" class="et-fold-toggle" @click="verdictOpen = !verdictOpen">
+          <span class="et-log-head-l">
+            执行结果
+            <em class="cls" :class="isLimit ? 'info' : (verdictTone === 'ok' ? 'success' : verdictTone === 'bad' ? 'danger' : 'warning')">{{ verdictTag }}</em>
+          </span>
+          <span>{{ verdictOpen ? '收起' : '展开' }}</span>
+        </button>
+        <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
       </div>
-      <div class="et-verdict-main">
-        <div class="et-verdict-kicker">
-          <span class="et-verdict-tag">{{ statusText(overall) || (finished ? '已结束' : '执行中') }}</span>
-          <span v-if="isLimit" class="et-limit-pill">步数上限</span>
-          <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
-          <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
+      <div v-show="verdictOpen" class="et-verdict" :class="isLimit ? 'limit' : verdictTone">
+        <div v-if="lastFailThumb && statusClass(overall) === 'bad'" class="et-verdict-shot" @click="openStepDetailDrawer(failStepNo)">
+          <img :src="thumbSrc(lastFailThumb)" alt="" />
         </div>
-        <p class="et-verdict-body">{{ verdictText || (finished || !props.live ? '本用例已结束，详见下方时间线。' : '正在执行，步骤会实时出现在下方。') }}</p>
+        <div class="et-verdict-main">
+          <div class="et-verdict-kicker">
+            <span class="et-verdict-tag">{{ verdictTag }}</span>
+            <span
+              v-for="(g, gi) in coverageGaps"
+              :key="(g.code || g.tag) + gi"
+              class="et-gap-pill"
+              :title="g.text || g.tag"
+            >{{ g.tag }}</span>
+            <span v-if="isLimit" class="et-limit-pill">时间上限</span>
+            <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
+            <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
+          </div>
+          <p class="et-verdict-body">{{ verdictText || (finished || !props.live ? '本用例已结束，详见下方时间线。' : '正在执行，步骤会实时出现在下方。') }}</p>
+        </div>
       </div>
     </div>
 
-    <div v-if="runId || steps.length" class="film-block">
-      <div class="film-head">
-        <strong>时间线</strong>
-        <span class="film-total">按执行顺序 · 条宽≈耗时 · 共 {{ nodeCols.length }} 步</span>
-      </div>
+    <div v-if="runId || steps.length" class="et-fold" :class="{ open: filmOpen }">
+      <button type="button" class="et-log-head" @click="filmOpen = !filmOpen">
+        <span class="et-log-head-l">时间线</span>
+        <span>{{ filmOpen ? '收起' : (steps.length ? `展开 ${nodeCols.length} 步` : '展开') }}</span>
+      </button>
+      <div v-show="filmOpen" class="film-body">
+      <p v-if="steps.length" class="film-total">按执行顺序 · 条宽≈耗时 · 共 {{ nodeCols.length }} 步</p>
       <div v-if="!steps.length" class="film-empty">暂无步骤时间线</div>
       <template v-else>
         <div class="film-axis" aria-hidden="true">
@@ -749,94 +820,200 @@ defineExpose({ goal, overall, finished })
             <div class="tl-meta">
               <span class="node-idx">#{{ f.step }}</span>
               <span class="node-cap" :title="f.cap">{{ f.cap }}</span>
-              <span class="node-ms">{{ fmtDuration(f.elapsed) }}</span>
+              <span v-if="isLiveEngineStep(f)" class="crt-spin sm" title="执行中" />
+              <span v-else class="node-ms">{{ fmtDuration(f.elapsed) }}</span>
             </div>
           </button>
         </div>
       </template>
-    </div>
-
-    <section v-if="runId || steps.length" class="et-log-block" :class="{ open: stepsOpen }">
-      <button type="button" class="et-log-head" @click="stepsOpen = !stepsOpen">
-        步骤明细
-        <span>{{ stepsOpen ? '收起' : `展开 ${steps.length} 步` }}</span>
-      </button>
-      <div v-show="stepsOpen" ref="scrollEl" class="et-timeline">
-      <div v-if="!steps.length" class="et-empty">暂无步骤（运行中会实时出现，或该 run 无明细）</div>
-      <div
-        v-for="s in steps"
-        :key="s.step"
-        class="et-step"
-        :class="{ active: s.step === activeStep }"
-        :data-step="s.step"
-        @click="openStepDetailDrawer(s.step)"
-      >
-        <div class="et-idx">#{{ s.step }}</div>
-        <button
-          v-if="isValidThumb(s.thumb)"
-          type="button"
-          class="et-thumb-btn"
-          title="点击放大"
-          @click="onStepThumbClick(s, $event)"
-        >
-          <img :src="thumbSrc(s.thumb)" class="et-thumb" alt="" />
-        </button>
-        <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
-        <div class="et-body">
-          <div class="et-head">
-            <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
-            <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
-            <span class="et-cap">{{ s.cap || '' }}<span v-if="s.executor" class="et-via">via {{ s.executor }}</span></span>
-            <span class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
-          </div>
-          <div v-if="s.action" class="et-actline">
-            <span class="et-act-label">动作</span>
-            <code>{{ fmtAction(s.action) }}</code>
-          </div>
-          <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
-          <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
-          <!-- 本步命中的 Pack：知识/恢复规则影响了哪一步，在这里能溯源 -->
-          <div v-if="s.packs?.length" class="et-packs">
-            <span class="et-packs-label">本步命中</span>
-            <button
-              v-for="p in s.packs" :key="p.id || p.uid"
-              type="button"
-              class="et-pack" :class="{ applied: p.recovered, advise: p.mode === 'advise' }"
-              :title="p.uid || p.id"
-              @click.stop="openStepDetailDrawer(s.step)"
-            >
-              {{ p.id }}
-              <em v-if="p.mode === 'advise'">建议</em>
-              <em v-else-if="p.recovered">已恢复</em>
-              <em v-else-if="p.applied">未恢复</em>
-            </button>
-          </div>
-          <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
-            <span class="et-packs-label">知识库命中</span>
-            <button
-              v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
-              type="button"
-              class="et-pack et-knowledge"
-              :title="k.title || k.id"
-              @click.stop="openStepDetailDrawer(s.step)"
-            >
-              {{ k.title || k.id }}
-              <em v-if="k.match_pct != null">{{ Number(k.match_pct) || 0 }}%</em>
-            </button>
-          </div>
-          <div v-if="s.recovery?.trigger && !s.packs?.length" class="et-packs muted">
-            <span class="et-packs-label">系统层预筛</span>
-            <button
-              type="button"
-              class="et-pack"
-              @click.stop="openStepDetailDrawer(s.step)"
-            >
-              {{ s.recovery.trigger }} · 无规则命中
-            </button>
-          </div>
-        </div>
       </div>
     </div>
+
+    <section v-if="runId || steps.length || hasRunTree" class="et-log-block" :class="{ open: stepsOpen }">
+      <button type="button" class="et-log-head" @click="stepsOpen = !stepsOpen">
+        <span class="et-log-head-l">
+          用例步骤
+          <em v-if="coverageHeadLabel" class="cls" :class="COVERAGE_TONE[coverageCls] || ''">{{ coverageHeadLabel }}</em>
+        </span>
+        <span>{{ stepsOpen ? '收起' : (hasRunTree ? '展开任务' : `展开 ${steps.length} 步`) }}</span>
+      </button>
+      <div v-show="stepsOpen" ref="scrollEl" class="et-timeline">
+        <template v-if="hasRunTree">
+          <div v-for="g in runGroups" :key="g.id" class="crt-group" :class="g.status">
+            <div class="crt-group-head">
+              <span v-if="g.status === 'run'" class="crt-spin sm" :title="g.runLabel || '执行中'" />
+              <span v-else class="crt-mark" :class="g.status" />
+              <strong>{{ g.label }}</strong>
+              <small>{{ g.hint }}</small>
+              <em :class="g.status">{{ g.status === 'run' ? (g.runLabel || '执行中') : (TASK_STATUS_LABEL[g.status] || g.status) }}</em>
+            </div>
+            <div
+              v-for="task in g.tasks"
+              :key="task.id"
+              class="crt-task"
+              :class="[task.status, { open: openTaskId === task.id }]"
+              :data-task="task.id"
+            >
+              <button type="button" class="crt-task-head" @click="toggleTask(task.id)">
+                <span class="crt-chev" :class="{ on: openTaskId === task.id }">›</span>
+                <span v-if="task.status === 'run'" class="crt-spin sm" title="执行中" />
+                <span v-else class="crt-mark" :class="task.status" :title="taskStatusLabel(task)" />
+                <span class="crt-kind">{{ task.kind === 'prep' ? '前置' : task.kind === 'do' ? '操作' : '校验' }}</span>
+                <span class="crt-title">{{ task.title }}</span>
+                <span class="crt-st">
+                  <span v-if="task.gapTag" class="crt-gap" :title="task.msg || task.gapTag">{{ task.gapTag }}</span>
+                  <template v-else>{{ taskStatusLabel(task) }}</template>
+                  <template v-if="task.cardNos.length && task.status !== 'run'"> · {{ task.cardNos.length }} 张卡片</template>
+                </span>
+              </button>
+              <div v-if="openTaskId === task.id" class="crt-cards">
+                <p v-if="!task.cardNos.length" class="crt-empty">{{ emptyTaskHint(task) }}</p>
+                <div
+                  v-for="s in cardsOf(task)"
+                  :key="s.step"
+                  class="et-step"
+                  :class="{ active: s.step === activeStep }"
+                  :data-step="s.step"
+                  @click="openStepDetailDrawer(s.step)"
+                >
+                  <div class="et-idx">#{{ s.step }}</div>
+                  <button
+                    v-if="isValidThumb(s.thumb)"
+                    type="button"
+                    class="et-thumb-btn"
+                    title="点击放大"
+                    @click="onStepThumbClick(s, $event)"
+                  >
+                    <img :src="thumbSrc(s.thumb)" class="et-thumb" alt="" />
+                  </button>
+                  <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
+                  <div class="et-body">
+                    <div class="et-head">
+                      <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
+                      <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
+                      <span class="et-cap">{{ s.cap || '' }}<span v-if="s.executor" class="et-via">via {{ s.executor }}</span></span>
+                      <span v-if="isLiveEngineStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
+                      <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
+                    </div>
+                    <div v-if="s.action" class="et-actline">
+                      <span class="et-act-label">动作</span>
+                      <code>{{ fmtAction(s.action) }}</code>
+                    </div>
+                    <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
+                    <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
+                    <div v-if="s.packs?.length" class="et-packs">
+                      <span class="et-packs-label">本步命中</span>
+                      <button
+                        v-for="p in s.packs" :key="p.id || p.uid"
+                        type="button"
+                        class="et-pack" :class="{ applied: p.recovered, advise: p.mode === 'advise' }"
+                        :title="p.uid || p.id"
+                        @click.stop="openStepDetailDrawer(s.step)"
+                      >
+                        {{ p.id }}
+                        <em v-if="p.mode === 'advise'">建议</em>
+                        <em v-else-if="p.recovered">已恢复</em>
+                        <em v-else-if="p.applied">未恢复</em>
+                      </button>
+                    </div>
+                    <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
+                      <span class="et-packs-label">知识库命中</span>
+                      <button
+                        v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
+                        type="button"
+                        class="et-pack et-knowledge"
+                        :title="k.title || k.id"
+                        @click.stop="openStepDetailDrawer(s.step)"
+                      >
+                        {{ k.title || k.id }}
+                        <em v-if="k.match_pct != null">{{ Number(k.match_pct) || 0 }}%</em>
+                      </button>
+                    </div>
+                    <div v-if="s.recovery?.trigger && !s.packs?.length" class="et-packs muted">
+                      <span class="et-packs-label">系统层预筛</span>
+                      <button type="button" class="et-pack" @click.stop="openStepDetailDrawer(s.step)">
+                        {{ s.recovery.trigger }} · 无规则命中
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div v-if="!steps.length" class="et-empty">暂无步骤（运行中会实时出现，或该 run 无明细）</div>
+          <div
+            v-for="s in steps"
+            :key="s.step"
+            class="et-step"
+            :class="{ active: s.step === activeStep }"
+            :data-step="s.step"
+            @click="openStepDetailDrawer(s.step)"
+          >
+            <div class="et-idx">#{{ s.step }}</div>
+            <button
+              v-if="isValidThumb(s.thumb)"
+              type="button"
+              class="et-thumb-btn"
+              title="点击放大"
+              @click="onStepThumbClick(s, $event)"
+            >
+              <img :src="thumbSrc(s.thumb)" class="et-thumb" alt="" />
+            </button>
+            <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
+            <div class="et-body">
+              <div class="et-head">
+                <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
+                <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
+                <span class="et-cap">{{ s.cap || '' }}<span v-if="s.executor" class="et-via">via {{ s.executor }}</span></span>
+                <span v-if="isLiveEngineStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
+                <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
+              </div>
+              <div v-if="s.action" class="et-actline">
+                <span class="et-act-label">动作</span>
+                <code>{{ fmtAction(s.action) }}</code>
+              </div>
+              <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
+              <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
+              <div v-if="s.packs?.length" class="et-packs">
+                <span class="et-packs-label">本步命中</span>
+                <button
+                  v-for="p in s.packs" :key="p.id || p.uid"
+                  type="button"
+                  class="et-pack" :class="{ applied: p.recovered, advise: p.mode === 'advise' }"
+                  :title="p.uid || p.id"
+                  @click.stop="openStepDetailDrawer(s.step)"
+                >
+                  {{ p.id }}
+                  <em v-if="p.mode === 'advise'">建议</em>
+                  <em v-else-if="p.recovered">已恢复</em>
+                  <em v-else-if="p.applied">未恢复</em>
+                </button>
+              </div>
+              <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
+                <span class="et-packs-label">知识库命中</span>
+                <button
+                  v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
+                  type="button"
+                  class="et-pack et-knowledge"
+                  :title="k.title || k.id"
+                  @click.stop="openStepDetailDrawer(s.step)"
+                >
+                  {{ k.title || k.id }}
+                  <em v-if="k.match_pct != null">{{ Number(k.match_pct) || 0 }}%</em>
+                </button>
+              </div>
+              <div v-if="s.recovery?.trigger && !s.packs?.length" class="et-packs muted">
+                <span class="et-packs-label">系统层预筛</span>
+                <button type="button" class="et-pack" @click.stop="openStepDetailDrawer(s.step)">
+                  {{ s.recovery.trigger }} · 无规则命中
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
     </section>
 
     <ExecutionStepDetailDrawer
@@ -875,61 +1052,49 @@ defineExpose({ goal, overall, finished })
 
 
 .et-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; gap: 10px; box-sizing: border-box; overflow: hidden; }
-.et-case {
-  flex: 0 1 auto;
-  min-height: 140px;
-  max-height: 55%;
+.et-fold {
+  flex: 0 0 auto;
+  min-width: 0;
   width: 100%;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
   box-sizing: border-box;
-  overflow: auto;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #fff;
 }
-.case-spec-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-size: 12px;
+.et-fold.open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.case-spec-table th {
-  background: #eefbe9;
-  color: #111827;
-  font-weight: 700;
-  text-align: center;
-  padding: 8px 10px;
-  border: 1px solid #d1d5db;
-  white-space: nowrap;
+.et-fold.ok > .et-log-head { background: #ecfdf5; }
+.et-fold.bad > .et-log-head { background: #fef2f2; }
+.et-fold.warn > .et-log-head { background: #fffbeb; }
+.et-fold.limit > .et-log-head { background: #f5f3ff; }
+.et-fold:not(.open) > .et-log-head { border-bottom: none; }
+.et-fold-toggle {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
 }
-.case-spec-table td {
-  background: #fff;
-  color: #111827;
-  vertical-align: top;
-  padding: 8px 10px;
-  border: 1px solid #d1d5db;
-  word-break: break-word;
-  line-height: 1.5;
-}
-.case-spec-table th:nth-child(1),
-.case-spec-table td:nth-child(1) { width: 56px; text-align: center; }
-.case-spec-table th:nth-child(2),
-.case-spec-table td:nth-child(2) { width: 16%; }
-.case-spec-table th:nth-child(3),
-.case-spec-table td:nth-child(3) { width: 16%; }
-.case-spec-table th:nth-child(4),
-.case-spec-table td:nth-child(4) { width: 18%; }
-.case-spec-table th:nth-child(5),
-.case-spec-table td:nth-child(5),
-.case-spec-table th:nth-child(6),
-.case-spec-table td:nth-child(6) { width: 22%; }
-.case-spec-table td.col-multi { min-width: 0; overflow: visible; overflow-wrap: anywhere; }
 .et-verdict {
   flex-shrink: 0;
   width: 100%;
   box-sizing: border-box;
   padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid #e5e7eb;
+  border: none;
+  border-radius: 0;
   background: #f8fafc;
   display: flex;
   gap: 12px;
@@ -979,6 +1144,19 @@ defineExpose({ goal, overall, finished })
   background: #ede9fe;
   padding: 1px 8px;
   border-radius: 999px;
+}
+.et-gap-pill {
+  font-size: 11px;
+  font-weight: 650;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  padding: 1px 8px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .et-verdict-ms { font-size: 12px; color: #64748b; margin-left: auto; }
 .et-jump {
@@ -1040,17 +1218,10 @@ defineExpose({ goal, overall, finished })
 .et-goal-label { font-size: 12px; color: #6b7280; flex-shrink: 0; padding-top: 2px; }
 .et-goal-text { font-size: 13px; font-weight: 600; color: #111827; line-height: 1.5; min-width: 0; }
 
-.film-block {
-  position: relative;
-  flex: 0 1 auto;
-  min-height: 0;
-  width: 100%;
-  padding: 10px 12px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
+.film-body {
+  padding: 8px 12px 10px;
   overflow: auto;
-  box-sizing: border-box;
+  min-height: 0;
 }
 .film-head {
   display: flex;
@@ -1060,7 +1231,7 @@ defineExpose({ goal, overall, finished })
   margin-bottom: 8px;
 }
 .film-head strong { font-size: 12px; color: #374151; }
-.film-total { font-size: 11px; color: #94a3b8; }
+.film-total { font-size: 11px; color: #94a3b8; margin: 0 0 8px; }
 .film-empty {
   font-size: 12px;
   color: #94a3b8;
@@ -1235,6 +1406,164 @@ defineExpose({ goal, overall, finished })
   text-align: left;
 }
 .et-log-head span { font-weight: 600; color: #64748b; }
+.et-log-head-l {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #374151;
+}
+.et-log-head-l .cls {
+  font-style: normal;
+  font-weight: 650;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.et-log-head-l .cls.success { background: #ecfdf5; color: #047857; }
+.et-log-head-l .cls.warning { background: #fffbeb; color: #b45309; }
+.et-log-head-l .cls.danger { background: #fef2f2; color: #b91c1c; }
+.et-log-head-l .cls.info { background: #eef2ff; color: #4338ca; }
+
+.crt-spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #4f46e5;
+  border-radius: 99px;
+  animation: et-spin 0.7s linear infinite;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+.crt-spin.sm { width: 10px; height: 10px; border-width: 2px; }
+@keyframes et-spin { to { transform: rotate(360deg); } }
+
+.crt-group { border-top: 1px solid #e5e7eb; }
+.crt-group.run { background: #f8fafc; }
+.crt-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.crt-group-head strong {
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crt-group-head small { color: #9ca3af; flex-shrink: 0; }
+.crt-group-head em {
+  margin-left: auto;
+  font-style: normal;
+  font-weight: 650;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.crt-group-head em.run { color: #4f46e5; }
+.crt-group-head em.done { color: #047857; }
+.crt-group-head em.fail { color: #b91c1c; }
+.crt-group-head em.gap { color: #b45309; }
+.crt-group-head em.blocked { color: #9ca3af; }
+.crt-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  border: 1.5px solid #d1d5db;
+  background: transparent;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.crt-mark.done { background: #10b981; border-color: #10b981; }
+.crt-mark.fail { background: #ef4444; border-color: #ef4444; }
+.crt-mark.gap { background: #f59e0b; border-color: #f59e0b; }
+.crt-mark.run { background: #4f46e5; border-color: #4f46e5; }
+.crt-mark.skip,
+.crt-mark.queued,
+.crt-mark.blocked { background: transparent; border-color: #d1d5db; }
+.crt-task.blocked .crt-st { color: #9ca3af; }
+.crt-task.fail .crt-st { color: #b91c1c; }
+.crt-task.open .crt-task-head { background: #f8fafc; }
+.crt-task.run .crt-task-head { border-left: 2px solid #4f46e5; }
+.crt-task.skip { opacity: 0.72; }
+.crt-task.queued .crt-title { color: #6b7280; }
+.crt-task-head {
+  display: grid;
+  grid-template-columns: 16px 12px 36px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+.crt-chev {
+  color: #9ca3af;
+  font-size: 12px;
+  display: inline-block;
+  transform: rotate(0deg);
+}
+.crt-chev.on { transform: rotate(90deg); }
+.crt-kind { font-size: 12px; font-weight: 650; color: #9ca3af; }
+.crt-title {
+  font-size: 12px;
+  color: #111827;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crt-task.skip .crt-title { text-decoration: line-through; color: #9ca3af; }
+.crt-gap {
+  flex-shrink: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.crt-task.gap .crt-st { color: #b45309; }
+.crt-group.gap em { color: #b45309; }
+.crt-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+.crt-task.done .crt-st { color: #047857; }
+.crt-task.fail .crt-st { color: #b91c1c; }
+.crt-task.blocked .crt-st { color: #9ca3af; }
+.crt-task.run .crt-st { color: #4f46e5; }
+.crt-cards { padding: 0 12px 10px 36px; }
+.crt-empty { margin: 0 0 8px; font-size: 12px; color: #9ca3af; }
+.et-ms.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #4f46e5;
+  background: #eef2ff;
+}
+
 .et-timeline {
   flex: 1 1 auto;
   min-height: 0;

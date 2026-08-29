@@ -9,10 +9,11 @@ const props = defineProps({
 })
 
 const pairs = computed(() => alignCaseStepExpected(props.row))
+const emptyLabel = computed(() => (props.field === 'expected' ? '不验' : '—'))
 const plain = computed(() => pairs.value
   .map((p) => {
     const text = props.field === 'step' ? p.step : p.expected
-    return text ? `${p.num}. ${text}` : `${p.num}. —`
+    return text ? `${p.num}. ${text}` : `${p.num}. ${emptyLabel.value}`
   })
   .join('\n'))
 </script>
@@ -30,7 +31,7 @@ const plain = computed(() => pairs.value
         <span class="case-line-no">{{ p.num }}.</span>
         <span class="case-line-text">{{ field === 'step' ? p.step : p.expected }}</span>
       </template>
-      <span v-else class="case-line-empty">{{ p.num }}. —</span>
+      <span v-else class="case-line-empty">{{ p.num }}. {{ emptyLabel }}</span>
     </div>
   </div>
   <span v-else class="case-line-empty">—</span>
