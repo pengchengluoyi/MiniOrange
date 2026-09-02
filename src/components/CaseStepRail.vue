@@ -38,15 +38,18 @@ const label = computed(() => props.coverage?.coverage_label || COVERAGE_LABEL[cl
 const expectText = (n) => {
   const e = expects.value[n]
   if (!e) return ''
-  if (e.code === 'EXPECT.SKIPPED.no_expect') return '不验'
+  if (e.code === 'EXPECT.SKIPPED.no_expect') {
+    return cls.value === 'step_unexecutable' ? '无法执行' : '不验'
+  }
   return e.text || ''
 }
 const expectCode = (n) => expects.value[n]?.code || ''
 const stepTone = (code) => {
   const c = String(code || '')
   if (c.startsWith('STEP.OK') || c.startsWith('STEP.HEALED')) return 'ok'
-  if (c.includes('SKIPPED') || c.includes('no_expect')) return 'skip'
-  if (c.includes('UNKNOWN') || c.includes('UNSUPPORTED') || c.includes('FAIL')) return 'bad'
+  if (c.includes('UNSUPPORTED') || c.includes('UNKNOWN') || c.includes('FAIL')) return 'bad'
+  if (c.includes('SKIPPED') || (c.includes('no_expect') && cls.value !== 'step_unexecutable')) return 'skip'
+  if (c.includes('no_expect')) return 'bad'
   return ''
 }
 </script>

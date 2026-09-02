@@ -18,7 +18,107 @@ const props = defineProps({
 })
 
 const CATEGORY_OPTIONS = ['应用基础逻辑', '业务逻辑', 'UI导航', '登录注册', 'Tab切换', '交互规范', '其他']
-const SOURCE_LABEL = { manual: '手动添加', case_run: '用例执行', task_run: '任务汇总' }
+const SOURCE_LABEL = {
+  manual: '手动添加',
+  case_run: '用例执行',
+  task_run: '任务汇总',
+  requirement: '需求文档',
+  release: '发版说明',
+  doc: '技术文档',
+  trace: '执行轨迹',
+  login_learn: '登录学习',
+}
+const PROPOSAL_LABEL = { align: '对齐', conflict: '冲突', new_fact: '新事实' }
+const FACET_OPTIONS = [
+  { id: 'chrome', label: '壳层交互' },
+  { id: 'server', label: '服务口径' },
+  { id: 'hybrid', label: '端到端' },
+  { id: 'exception', label: '例外处理' },
+]
+const NEED_OPTIONS = [
+  { id: 'fill', label: '填入' },
+  { id: 'judge_selected', label: '判断选中' },
+  { id: 'judge', label: '判断' },
+  { id: 'howto', label: '路径' },
+]
+const SLOT_OPTIONS = [
+  { id: 'identity.otp', label: '一次性口令' },
+  { id: 'identity.phone', label: '登录标识' },
+  { id: 'identity.password', label: '密码' },
+]
+const SURFACE_OPTIONS = [
+  { id: 'app', label: 'App' },
+  { id: 'web', label: 'Web' },
+]
+const ENV_OPTIONS = [
+  { id: 'test', label: '测试' },
+  { id: 'staging', label: '预发' },
+  { id: 'prod', label: '生产' },
+]
+const FACET_LABEL = Object.fromEntries(FACET_OPTIONS.map((x) => [x.id, x.label]))
+const NEED_LABEL = Object.fromEntries(NEED_OPTIONS.map((x) => [x.id, x.label]))
+const SLOT_LABEL = Object.fromEntries(SLOT_OPTIONS.map((x) => [x.id, x.label]))
+
+function emptySituation() {
+  return { surface: '', lane: '', need: '', slot: '', screen_role: '' }
+}
+function emptyBind() {
+  return { slot: '', value: '', env: '', surface: '' }
+}
+function ensureSituationFields(row) {
+  const sit = row?.situation && typeof row.situation === 'object' ? row.situation : {}
+  const bind = row?.bind && typeof row.bind === 'object' ? row.bind : {}
+  return {
+    ...row,
+    facet: row?.facet || '',
+    situation: { ...emptySituation(), ...sit },
+    bind: { ...emptyBind(), ...bind },
+  }
+}
+function situationBrief(row) {
+  const bind = row?.bind || {}
+  const sit = row?.situation || {}
+  const facet = FACET_LABEL[row?.facet] || ''
+  const need = NEED_LABEL[sit.need] || ''
+  const slot = SLOT_LABEL[bind.slot || sit.slot] || ''
+  const val = String(bind.value || '').trim()
+  const parts = [facet, need, slot].filter(Boolean)
+  if (val) parts.push(val)
+  return parts.join(' · ')
+}
+function versionBrief(row) {
+  const from = String(row?.valid_from || '').trim()
+  const until = String(row?.invalid_from || '').trim()
+  if (row?.superseded_by) return '已作废'
+  if (!from && !until) return ''
+  if (from && until) return `${from}–${until}`
+  if (from) return `≥${from}`
+  return `<${until}`
+}
+function proposalLabel(row) {
+  return PROPOSAL_LABEL[row?.proposal_kind] || ''
+}
+function situationPayload(row) {
+  const sit = row?.situation || {}
+  const bind = row?.bind || {}
+  const situation = {}
+  for (const key of ['surface', 'lane', 'need', 'slot', 'screen_role']) {
+    if (sit[key]) situation[key] = sit[key]
+  }
+  const nextBind = {}
+  if (bind.slot) nextBind.slot = bind.slot
+  if (String(bind.value || '').trim()) nextBind.value = String(bind.value).trim()
+  if (bind.env) nextBind.env = bind.env
+  if (bind.surface) nextBind.surface = bind.surface
+  if (!nextBind.surface && sit.surface && (nextBind.value || nextBind.slot)) {
+    nextBind.surface = sit.surface
+  }
+  return {
+    facet: row?.facet || '',
+    situation,
+    bind: nextBind,
+  }
+}
 const REVIEW_LABEL = { pending: '待审核', approved: '已通过', rejected: '已驳回' }
 
 const loading = ref(false)
@@ -40,13 +140,16 @@ const editingRow = ref(null) // draft
 const editingTargetRow = ref(null) // edit 时引用原始行；create 时为 null
 const SOURCE_OPTIONS = Object.entries(SOURCE_LABEL).map(([id, label]) => ({ id, label }))
 
-const normalizeRow = (x) => ({
+const normalizeRow = (x) => ensureSituationFields({
   ...x,
   category: x.category || '其他',
   tagsText: (x.tags || []).join(', '),
   appIdsText: (x.app_ids || []).join(', '),
   source: x.source || 'manual',
   review_status: x.review_status || 'approved',
+  proposal_kind: x.proposal_kind || '',
+  valid_from: x.valid_from || '',
+  invalid_from: x.invalid_from || '',
 })
 
 const globalItems = computed(() =>
@@ -96,7 +199,7 @@ const pageDesc = computed(() => {
     return `${props.appName ? `${props.appName} · ` : ''}产品专家先对照图谱和需求给意见，知识审核员再机审。置信不足才留人工。`
   }
   if (props.embedded) return '产品专家提供应用事实，知识审核员机审。拿不准的留待审核。'
-  return '机审先问产品专家（图谱/需求），再由知识审核员过或驳。高置信自动处理，其余留人工。需求/版本验收仍必须人点。'
+  return '机审先问产品专家（图谱/需求），再由知识审核员过或驳。保存时抽出分面和绑定槽，执行按场景取，不靠撞词。'
 })
 const createLabel = computed(() => (props.categoryLock ? '新建' : (props.embedded ? '新建' : '新建条目')))
 
@@ -121,7 +224,10 @@ function filterPool(list) {
 }
 const pendingCount = computed(() => sourcePool.value.filter((r) => r.review_status === 'pending').length)
 const sourceLabel = (row) => SOURCE_LABEL[row?.source] || SOURCE_LABEL.manual
-const reviewLabel = (row) => REVIEW_LABEL[row?.review_status] || REVIEW_LABEL.approved
+const reviewLabel = (row) => {
+  if (row?.superseded_by) return '已作废'
+  return REVIEW_LABEL[row?.review_status] || REVIEW_LABEL.approved
+}
 const reviewMethodLabel = (row) => {
   if (row?.review_method === 'machine') {
     const n = Number(row.review_confidence)
@@ -209,13 +315,21 @@ const runAutoReview = async () => {
   }
 }
 
-const cloneRow = (row) => ({
+const cloneRow = (row) => ensureSituationFields({
   ...row,
   category: row.category || '其他',
   tagsText: row.tagsText || '',
   appIdsText: row.appIdsText || '',
   enabled: row.enabled !== false,
 })
+
+function onBindSlot(slot) {
+  if (!editingRow.value) return
+  editingRow.value.bind.slot = slot || ''
+  if (slot && !editingRow.value.situation.slot) editingRow.value.situation.slot = slot
+  if (slot && !editingRow.value.situation.need) editingRow.value.situation.need = 'fill'
+  if (slot && !editingRow.value.facet) editingRow.value.facet = 'exception'
+}
 
 const openCreateDialog = (rowDraft) => {
   editingTargetRow.value = null
@@ -309,6 +423,10 @@ const saveConfig = async () => {
       enabled: editingRow.value.enabled !== false,
       source: editingRow.value.source || 'manual',
       review_status: editingRow.value.review_status || (editingRow.value.source === 'manual' ? 'approved' : 'pending'),
+      proposal_kind: editingRow.value.proposal_kind || '',
+      valid_from: String(editingRow.value.valid_from || '').trim(),
+      invalid_from: String(editingRow.value.invalid_from || '').trim(),
+      ...situationPayload(editingRow.value),
     }
     const res = await upsertKnowledgeItem(payload)
     const saved = normalizeRow(res?.data?.item || payload)
@@ -493,7 +611,7 @@ watch([listFilter, query, categoryFilter, sourceFilter, () => visibleItems.value
           </el-table-column>
           <el-table-column label="审核" width="88">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.review_status === 'pending' ? 'warning' : 'success'">{{ reviewLabel(row) }}</el-tag>
+              <el-tag size="small" :type="row.superseded_by ? 'info' : (row.review_status === 'pending' ? 'warning' : 'success')">{{ reviewLabel(row) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="机审" width="108" show-overflow-tooltip>
@@ -503,6 +621,15 @@ watch([listFilter, query, categoryFilter, sourceFilter, () => visibleItems.value
           </el-table-column>
           <el-table-column v-if="showAppColumn" label="限定应用" width="140" show-overflow-tooltip>
             <template #default="{ row }">{{ row.appIdsText || '全局' }}</template>
+          </el-table-column>
+          <el-table-column label="情境" width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ situationBrief(row) || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="提案" width="80" show-overflow-tooltip>
+            <template #default="{ row }">{{ proposalLabel(row) || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="版本窗" width="100" show-overflow-tooltip>
+            <template #default="{ row }">{{ versionBrief(row) || '—' }}</template>
           </el-table-column>
           <el-table-column label="知识内容" min-width="180">
             <template #default="{ row }">
@@ -546,7 +673,7 @@ watch([listFilter, query, categoryFilter, sourceFilter, () => visibleItems.value
     <el-dialog
       v-model="configDialogVisible"
       :title="dialogTitle"
-      width="520px"
+      width="560px"
       destroy-on-close
       :before-close="beforeDialogClose"
     >
@@ -587,6 +714,68 @@ watch([listFilter, query, categoryFilter, sourceFilter, () => visibleItems.value
         <el-form-item label="知识内容">
           <el-input v-if="contentEditable" v-model="editingRow.content" type="textarea" :rows="6" />
           <p v-else class="desc compact">{{ editingRow.content || '—' }}</p>
+        </el-form-item>
+        <el-form-item label="分面">
+          <el-select
+            v-if="metaEditable"
+            v-model="editingRow.facet"
+            clearable
+            placeholder="保存时自动抽出"
+            style="width: 100%"
+          >
+            <el-option v-for="c in FACET_OPTIONS" :key="c.id" :label="c.label" :value="c.id" />
+          </el-select>
+          <span v-else>{{ FACET_LABEL[editingRow.facet] || '—' }}</span>
+        </el-form-item>
+        <el-form-item label="用途">
+          <el-select
+            v-if="metaEditable"
+            v-model="editingRow.situation.need"
+            clearable
+            placeholder="填入 / 判断 / 路径"
+            style="width: 100%"
+          >
+            <el-option v-for="c in NEED_OPTIONS" :key="c.id" :label="c.label" :value="c.id" />
+          </el-select>
+          <span v-else>{{ NEED_LABEL[editingRow.situation.need] || '—' }}</span>
+        </el-form-item>
+        <el-form-item label="绑定槽">
+          <el-select
+            v-if="metaEditable"
+            v-model="editingRow.bind.slot"
+            clearable
+            placeholder="可填入的值才需要"
+            style="width: 100%"
+            @change="onBindSlot"
+          >
+            <el-option v-for="c in SLOT_OPTIONS" :key="c.id" :label="c.label" :value="c.id" />
+          </el-select>
+          <span v-else>{{ SLOT_LABEL[editingRow.bind.slot] || SLOT_LABEL[editingRow.situation.slot] || '—' }}</span>
+        </el-form-item>
+        <el-form-item v-if="metaEditable || editingRow.bind.value" label="绑定值">
+          <el-input v-if="metaEditable" v-model="editingRow.bind.value" placeholder="执行时直接填入，例如测试环境口令" />
+          <span v-else>{{ editingRow.bind.value }}</span>
+        </el-form-item>
+        <el-form-item v-if="metaEditable || editingRow.bind.env || editingRow.bind.surface || editingRow.situation.surface" label="范围">
+          <div v-if="metaEditable" class="situation-range">
+            <el-select v-model="editingRow.bind.env" clearable placeholder="环境" style="width: 48%">
+              <el-option v-for="c in ENV_OPTIONS" :key="c.id" :label="c.label" :value="c.id" />
+            </el-select>
+            <el-select v-model="editingRow.situation.surface" clearable placeholder="端" style="width: 48%">
+              <el-option v-for="c in SURFACE_OPTIONS" :key="c.id" :label="c.label" :value="c.id" />
+            </el-select>
+          </div>
+          <span v-else>{{ [ENV_OPTIONS.find((x) => x.id === editingRow.bind.env)?.label, SURFACE_OPTIONS.find((x) => x.id === (editingRow.bind.surface || editingRow.situation.surface))?.label].filter(Boolean).join(' · ') || '—' }}</span>
+        </el-form-item>
+        <el-form-item v-if="editingRow.proposal_kind || editingRow.conflicts_with" label="提案">
+          <p class="desc compact">{{ proposalLabel(editingRow) || '—' }}<template v-if="editingRow.conflicts_with"> · 冲突 {{ editingRow.conflicts_with }}</template></p>
+        </el-form-item>
+        <el-form-item v-if="metaEditable || editingRow.valid_from || editingRow.invalid_from || editingRow.superseded_by" label="版本窗">
+          <div v-if="metaEditable" class="situation-range">
+            <el-input v-model="editingRow.valid_from" placeholder="从该版本起有效" style="width: 48%" />
+            <el-input v-model="editingRow.invalid_from" placeholder="从该版本起无效" style="width: 48%" />
+          </div>
+          <span v-else>{{ versionBrief(editingRow) || '—' }}</span>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="editingRow.enabled" :disabled="!contentEditable || editingRow.review_status === 'pending'" />
@@ -639,5 +828,10 @@ watch([listFilter, query, categoryFilter, sourceFilter, () => visibleItems.value
   line-height: 1.45;
 }
 .head-row { display: flex; justify-content: space-between; margin-bottom: 12px; }
+.situation-range {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
 h2 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
 </style>

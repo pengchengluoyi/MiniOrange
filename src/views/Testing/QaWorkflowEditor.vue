@@ -600,7 +600,7 @@ const howText = (step, track) => {
               <template v-else>「{{ envOf(selectedOf(editorTab).env).label }}」还没填渠道，下发会拉不起应用。</template>
             </span>
           </label>
-          <p class="muted env-note">下发前走测试工程师的「筛测试账号」：按本阶段环境和用例场景从资产号池挑号。</p>
+          <p class="muted env-note">下发前走测试工程师的「租账号」：按本阶段环境和用例场景从测试资源的账号管理里租号。</p>
           <label>
             下发种类
             <el-select

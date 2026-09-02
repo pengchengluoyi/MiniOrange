@@ -64,7 +64,7 @@ export const listCaseRunnerTraces = ({ caseId, deviceSignature, onlyPass, limit 
   })
 
 export const getCaseRunnerTraceDetail = (runId) =>
-  request({ url: `/case-runner/traces/${runId}`, method: 'get' })
+  request({ url: `/case-runner/traces/${encodeURIComponent(runId)}`, method: 'get' })
 
 // ---- Baseline ----
 

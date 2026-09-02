@@ -7,20 +7,135 @@ export const ENV_PROFILES = [
 
 export const ENV_KEYS = ENV_PROFILES.map((p) => p.key)
 
-export const DEFAULT_CHANNELS = [
-  { id: 'android', label: '安卓', field: 'package', placeholder: 'com.example.app' },
-  { id: 'ios', label: 'iOS', field: 'bundle', placeholder: 'com.example.app' },
-  { id: 'web', label: 'Web', field: 'base_url', placeholder: 'https://test.example.com' },
-  { id: 'pc', label: 'PC', field: 'path', placeholder: '安装路径或启动命令' },
-  { id: 'mac', label: 'Mac', field: 'bundle', placeholder: 'com.example.desktop' },
-  { id: 'server', label: 'Server', field: 'base_url', placeholder: 'https://api.example.com' },
+export const CHANNEL_KINDS = [
+  { id: 'app', label: 'App' },
+  { id: 'web', label: 'Web' },
+  { id: 'server', label: 'Server' },
 ]
+
+export const DEFAULT_CHANNELS = [
+  { id: 'android', kind: 'app', platform: 'android', alias: '', third_party: false, label: '安卓', field: 'package', placeholder: 'com.example.app' },
+  { id: 'ios', kind: 'app', platform: 'ios', alias: '', third_party: false, label: 'iOS', field: 'bundle', placeholder: 'com.example.app' },
+  { id: 'web', kind: 'web', platform: 'web', alias: '', third_party: false, label: 'Web', field: 'base_url', placeholder: 'https://test.example.com' },
+  { id: 'pc', kind: 'app', platform: 'pc', alias: '', third_party: false, label: 'PC', field: 'path', placeholder: '安装路径或启动命令' },
+  { id: 'mac', kind: 'app', platform: 'mac', alias: '', third_party: false, label: 'Mac', field: 'bundle', placeholder: 'com.example.desktop' },
+  { id: 'server', kind: 'server', platform: 'server', alias: '', third_party: false, label: 'Server', field: 'base_url', placeholder: 'https://api.example.com' },
+]
+
+export const APP_PLATFORMS = DEFAULT_CHANNELS.filter((c) => c.kind === 'app')
+
+const PRESET_BY_ID = Object.fromEntries(DEFAULT_CHANNELS.map((c) => [c.id, c]))
+
+function inferKindPlatform(id, kind, platform) {
+  const k = String(kind || '').trim().toLowerCase()
+  const p = String(platform || '').trim().toLowerCase()
+  if (['app', 'web', 'server'].includes(k) && PRESET_BY_ID[p]) return { kind: k, platform: p }
+  if (PRESET_BY_ID[p]) return { kind: PRESET_BY_ID[p].kind, platform: PRESET_BY_ID[p].platform }
+  if (PRESET_BY_ID[id]) return { kind: PRESET_BY_ID[id].kind, platform: PRESET_BY_ID[id].platform }
+  const prefixes = [
+    ['android', 'app', 'android'],
+    ['ios', 'app', 'ios'],
+    ['pc', 'app', 'pc'],
+    ['mac', 'app', 'mac'],
+    ['server', 'server', 'server'],
+    ['web', 'web', 'web'],
+  ]
+  for (const [prefix, pk, pp] of prefixes) {
+    if (id === prefix || String(id).startsWith(`${prefix}-`)) return { kind: pk, platform: pp }
+  }
+  if (['app', 'web', 'server'].includes(k)) {
+    return { kind: k, platform: k === 'app' ? 'android' : k }
+  }
+  return { kind: 'web', platform: 'web' }
+}
+
+export function channelTitle(ch) {
+  const alias = String(ch?.alias || '').trim()
+  if (alias) return alias
+  return String(ch?.label || ch?.id || '').trim()
+}
+
+export function channelKindText(ch) {
+  const kind = CHANNEL_KINDS.find((k) => k.id === ch?.kind)
+  const plat = DEFAULT_CHANNELS.find((c) => c.id === ch?.platform)
+  const bits = []
+  if (ch?.third_party || ch?.alias) bits.push('三方')
+  if (kind) bits.push(kind.label)
+  if (ch?.kind === 'app' && plat) bits.push(plat.label)
+  return bits.join(' · ')
+}
+
+export function normalizeChannel(raw, seen) {
+  const alias = String(raw?.alias || '').trim().slice(0, 24)
+  const thirdParty = raw?.third_party == null ? Boolean(alias) : Boolean(raw.third_party)
+  let id = slugEnvKey(raw?.id || raw?.key, '')
+  const inferred = inferKindPlatform(id, raw?.kind, raw?.platform)
+  const preset = PRESET_BY_ID[inferred.platform] || PRESET_BY_ID[id]
+  if (id && seen.has(id)) return null
+  if (!id && !alias && preset && !seen.has(preset.id)) id = preset.id
+  if (!id) {
+    const aliasSlug = slugEnvKey(alias, '')
+    id = aliasSlug && aliasSlug !== inferred.platform ? `${inferred.platform}-${aliasSlug}` : (aliasSlug || inferred.platform)
+    let n = 2
+    const stem = id
+    while (seen.has(id)) {
+      id = `${stem}-${n}`
+      n += 1
+    }
+  }
+  if (!id || seen.has(id)) return null
+  seen.add(id)
+  const field = slugEnvKey(raw?.field || preset?.field || 'value', 'value')
+  let label = String(raw?.label || alias || preset?.label || id).trim() || id
+  if (!alias && preset && (label === id || label === preset.id)) label = preset.label
+  return {
+    id,
+    kind: inferred.kind,
+    platform: inferred.platform,
+    alias,
+    third_party: thirdParty,
+    label: alias || label,
+    field: field || preset?.field || 'value',
+    placeholder: String(raw?.placeholder || preset?.placeholder || '').trim(),
+  }
+}
 
 export const DEFAULT_ENVIRONMENTS = [
   { key: 'test', label: '测试' },
   { key: 'pre', label: '预发' },
   { key: 'prod', label: '正式' },
 ]
+
+export function emptyEnvSecrets() {
+  return {
+    otp: { mode: 'auto', fixed: '', adapter: 'http', adapter_url: '', adapter_header: '' },
+    phone: { mode: 'auto', adapter: 'http', adapter_url: '', adapter_header: '' },
+  }
+}
+
+export function normalizeEnvSecrets(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const base = emptyEnvSecrets()
+  const otp = src.otp && typeof src.otp === 'object' ? src.otp : {}
+  const phone = src.phone && typeof src.phone === 'object' ? src.phone : {}
+  const otpMode = ['auto', 'fixed', 'adapter', 'hitl'].includes(String(otp.mode || '')) ? otp.mode : 'auto'
+  const phoneMode = ['auto', 'pool', 'adapter', 'hitl'].includes(String(phone.mode || '')) ? phone.mode : 'auto'
+  return {
+    otp: {
+      ...base.otp,
+      mode: otpMode,
+      fixed: String(otp.fixed || '').slice(0, 32),
+      adapter_url: String(otp.adapter_url || '').slice(0, 400),
+      adapter_header: String(otp.adapter_header || '').slice(0, 240),
+    },
+    phone: {
+      ...base.phone,
+      mode: phoneMode,
+      adapter_url: String(phone.adapter_url || '').slice(0, 400),
+      adapter_header: String(phone.adapter_header || '').slice(0, 240),
+    },
+  }
+}
 
 const KEY_RE = /[^a-z0-9_-]+/g
 
@@ -46,14 +161,6 @@ function asEnvDoc(raw) {
   return { profiles: raw && typeof raw === 'object' ? raw : {} }
 }
 
-function preferChannelMeta(raw) {
-  const presetById = DEFAULT_CHANNELS.find((c) => c.id === slugEnvKey(raw?.id || raw?.key, ''))
-  const presetByLabel = DEFAULT_CHANNELS.find((c) => (
-    c.id === slugEnvKey(raw?.label, '') || c.label === String(raw?.label || '').trim()
-  ))
-  return presetById || presetByLabel || null
-}
-
 export function normalizeEnvDoc(raw) {
   const src = asEnvDoc(raw)
   const profilesIn = src.profiles && typeof src.profiles === 'object' ? src.profiles : {}
@@ -61,21 +168,8 @@ export function normalizeEnvDoc(raw) {
   const seenCh = new Set()
   let channels = []
   for (const row of (Array.isArray(src.channels) ? src.channels : [])) {
-    const preset = preferChannelMeta(row)
-    let id = slugEnvKey(row?.id || row?.key, '')
-    if (preset) id = preset.id
-    else if (!id) id = slugEnvKey(row?.label, '')
-    if (!id || seenCh.has(id)) continue
-    seenCh.add(id)
-    channels.push({
-      id,
-      label: String(row?.label || preset?.label || id).trim() || id,
-      field: slugEnvKey(row?.field || preset?.field || 'value', 'value'),
-      placeholder: String(row?.placeholder || preset?.placeholder || '').trim(),
-    })
-    const last = channels[channels.length - 1]
-    if (preset && (last.label === id || last.label === preset.id)) last.label = preset.label
-    if (preset && last.field === 'value') last.field = preset.field
+    const ch = normalizeChannel(row, seenCh)
+    if (ch) channels.push(ch)
   }
   if (!channels.length) {
     const inferred = new Set()
@@ -88,7 +182,10 @@ export function normalizeEnvDoc(raw) {
     channels = DEFAULT_CHANNELS.filter((c) => want.has(c.id)).map((c) => ({ ...c }))
     for (const id of want) {
       if (!channels.some((c) => c.id === id)) {
-        channels.push({ id, label: id, field: 'value', placeholder: '' })
+        const extra = normalizeChannel({ id, label: id, field: 'value' }, seenCh)
+        if (extra) channels.push(extra)
+      } else {
+        seenCh.add(id)
       }
     }
   }
@@ -97,6 +194,7 @@ export function normalizeEnvDoc(raw) {
     .map((e) => ({
       key: slugEnvKey(e?.key || e?.id || e?.label, ''),
       label: String(e?.label || '').trim() || slugEnvKey(e?.key, '环境'),
+      secrets: normalizeEnvSecrets(e?.secrets),
     }))
     .filter((e) => e.key)
   if (!environments.length) {
@@ -104,6 +202,7 @@ export function normalizeEnvDoc(raw) {
     environments = keys.map((key) => ({
       key,
       label: ENV_PROFILES.find((p) => p.key === key)?.label || key,
+      secrets: emptyEnvSecrets(),
     }))
   }
 
@@ -207,7 +306,10 @@ export function envSummaries(docOrProfiles) {
       const resolved = resolveChannelValue(doc.profiles, order, e.key, ch.id, ch.field)
       return {
         id: ch.id,
-        label: ch.label,
+        label: channelTitle(ch),
+        kind: ch.kind,
+        alias: ch.alias,
+        third_party: ch.third_party,
         value: resolved.value,
         inherited: resolved.inherited,
       }

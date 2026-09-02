@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Hide, View } from '@element-plus/icons-vue'
 import { getProjectAccounts, pickProjectAccounts, saveProjectAccounts } from '@/api/workReport'
+import { channelTitle } from '@/constants/envProfiles'
 import '@/views/Settings/settings-ui.css'
 
 defineOptions({ name: 'AssetsPage' })
@@ -15,18 +16,18 @@ const props = defineProps({
 })
 
 const TABS = [
-  { id: 'accounts', label: '测试账号', desc: '号池 · 标签 · 环境' },
-  { id: 'trial', label: '效果测试', desc: '用场景句子试筛号' },
+  { id: 'accounts', label: '账号管理', desc: '标签 · 环境 · 租约' },
+  { id: 'trial', label: '试筛账号', desc: '用场景句子试租号' },
 ]
 
 const tab = ref(props.section === 'trial' ? 'trial' : 'accounts')
 const pageTitle = computed(() => {
-  if (!props.hideNav) return '资产'
-  return tab.value === 'trial' ? '效果测试' : '测试账号'
+  if (!props.hideNav) return '测试资源'
+  return tab.value === 'trial' ? '试筛账号' : '账号管理'
 })
 const pageDesc = computed(() => {
-  if (tab.value === 'trial') return '写下发时那句场景，看首选会落在哪个号。真正执行时测试工程师会先调同一条能力。'
-  return '测试账号是号池。跑用例时由「筛测试账号」按场景挑号。这里只维护数据。'
+  if (tab.value === 'trial') return '选好平台再写场景，避免租到 CRM / 管理后台的号去登主应用。真正执行时会先走同一条租账号能力。'
+  return '账号必须绑到环境配置里的某个应用或三方平台。开跑前按场景租号，登录态由备会话对齐。'
 })
 watch(() => props.section, (s) => {
   if (s === 'trial' || s === 'accounts') tab.value = s
@@ -36,8 +37,11 @@ const saving = ref(false)
 const picking = ref(false)
 const accounts = ref([])
 const environments = ref([])
+const channels = ref([])
 const envFilter = ref('')
+const surfaceFilter = ref('')
 const trialEnv = ref('')
+const trialSurface = ref('')
 const prompt = ref('')
 const ranked = ref([])
 const dialogOpen = ref(false)
@@ -48,6 +52,7 @@ const pwdOpen = ref(new Set())
 function emptyForm(env = '') {
   return {
     env: env || (environments.value[0]?.key || 'test'),
+    surface: surfaceFilter.value || channels.value.find((c) => !c.third_party && !c.alias)?.id || channels.value[0]?.id || '',
     phone: '',
     email: '',
     username: '',
@@ -59,6 +64,10 @@ function emptyForm(env = '') {
 }
 
 const envLabel = (key) => environments.value.find((e) => e.key === key)?.label || key || '未分环境'
+const surfaceLabel = (id) => {
+  const ch = channels.value.find((c) => c.id === id)
+  return ch ? channelTitle(ch) : (id || '未选平台')
+}
 const cell = (v) => String(v || '').trim() || '—'
 const rowPassword = (row) => String(row?.password || '').trim()
 const hasPassword = (row) => Boolean(rowPassword(row) || row?.has_password)
@@ -75,8 +84,11 @@ const maskedPwd = (row) => {
   return row?.password_masked || '••••••••'
 }
 const visibleRows = computed(() => {
-  if (!envFilter.value) return accounts.value
-  return accounts.value.filter((r) => r.env === envFilter.value)
+  return accounts.value.filter((r) => {
+    if (envFilter.value && r.env !== envFilter.value) return false
+    if (surfaceFilter.value && (r.surface || '') !== surfaceFilter.value) return false
+    return true
+  })
 })
 const chosen = computed(() => ranked.value[0] || null)
 
@@ -87,9 +99,11 @@ const load = async () => {
     const res = await getProjectAccounts(props.projectId)
     accounts.value = res?.data?.accounts || []
     environments.value = res?.data?.environments || []
+    channels.value = res?.data?.channels || []
     if (envFilter.value && !environments.value.some((e) => e.key === envFilter.value)) envFilter.value = ''
+    if (surfaceFilter.value && !channels.value.some((c) => c.id === surfaceFilter.value)) surfaceFilter.value = ''
   } catch (e) {
-    ElMessage.error(e?.message || '加载测试账号失败')
+    ElMessage.error(e?.message || '加载账号失败')
   } finally {
     loading.value = false
   }
@@ -109,6 +123,10 @@ const persist = async (next) => {
 }
 
 const openCreate = () => {
+  if (!channels.value.length) {
+    ElMessage.warning('先在「配置 → 环境配置」里添加应用或三方平台')
+    return
+  }
   editingId.value = ''
   form.value = emptyForm(envFilter.value)
   dialogOpen.value = true
@@ -118,6 +136,7 @@ const openEdit = (row) => {
   editingId.value = row.id
   form.value = {
     env: row.env || 'test',
+    surface: row.surface || '',
     phone: row.phone || '',
     email: row.email || '',
     username: row.username || '',
@@ -130,6 +149,10 @@ const openEdit = (row) => {
 }
 
 const saveForm = async () => {
+  if (!form.value.surface) {
+    ElMessage.warning('请选择这个账号登录的平台，避免租号时登错系统')
+    return
+  }
   if (!form.value.phone && !form.value.email && !form.value.username) {
     ElMessage.warning('至少填手机号、邮箱或用户名之一')
     return
@@ -150,7 +173,7 @@ const removeRow = async (row) => {
   try {
     await ElMessageBox.confirm(
       `删除「${envLabel(row.env)} ${row.phone || row.username || row.email || '未填'}」？`,
-      '删除测试账号',
+      '删除账号',
       { type: 'warning' },
     )
   } catch {
@@ -170,7 +193,11 @@ const runTrial = async () => {
   }
   picking.value = true
   try {
-    const res = await pickProjectAccounts(props.projectId, { prompt: prompt.value, env: trialEnv.value })
+    const res = await pickProjectAccounts(props.projectId, {
+      prompt: prompt.value,
+      env: trialEnv.value,
+      surface: trialSurface.value,
+    })
     ranked.value = res?.data?.accounts || []
     if (!ranked.value.length) ElMessage.info('这个场景下没有匹配到账号')
   } catch (e) {
@@ -212,24 +239,35 @@ onMounted(load)
     </div>
 
     <template v-if="tab === 'accounts'">
+      <section class="settings-info-card">
+        <div class="settings-kicker">和业务怎么拆开</div>
+        <p>这里只维护账号，创建时必须选环境配置里的应用或三方平台。开跑前按平台+环境租号，避免拿 CRM 号去登主 App。</p>
+      </section>
       <section class="settings-card pick-card">
         <div class="pick-row">
           <el-select v-model="envFilter" placeholder="全部环境" clearable style="width: 140px">
             <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
+          </el-select>
+          <el-select v-model="surfaceFilter" placeholder="全部平台" clearable style="width: 180px">
+            <el-option v-for="c in channels" :key="c.id" :label="channelTitle(c)" :value="c.id" />
           </el-select>
           <el-button type="primary" @click="openCreate">新增账号</el-button>
         </div>
       </section>
 
       <section class="settings-table-card is-fill">
-        <el-table :data="visibleRows" size="small" border stripe height="100%" row-key="id" empty-text="这个环境下还没有测试账号">
+        <el-table :data="visibleRows" size="small" border stripe height="100%" row-key="id" empty-text="这个环境下还没有账号">
           <el-table-column label="环境" width="100">
             <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          </el-table-column>
+          <el-table-column label="平台" width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ surfaceLabel(row.surface) }}</template>
           </el-table-column>
           <el-table-column label="用户名" min-width="120" show-overflow-tooltip>
             <template #default="{ row }">
               {{ cell(row.username) }}
               <em v-if="row.locked" class="lock-tag">占用</em>
+              <em v-if="row.lease?.run_id" class="lock-tag is-pick">租用</em>
             </template>
           </el-table-column>
           <el-table-column label="手机号" min-width="140" show-overflow-tooltip>
@@ -278,19 +316,22 @@ onMounted(load)
           <el-select v-model="trialEnv" placeholder="不限环境" clearable style="width: 140px">
             <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
           </el-select>
+          <el-select v-model="trialSurface" placeholder="不限平台" clearable style="width: 180px">
+            <el-option v-for="c in channels" :key="c.id" :label="channelTitle(c)" :value="c.id" />
+          </el-select>
           <el-input
             v-model="prompt"
             placeholder="例如：我要发造物秀"
             @keyup.enter="runTrial"
           />
-          <el-button type="primary" :loading="picking" @click="runTrial">试筛号</el-button>
+          <el-button type="primary" :loading="picking" @click="runTrial">试租号</el-button>
         </div>
       </section>
 
       <section v-if="chosen" class="settings-card chosen-card">
         <div class="settings-kicker">首选</div>
         <h3>{{ chosen.phone || chosen.username || chosen.email || '未填号码' }}</h3>
-        <p>{{ envLabel(chosen.env) }}</p>
+        <p>{{ envLabel(chosen.env) }} · {{ surfaceLabel(chosen.surface) || chosen.surface_label || '未选平台' }}</p>
         <p class="hit">{{ chosen.reason || '—' }} · 分 {{ chosen.score ?? 0 }}</p>
         <div class="tag-row">
           <el-tag v-for="t in chosen.tags || []" :key="t" size="small" class="tag-chip">{{ t }}</el-tag>
@@ -298,12 +339,15 @@ onMounted(load)
       </section>
 
       <section class="settings-table-card is-fill">
-        <el-table :data="ranked" size="small" border stripe height="100%" row-key="id" empty-text="还没有试过。写一句场景再点试筛号。">
+        <el-table :data="ranked" size="small" border stripe height="100%" row-key="id" empty-text="还没有试过。写一句场景再点试租号。">
           <el-table-column label="#" width="52">
             <template #default="{ $index }">{{ $index + 1 }}</template>
           </el-table-column>
           <el-table-column label="环境" width="88">
             <template #default="{ row }">{{ envLabel(row.env) }}</template>
+          </el-table-column>
+          <el-table-column label="平台" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.surface_label || surfaceLabel(row.surface) }}</template>
           </el-table-column>
           <el-table-column label="用户名" min-width="120" show-overflow-tooltip>
             <template #default="{ row, $index }">
@@ -330,11 +374,16 @@ onMounted(load)
       </section>
     </template>
 
-    <el-dialog v-model="dialogOpen" :title="editingId ? '编辑测试账号' : '新增测试账号'" width="560px" class="mo-fit-dialog" align-center append-to-body>
+    <el-dialog v-model="dialogOpen" :title="editingId ? '编辑账号' : '新增账号'" width="560px" class="mo-fit-dialog" align-center append-to-body>
       <el-form label-width="92px">
         <el-form-item label="环境">
           <el-select v-model="form.env" style="width: 100%">
             <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="平台" required>
+          <el-select v-model="form.surface" placeholder="这个号登录哪一端" style="width: 100%">
+            <el-option v-for="c in channels" :key="c.id" :label="channelTitle(c)" :value="c.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="用户名">
@@ -361,7 +410,7 @@ onMounted(load)
           />
         </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="form.note" type="textarea" :rows="2" placeholder="这个号现在处于什么业务状态" />
+          <el-input v-model="form.note" type="textarea" :rows="2" placeholder="业务状态。固定口令可写「验证码为888888」" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -383,7 +432,8 @@ onMounted(load)
 .assets-page > .settings-page-header,
 .assets-page > .settings-tabbar,
 .pick-card,
-.chosen-card {
+.chosen-card,
+.settings-info-card {
   flex-shrink: 0;
 }
 .pick-card {

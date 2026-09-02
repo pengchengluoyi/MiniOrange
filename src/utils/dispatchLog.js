@@ -28,6 +28,8 @@ export const TRIGGER_LABEL = {
   case_run: '下发执行',
   knowledge_capture: '沉淀知识',
   knowledge_review: '知识机审',
+  knowledge_situation: '知识情境',
+  knowledge_briefing: '知识简报',
   conductor_route: '分析师调度',
   unknown: '未归类',
 }
@@ -48,6 +50,8 @@ export const SOURCE_LABEL = {
   atlas_reject: '驳回图谱后重跑',
   knowledge_capture: '沉淀知识',
   knowledge_review: '知识机审',
+  knowledge_situation: '知识情境',
+  knowledge_briefing: '知识简报',
   analyst_route: '分析师调度',
 }
 
@@ -62,8 +66,13 @@ export const SKILL_LABEL = {
   draft_sign: '验收草稿',
   pick_regression: '圈回归范围',
   draft_gate: '发版草稿',
-  pick_account: '筛测试账号',
+  pick_account: '租账号',
+  lease_account: '租账号',
+  get_otp: '取口令',
+  get_phone: '取登录号',
+  release_account: '还账号',
   'goal-extract': '抽取目标',
+  'case-scene': '场景理解',
   'inspect-session': '观察登录态',
   'agent-decide': '看图决策',
   'assert-vision': '视觉断言',
@@ -74,6 +83,8 @@ export const SKILL_LABEL = {
   'persona-task': '拟人路径',
   'knowledge-capture': '沉淀知识',
   'knowledge-review': '知识机审',
+  'knowledge-situation': '知识情境',
+  'knowledge-briefing': '知识简报',
   'account-tag': '账号打标',
   publish_wiki: '写入 Wiki',
 }
@@ -88,6 +99,7 @@ export const JOB_LABEL = {
   review_impact: '确认图谱变更',
   edit_atlas: '人手改骨架',
   'goal-extract': '抽取目标',
+  'case-scene': '场景理解',
   'inspect-session': '观察登录态',
   'agent-restart': '是否重开应用',
   'agent-decide': '看图决策',
@@ -99,6 +111,9 @@ export const JOB_LABEL = {
   'persona-task': '拟人化操作',
   'knowledge-capture': '沉淀知识',
   'knowledge-review': '知识机审',
+  'knowledge-situation': '知识情境',
+  'knowledge-situation-batch': '知识情境',
+  'knowledge-briefing': '知识简报',
   'account-tag': '账号打标',
   role_chat: '角色对话',
   im_dialogue: '问答',
@@ -107,7 +122,7 @@ export const JOB_LABEL = {
 }
 
 const HEAD_JOBS = new Set(['qa_tick', 'route', 'atlas_followup'])
-const CASE_HEAD_JOBS = ['goal-extract', 'plan-overview', 'agent-restart', 'inspect-session']
+const CASE_HEAD_JOBS = ['goal-extract', 'case-scene', 'plan-overview', 'agent-restart', 'inspect-session']
 const CLUSTERABLE = new Set(['case_run', 'knowledge_capture', 'knowledge_review'])
 const CLUSTER_MS = 3 * 60 * 1000
 
@@ -279,6 +294,9 @@ export function inferCallMeta(row = {}) {
   if ('restart' in parsed && parsed.thought) {
     return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
   }
+  if (['relogin', 'logout', 'skip'].includes(String(parsed.session_prep))) {
+    return { trigger: 'case_run', job: 'case-scene', role: 'test-engineer', skill: 'case-scene', source: 'case_run' }
+  }
   if (parsed.session && ['logged_out', 'logged_in', 'unknown'].includes(String(parsed.session))) {
     return { trigger: 'case_run', job: 'inspect-session', role: 'test-engineer', skill: 'inspect-session', source: 'case_run' }
   }
@@ -295,7 +313,7 @@ export function inferCallMeta(row = {}) {
   if (parsed.bbox || (parsed.x != null && parsed.y != null)) {
     return { trigger: 'case_run', job: 'locate-vision', role: 'test-engineer', skill: 'locate-vision', source: 'case_run' }
   }
-  if ((Array.isArray(parsed.tags) && ('replaces' in parsed) && ('reason' in parsed)) || (sys.includes('测试账号') && sys.includes('标签'))) {
+  if ((Array.isArray(parsed.tags) && ('replaces' in parsed) && ('reason' in parsed)) || (sys.includes('测试账号') && sys.includes('标签')) || (sys.includes('账号管理') && sys.includes('标签'))) {
     return { trigger: 'case_run', job: 'account-tag', role: 'test-engineer', skill: 'account-tag', source: 'case_run' }
   }
   if (['approve', 'reject', 'hold'].includes(parsed.action) && parsed.confidence != null) {
@@ -309,6 +327,9 @@ export function inferCallMeta(row = {}) {
   }
   if (sys.includes('是否先重开') || sys.includes('agent-restart')) {
     return { trigger: 'case_run', job: 'agent-restart', role: 'test-engineer', skill: 'agent-decide', source: 'case_run' }
+  }
+  if (sys.includes('场景理解') || sys.includes('session_prep') || sys.includes('case-scene')) {
+    return { trigger: 'case_run', job: 'case-scene', role: 'test-engineer', skill: 'case-scene', source: 'case_run' }
   }
   if (sys.includes('登录会话') || sys.includes('inspect-session')) {
     return { trigger: 'case_run', job: 'inspect-session', role: 'test-engineer', skill: 'inspect-session', source: 'case_run' }

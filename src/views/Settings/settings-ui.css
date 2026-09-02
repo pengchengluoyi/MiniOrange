@@ -1,15 +1,15 @@
 .settings-panel {
-  --settings-bg: #f6f7fb;
-  --settings-card: #ffffff;
-  --settings-border: #e3e8f0;
-  --settings-border-strong: #cbd5e1;
-  --settings-text: #111827;
-  --settings-muted: #6b7280;
-  --settings-soft: #f8fafc;
-  --settings-primary: #6366f1;
-  --settings-primary-soft: #eef2ff;
-  --settings-radius: 16px;
-  --settings-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  --settings-bg: var(--mo-bg);
+  --settings-card: var(--mo-card);
+  --settings-border: var(--mo-border);
+  --settings-border-strong: var(--mo-border-strong);
+  --settings-text: var(--mo-text);
+  --settings-muted: var(--mo-muted);
+  --settings-soft: var(--mo-soft);
+  --settings-primary: var(--mo-primary);
+  --settings-primary-soft: var(--mo-primary-soft);
+  --settings-radius: var(--mo-radius);
+  --settings-shadow: var(--mo-shadow);
 }
 
 .settings-page-header {

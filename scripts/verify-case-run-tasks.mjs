@@ -119,7 +119,7 @@ if (JSON.stringify(prepLabels) !== JSON.stringify([
   '无法识别 · 未命中引擎库',
   '无法识别 · 未命中引擎库',
   '未执行',
-  '无法执行 · 查后台配置',
+  '由步骤验证',
 ])) {
   console.error('prep labels after gap skip', prepLabels)
   failed += 1
@@ -143,7 +143,7 @@ const gated = buildCaseRunGroups({
       { text: '客户端版本 ≥1.3.0, 环境为测试服', code: 'PREP.UNKNOWN' },
       { text: '当前已打开造好物 App', code: 'PREP.UNKNOWN' },
       { text: '已登录账号：需求上线前注册、未购买新人礼', code: 'PREP.UNMET.session' },
-      { text: '后台领取悬浮球开关为开', code: 'PREP.UNSUPPORTED.web_config' },
+      { text: '后台领取悬浮球开关为开', code: 'PREP.OK.deferred' },
     ],
   },
   engineSteps: [
@@ -280,40 +280,59 @@ if (!spCk?.cardNos.includes(3) || !spCk?.cardNos.includes(4) || !spCk?.cardNos.i
   console.error('think/assert/断言失败 should hang on 校验', spCk)
   failed += 1
 }
-if (split.find((g) => g.id === 's1')?.runLabel !== '校验中') {
-  console.error('running check should show 校验中', split.find((g) => g.id === 's1'))
+if (split.find((g) => g.id === 's1')?.runLabel !== '失败') {
+  console.error('failed assert after think must show 失败, not keep 校验中', split.find((g) => g.id === 's1'))
   failed += 1
 }
 
-const unverifiable = buildCaseRunGroups({
+const checkingLive = buildCaseRunGroups({
+  spec: {
+    steps_raw: '1. 点击底部导航栏「首页」',
+    expected_raw: '1. 进入首页',
+    expected_by_step: { 1: '进入首页' },
+  },
+  engineSteps: [
+    { step: 1, cap: 'tap_element', result_status: 'pass' },
+    { step: 2, cap: 'skip_repeat_tap', result_status: 'skipped' },
+    { step: 3, cap: '', status: 'thinking' },
+  ],
+  finished: false,
+  live: true,
+})
+if (checkingLive.find((g) => g.id === 's1')?.runLabel !== '校验中') {
+  console.error('in-flight think after tap should show 校验中', checkingLive.find((g) => g.id === 's1'))
+  failed += 1
+}
+
+const selected = buildCaseRunGroups({
   spec: {
     steps_raw: '1. 点击底部导航栏「首页」',
     expected_raw: '1. 底部「首页」为选中态',
     expected_by_step: { 1: '底部「首页」为选中态' },
   },
   coverage: {
-    coverage_class: 'expect_unverifiable',
-    expects: [{ n: 1, text: '底部「首页」为选中态', code: 'EXPECT.UNVERIFIABLE.tab_selected' }],
+    coverage_class: 'pass',
+    expects: [{ n: 1, text: '底部「首页」为选中态', code: 'EXPECT.PASS.tab_selected' }],
   },
   engineSteps: [
     { step: 1, cap: 'tap_element', result_status: 'pass' },
-    { step: 2, cap: 'assert_skip', summary: '无法验证：选中态/切页（底部「首页」为选中态）', result_status: 'skipped' },
+    { step: 2, cap: 'assert_visual', summary: '底部首页为选中', result_status: 'pass' },
   ],
   finished: true,
   live: false,
 })
-const uvDo = unverifiable.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'do')
-const uvCk = unverifiable.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
-if (uvDo?.cardNos.includes(2)) {
-  console.error('assert_skip must not hang on 操作', uvDo)
+const selDo = selected.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'do')
+const selCk = selected.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
+if (selDo?.cardNos.includes(2)) {
+  console.error('assert_visual must not hang on 操作', selDo)
   failed += 1
 }
-if (!uvCk?.cardNos.includes(2)) {
-  console.error('assert_skip should hang on 校验', uvCk)
+if (!selCk?.cardNos.includes(2)) {
+  console.error('assert_visual should hang on 校验', selCk)
   failed += 1
 }
-if (!String(taskStatusLabel(uvCk) || '').includes('无法验证')) {
-  console.error('选中态 should show 无法验证', uvCk, taskStatusLabel(uvCk))
+if (selCk?.status !== 'done' || String(selCk?.gapTag || '')) {
+  console.error('选中态 should be a concrete check, not 无法验证', selCk, taskStatusLabel(selCk))
   failed += 1
 }
 
@@ -324,26 +343,21 @@ const mixed = buildCaseRunGroups({
     expected_by_step: { 1: '进入首页，底部「首页」为选中态' },
   },
   coverage: {
-    coverage_class: 'expect_unverifiable',
+    coverage_class: 'pass',
     expects: [
-      { n: 1, text: '进入首页', code: 'EXPECT.PASS.page_nav' },
-      { n: 1, text: '底部「首页」为选中态', code: 'EXPECT.UNVERIFIABLE.tab_selected' },
+      { n: 1, text: '进入首页，底部「首页」为选中态', code: 'EXPECT.PASS.page_nav' },
     ],
   },
   engineSteps: [
     { step: 1, cap: 'tap_element', result_status: 'pass' },
-    { step: 2, cap: 'assert_skip', summary: '部分无法验证', result_status: 'skipped' },
+    { step: 2, cap: 'assert_visual', result_status: 'pass' },
   ],
   finished: true,
   live: false,
 })
 const mxCk = mixed.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
-if (mxCk?.status !== 'gap') {
-  console.error('mixed expect must not look like 通过', mxCk)
-  failed += 1
-}
-if (!String(taskStatusLabel(mxCk) || '').includes('无法验证')) {
-  console.error('mixed expect should keep 选中态未观察', mxCk, taskStatusLabel(mxCk))
+if (mxCk?.status !== 'done') {
+  console.error('mixed expect is one event, not 无法验证', mxCk)
   failed += 1
 }
 
@@ -356,8 +370,7 @@ const mixedFail = buildCaseRunGroups({
   coverage: {
     coverage_class: 'product_fail',
     expects: [
-      { n: 1, text: '进入首页', code: 'EXPECT.FAIL.page_nav' },
-      { n: 1, text: '底部「首页」为选中态', code: 'EXPECT.UNVERIFIABLE.tab_selected' },
+      { n: 1, text: '进入首页，底部「首页」为选中态', code: 'EXPECT.FAIL.page_nav' },
     ],
   },
   engineSteps: [
@@ -369,11 +382,33 @@ const mixedFail = buildCaseRunGroups({
 })
 const mxFailCk = mixedFail.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
 if (mxFailCk?.status !== 'fail') {
-  console.error('FAIL + UNVERIFIABLE must be 校验不通过, not 无法验证', mxFailCk)
+  console.error('FAIL must be 校验不通过', mxFailCk)
   failed += 1
 }
 if (taskStatusLabel(mxFailCk) !== '校验不通过') {
   console.error('FAIL wins label', mxFailCk, taskStatusLabel(mxFailCk))
+  failed += 1
+}
+
+const noExpect = buildCaseRunGroups({
+  spec: {
+    steps_raw: '打开造好物并且登录账号',
+    expected_raw: '',
+    expected_by_step: { 1: '' },
+  },
+  coverage: {
+    coverage_class: 'step_unexecutable',
+    expects: [{ n: 1, text: '', code: 'EXPECT.SKIPPED.no_expect' }],
+  },
+  engineSteps: [
+    { step: 1, cap: 'tap_element', result_status: 'pass' },
+  ],
+  finished: true,
+  live: false,
+})
+const neCk = noExpect.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
+if (neCk?.status !== 'gap' || !String(taskStatusLabel(neCk) || '').includes('无法执行')) {
+  console.error('no-expect instruction should be 无法执行', neCk, taskStatusLabel(neCk))
   failed += 1
 }
 
@@ -387,6 +422,280 @@ if (isLiveEngineStep({ status: 'checking', result_status: 'skipped' })) {
 }
 if (isLiveEngineStep({ status: 'thinking', result_status: 'skipped' })) {
   console.error('thinking + skipped must not stay live')
+  failed += 1
+}
+if (isLiveEngineStep({ status: 'thinking', result_status: 'blocked' })) {
+  console.error('thinking + blocked must not stay live')
+  failed += 1
+}
+if (isLiveEngineStep({ status: 'blocked' })) {
+  console.error('blocked itself must not stay live')
+  failed += 1
+}
+if (!isLiveEngineStep({ status: 'ask_human' })) {
+  console.error('ask_human should stay live until a result lands')
+  failed += 1
+}
+if (isLiveEngineStep({ status: 'thinking' }, { finished: true })) {
+  console.error('finished case must not keep thinking live')
+  failed += 1
+}
+if (isLiveEngineStep(
+  { step: 19, status: 'thinking' },
+  { siblings: [
+    { step: 19, status: 'thinking' },
+    { step: 20, cap: 'inspect_session', result_status: 'pass' },
+    { step: 21, cap: 'session_gate', result_status: 'fail' },
+  ] },
+)) {
+  console.error('earlier thinking must not stay live after later steps settled')
+  failed += 1
+}
+
+const lateInspect = buildCaseRunGroups({
+  spec: {
+    precondition: '1. 已登录账号：需求上线前注册\n2. 当前已打开 App',
+    steps_raw: '1. 打开App，进入Agent对话历史',
+    expected_raw: '1. 进入对话历史',
+    expected_by_step: { 1: '进入对话历史' },
+  },
+  engineSteps: [
+    { step: 1, cap: 'skip_restart', result_status: 'skipped' },
+    { step: 2, cap: 'tap_element', result_status: 'pass' },
+    { step: 3, cap: 'inspect_session', result_status: 'pass' },
+  ],
+  finished: false,
+  live: true,
+})
+const lateLogin = lateInspect.find((g) => g.id === 'prep')?.tasks.find((t) => t.title.includes('已登录'))
+const lateDo = lateInspect.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'do')
+if (lateLogin?.cardNos.includes(3)) {
+  console.error('late inspect_session must not jump back to 前置', lateLogin)
+  failed += 1
+}
+if (!lateDo?.cardNos.includes(3)) {
+  console.error('late inspect_session must hang on current 操作', lateDo)
+  failed += 1
+}
+
+const reloginHitl = buildCaseRunGroups({
+  spec: {
+    precondition: '1. 已登录账号：需求上线后注册\n2. 当前已打开 App',
+    steps_raw: '1. 点击底部导航栏「首页」',
+    expected_raw: '1. 进入首页，右下角可见领取悬浮球',
+    expected_by_step: { 1: '进入首页，右下角可见领取悬浮球' },
+  },
+  coverage: { coverage_class: 'prep_insufficient' },
+  engineSteps: [
+    { step: 1, cap: 'pick_account', result_status: 'pass' },
+    { step: 4, cap: 'session_align', result_status: 'pass' },
+    { step: 18, cap: 'tap_element', result_status: 'pass' },
+    { step: 19, status: 'thinking' },
+    { step: 20, cap: 'inspect_session', result_status: 'pass' },
+    { step: 21, cap: 'session_gate', result_status: 'fail' },
+  ],
+  finished: true,
+  live: false,
+})
+const rhPrep = reloginHitl.find((g) => g.id === 'prep')?.tasks.find((t) => t.title.includes('已登录'))
+const rhDo = reloginHitl.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'do')
+if (!rhPrep?.cardNos.includes(1) || !rhPrep?.cardNos.includes(4)) {
+  console.error('opening session_align stays on 前置', rhPrep)
+  failed += 1
+}
+if (!rhPrep?.cardNos.includes(18) || !rhPrep?.cardNos.includes(20) || !rhPrep?.cardNos.includes(21)) {
+  console.error('relogin taps/inspect/gate stay on 前置', rhPrep)
+  failed += 1
+}
+if (rhDo?.cardNos.includes(18) || rhDo?.cardNos.includes(20) || rhDo?.cardNos.includes(21)) {
+  console.error('session_align work must not hang on 步骤1', rhDo)
+  failed += 1
+}
+
+const taggedLanes = buildCaseRunGroups({
+  spec: {
+    precondition: '1. 已登录账号\n2. 当前已打开 App',
+    steps_raw: '1. 点击底部导航栏「首页」',
+    expected_raw: '1. 进入首页',
+    expected_by_step: { 1: '进入首页' },
+  },
+  engineSteps: [
+    { step: 1, cap: 'pick_account', result_status: 'pass', lane: 'prep' },
+    { step: 2, cap: 'tap_element', result_status: 'pass', lane: 'prep' },
+    { step: 3, cap: 'input_text', result_status: 'pass', lane: 'prep' },
+    { step: 4, cap: 'session_gate', result_status: 'pass', lane: 'prep' },
+    { step: 5, cap: 'tap_element', result_status: 'pass', lane: 'step' },
+    { step: 6, cap: 'assert_visual', result_status: 'pass', lane: 'expect' },
+  ],
+  finished: true,
+  live: false,
+})
+const tlPrep = taggedLanes.find((g) => g.id === 'prep')?.tasks.find((t) => t.title.includes('已登录'))
+const tlDo = taggedLanes.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'do')
+const tlCk = taggedLanes.find((g) => g.id === 's1')?.tasks.find((t) => t.kind === 'check')
+if (!tlPrep?.cardNos.includes(2) || !tlPrep?.cardNos.includes(3) || !tlPrep?.cardNos.includes(4)) {
+  console.error('tagged prep taps stay on 前置', tlPrep)
+  failed += 1
+}
+if (!tlDo?.cardNos.includes(5) || tlDo?.cardNos.includes(2) || tlDo?.cardNos.includes(6)) {
+  console.error('tagged step tap stays on 操作', tlDo)
+  failed += 1
+}
+if (!tlCk?.cardNos.includes(6) || tlCk?.cardNos.includes(5)) {
+  console.error('tagged assert stays on 预期', tlCk)
+  failed += 1
+}
+
+const nr009 = buildCaseRunGroups({
+  spec: {
+    steps_raw: '1. 点击底部导航栏「首页」。\n2. 点击首页领取悬浮球。\n3. 查看跳转后页面顶部标题和商品名称。',
+    expected_by_step: {
+      1: '进入首页，右下角可见领取悬浮球。',
+      2: '页面发生跳转，无卡死、无闪退。',
+      3: '落地页为 Q 版爱豆手办定制商品页，不是 Agent 对话页，也不是旧版新人礼领取页。',
+    },
+  },
+  coverage: {
+    coverage_class: 'product_fail',
+    steps: [
+      { n: 1, text: '点击底部导航栏「首页」。', code: 'STEP.OK' },
+      { n: 2, text: '点击首页领取悬浮球。', code: 'STEP.SKIPPED.blocked' },
+      { n: 3, text: '查看跳转后页面顶部标题和商品名称。', code: 'STEP.SKIPPED.blocked' },
+    ],
+    expects: [
+      { n: 1, text: '进入首页', code: 'EXPECT.PASS.page_nav' },
+      { n: 1, text: '右下角可见领取悬浮球', code: 'EXPECT.FAIL.node' },
+      { n: 2, text: '页面发生跳转，无卡死、无闪退。', code: 'EXPECT.SKIPPED.step_not_done' },
+      { n: 3, text: '落地页为 Q 版爱豆手办定制商品页', code: 'EXPECT.SKIPPED.step_not_done' },
+    ],
+  },
+  engineSteps: [
+    { step: 1, cap: 'pick_account', result_status: 'pass' },
+    { step: 4, cap: 'tap_element', result_status: 'pass' },
+    { step: 5, cap: 'assert_visual', result_status: 'pass' },
+    { step: 6, cap: 'assert_visual', result_status: 'fail' },
+  ],
+  finished: true,
+  live: false,
+})
+const n9s1 = nr009.find((g) => g.id === 's1')
+const n9s2 = nr009.find((g) => g.id === 's2')
+const n9s3 = nr009.find((g) => g.id === 's3')
+const n9cks = (n9s1?.tasks || []).filter((t) => t.kind === 'check')
+const n9s2ck = (n9s2?.tasks || []).find((t) => t.kind === 'check')
+const n9s3ck = (n9s3?.tasks || []).find((t) => t.kind === 'check')
+if (n9cks.length !== 2) {
+  console.error('009 step1 should split into two checks', n9cks)
+  failed += 1
+}
+if (n9cks[0]?.status !== 'done' || n9cks[1]?.status !== 'fail') {
+  console.error('009 enter held, ball failed', n9cks)
+  failed += 1
+}
+if (taskStatusLabel(n9cks[1]) !== '校验不通过') {
+  console.error('009 ball label', taskStatusLabel(n9cks[1]))
+  failed += 1
+}
+if (n9s2ck?.cardNos?.includes(5) || n9s2ck?.cardNos?.includes(6) || n9s3ck?.cardNos?.length) {
+  console.error('009 later checks must not get assert cards', n9s2ck, n9s3ck)
+  failed += 1
+}
+if (n9s2ck?.status !== 'blocked' || taskStatusLabel(n9s2ck) !== '未执行') {
+  console.error('009 step2 check must stay 未执行', n9s2ck, taskStatusLabel(n9s2ck))
+  failed += 1
+}
+if (n9s2?.status !== 'blocked' || n9s3?.status !== 'blocked') {
+  console.error('009 later steps blocked', n9s2, n9s3)
+  failed += 1
+}
+
+const smear = buildCaseRunGroups({
+  spec: {
+    steps_raw: '1. 点击首页\n2. 点击悬浮球',
+    expected_by_step: { 1: '进入首页', 2: '页面发生跳转' },
+  },
+  coverage: {
+    coverage_class: 'product_fail',
+    expects: [
+      { n: 1, text: '进入首页', code: 'EXPECT.FAIL.page_nav' },
+      { n: 2, text: '页面发生跳转', code: 'EXPECT.SKIPPED.step_not_done' },
+    ],
+  },
+  engineSteps: [
+    { step: 1, cap: 'tap_element', result_status: 'pass' },
+    { step: 2, cap: 'assert_visual', checkpoint_ids: ['cp1', 'cp2'], result_status: 'fail' },
+  ],
+  finished: true,
+})
+const sm2 = smear.find((g) => g.id === 's2')?.tasks.find((t) => t.kind === 'check')
+if (sm2?.cardNos?.includes(2)) {
+  console.error('multi-cp fail must not hang on 步骤2', sm2)
+  failed += 1
+}
+if (sm2?.status !== 'blocked' || taskStatusLabel(sm2) !== '未执行') {
+  console.error('smeared fail card cannot paint 步骤2 校验不通过', sm2, taskStatusLabel(sm2))
+  failed += 1
+}
+
+const envTree = buildCaseRunGroups({
+  spec: {
+    precondition: '1. 已登录\n2. 当前已打开 App',
+    steps_raw: '1. 点击底部导航「首页」',
+    expected_raw: '1. 进入首页',
+    expected_by_step: { 1: '进入首页' },
+  },
+  envProfile: 'test',
+  envLabel: '测试',
+  platform: 'android',
+  envAlign: {
+    wanted: 'test',
+    label: '测试',
+    observed: 'unknown',
+    matched: false,
+    switched: false,
+    unconfirmed: true,
+    ok: true,
+    reason: '登录页没有环境标识。未当作与本趟环境不一致。',
+  },
+  engineSteps: [
+    { step: 1, cap: 'inspect_env', result_status: 'pass' },
+    { step: 2, cap: 'env_align', result_status: 'pass' },
+    { step: 3, cap: 'inspect_env', result_status: 'pass' },
+    { step: 4, cap: 'inspect_session', result_status: 'pass' },
+    { step: 5, cap: 'session_gate', result_status: 'pass' },
+  ],
+  finished: true,
+  live: false,
+})
+const envRow = envTree.find((g) => g.id === 'prep')?.tasks.find((t) => t.id === 'p-env')
+const loginRow = envTree.find((g) => g.id === 'prep')?.tasks.find((t) => /已登录/.test(t.title))
+if (!envRow || envRow.title !== '切换到测试环境' || envRow.status !== 'done') {
+  console.error('env prep row missing or not done', envRow)
+  failed += 1
+}
+if (!envRow?.cardNos.includes(1) || !envRow?.cardNos.includes(2) || !envRow?.cardNos.includes(3)) {
+  console.error('inspect_env/env_align should hang on p-env', envRow)
+  failed += 1
+}
+if (loginRow?.cardNos?.some((n) => [1, 2, 3].includes(n))) {
+  console.error('env cards must not hang on 已登录', loginRow)
+  failed += 1
+}
+if (!loginRow?.cardNos.includes(4) || !loginRow?.cardNos.includes(5)) {
+  console.error('session cards should still hang on 已登录', loginRow)
+  failed += 1
+}
+
+const envWeb = buildCaseRunGroups({
+  spec: { precondition: '1. 已登录', steps_raw: '1. 打开首页', expected_raw: '1. 进入首页', expected_by_step: { 1: '进入首页' } },
+  envProfile: 'test',
+  envLabel: '测试',
+  platform: 'web',
+  envAlign: { skipped: 'url_distinguishes', ok: true },
+  finished: true,
+})
+if (envWeb.find((g) => g.id === 'prep')?.tasks.some((t) => t.id === 'p-env')) {
+  console.error('web must not inject env switch row', envWeb.find((g) => g.id === 'prep'))
   failed += 1
 }
 

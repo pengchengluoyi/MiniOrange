@@ -7,13 +7,6 @@ import { listPackKinds, listPackRoots, listPacks, reloadPacks } from '@/api/pack
 import PackCreateDialog from './PackCreateDialog.vue'
 import PackEntryDrawer from './PackEntryDrawer.vue'
 
-// 四类扩展（kind）与后端 rPacks.KINDS 对应
-const KIND_META = {
-  capability: { label: '能力', desc: '能做什么动作' },
-  recovery: { label: '恢复', desc: '系统/设备异常怎么处置' },
-  knowledge: { label: '知识', desc: '这个应用的业务判据' },
-  oracle: { label: '判定', desc: '能不能测、怎么判、多严' },
-}
 const PROVIDER_LABEL = {
   platform: '平台团队',
   device_team: '设备环境组',
@@ -29,7 +22,7 @@ const ROOT_LABEL = { app: '应用私有', team: '团队共享', builtin: '仓库
 const route = useRoute()
 
 const loading = ref(false)
-const activeKind = ref('recovery')     // 恢复类是当前最有内容的一类，默认落在这里
+const activeKind = ref('')
 const keyword = ref('')
 const providerFilter = ref('')
 const lifecycleFilter = ref('')
@@ -47,16 +40,7 @@ const activeRow = ref(null)
 const createOpen = ref(false)
 const roots = ref([])
 
-const kindTabs = computed(() => {
-  const byKind = Object.fromEntries((kinds.value || []).map((k) => [k.kind, k]))
-  return Object.entries(KIND_META).map(([kind, meta]) => ({
-    kind,
-    ...meta,
-    count: byKind[kind]?.count ?? 0,
-    ready: byKind[kind]?.ready ?? true,
-    reason: byKind[kind]?.not_ready_reason || '',
-  }))
-})
+const kindTabs = computed(() => kinds.value || [])
 
 const currentTab = computed(() => kindTabs.value.find((t) => t.kind === activeKind.value))
 
@@ -83,6 +67,7 @@ const fetchKinds = async () => {
 }
 
 const fetchItems = async () => {
+  if (!activeKind.value) return
   loading.value = true
   try {
     const params = { kind: activeKind.value }
@@ -156,17 +141,22 @@ const statsText = (row) => {
 }
 
 onMounted(async () => {
-  // 支持从回放页「去规则页」带 ?q=<规则 id>&kind= 直接定位
   const q = String(route.query.q || '').trim()
   const kind = String(route.query.kind || '').trim()
   if (q) keyword.value = q
-  if (kind && KIND_META[kind]) activeKind.value = kind
   await Promise.all([fetchKinds(), fetchRoots()])
-  // 带 q 但没带 kind 时，跨四类找一遍，命中哪类就切到哪类
+  const allowed = new Set(kindTabs.value.map((t) => t.kind))
+  if (kind && allowed.has(kind)) {
+    activeKind.value = kind
+  } else if (kind === 'capability' && allowed.has('generic')) {
+    activeKind.value = 'generic'
+  } else if (kindTabs.value.length) {
+    activeKind.value = kindTabs.value[0].kind
+  }
   if (q && !kind) {
-    for (const k of ['recovery', 'knowledge', 'capability', 'oracle']) {
-      const res = await listPacks({ kind: k, q })
-      if ((res?.data?.items || []).length) { activeKind.value = k; break }
+    for (const t of kindTabs.value) {
+      const res = await listPacks({ kind: t.kind, q })
+      if ((res?.data?.items || []).length) { activeKind.value = t.kind; break }
     }
   }
   await fetchItems()
@@ -200,7 +190,7 @@ const canCreate = computed(() => activeKind.value === 'recovery' && !useFixture.
     </el-alert>
 
     <div class="toolbar">
-      <div class="settings-tabbar compact-tabbar">
+      <div class="settings-tabbar is-compact">
         <button
           v-for="t in kindTabs"
           :key="t.kind"
@@ -210,7 +200,7 @@ const canCreate = computed(() => activeKind.value === 'recovery' && !useFixture.
           @click="switchKind(t.kind)"
         >
           <strong>{{ t.label }}<em v-if="t.count" class="pk-count">{{ t.count }}</em></strong>
-          <span>{{ t.desc }}</span>
+            <span>{{ t.desc }}</span>
         </button>
       </div>
 
@@ -247,10 +237,10 @@ const canCreate = computed(() => activeKind.value === 'recovery' && !useFixture.
       v-if="currentTab && !currentTab.ready && !useFixture"
       type="info" :closable="false" show-icon class="pk-notready"
       :title="`「${currentTab.label}」还未接入`"
-      :description="currentTab.reason || notReady[activeKind] || ''"
+      :description="currentTab.not_ready_reason || notReady[activeKind] || ''"
     >
       <template #default>
-        <p class="pk-notready-desc">{{ currentTab.reason || notReady[activeKind] }}</p>
+        <p class="pk-notready-desc">{{ currentTab.not_ready_reason || notReady[activeKind] }}</p>
         <p class="pk-notready-desc">可勾选右上「样例数据」预览这类条目将来长什么样。</p>
       </template>
     </el-alert>
@@ -265,6 +255,10 @@ const canCreate = computed(() => activeKind.value === 'recovery' && !useFixture.
           <span class="pk-status" :title="statusOf(row).tip">{{ statusOf(row).icon }}</span>
           <span class="pk-name">{{ row.title || row.id }}</span>
           <code class="pk-id">{{ row.id }}</code>
+          <el-tag v-if="row.detail?.origin === 'runtime'" size="small" effect="plain">编排</el-tag>
+          <el-tag v-else-if="row.detail?.exec_class && row.kind !== 'recovery'" size="small" effect="plain">
+            设备动作
+          </el-tag>
           <el-tag v-if="row.detail?.mode" size="small" effect="plain" class="pk-mode">
             {{ row.detail.mode === 'deterministic' ? '确定性' : '给模型提示' }}
           </el-tag>

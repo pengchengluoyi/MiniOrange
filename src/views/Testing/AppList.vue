@@ -208,7 +208,7 @@ const openApp = (app, project, extra = {}) => {
 const openProject = (p, extra = {}) => {
   const apps = p?.apps || []
   if (!apps.length) {
-    ElMessage.warning('这个项目还没有端，先到「项目」里补')
+    ElMessage.warning('这个项目还没有工作台，先到「管理」里补')
     return
   }
   const preferred = apps.find((a) => runningCountByApp.value[a.id]) || apps[0]
@@ -399,7 +399,6 @@ watch(() => route.query.view, (v) => {
         @click="selectProject(p.id)"
       >
         <strong>{{ p.name }}</strong>
-        <small>{{ p.apps?.length || 0 }} 个应用</small>
       </button>
       <div v-if="!projects.length" class="side-empty">暂无项目</div>
     </template>
@@ -410,10 +409,10 @@ watch(() => route.query.view, (v) => {
           <h2>测试</h2>
           <p>
             {{ homeView === 'schedule'
-              ? '点日历空位按整天排哪个版本 / 需求。设备在下发任务时再选。实验室视图要选应用。'
+              ? '点日历空位按整天排哪个版本 / 需求。设备在下发任务时再选。'
               : homeView === 'manage'
-                ? '按项目管理应用。删除应用要两次确认，图标目标和自动化配置会一起清掉。'
-                : '点项目进入工作台。端（App / Web）在项目里筛，不再先选应用。' }}
+                ? '按项目管理。用例仍挂在项目下的工作台；App / Web / Server 和三方平台在环境配置里维护。'
+                : '点项目进入工作台。应用和三方平台在「配置 → 环境配置」里维护，不再先选应用。' }}
           </p>
         </div>
         <div class="home-head-actions">
@@ -435,7 +434,7 @@ watch(() => route.query.view, (v) => {
         </button>
         <button type="button" class="home-tab" :class="{ on: homeView === 'manage' }" @click="setHomeView('manage')">
           <strong>管理</strong>
-          <span>增删项目和应用</span>
+          <span>增删项目</span>
         </button>
       </div>
 
@@ -459,7 +458,7 @@ watch(() => route.query.view, (v) => {
       <div v-else-if="homeView === 'manage'" class="home-manage">
         <section class="settings-info-card">
           <div class="settings-kicker">项目是工作台入口</div>
-          <p>点项目看这条产品线下的流程、用例、任务。App / Web 只是内部筛选。删除项目或应用都要两次确认；配置和图标目标会清掉，历史任务会留下。</p>
+          <p>点项目看这条产品线下的流程、用例、任务。App / Web / Server / 三方平台在「配置 → 环境配置」维护，不要为每个端再单独建应用。删除项目要两次确认。</p>
         </section>
         <section
           v-for="p in filteredProjects"

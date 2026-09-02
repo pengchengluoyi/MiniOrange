@@ -8,7 +8,7 @@ import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { belongsToAgentTask } from '@/utils/copilotAgent'
 import { normalizeCaseRow } from '@/utils/caseText'
-import { formatElapsed } from '@/utils/testingTasks'
+import { formatElapsed, capabilityLabel, capabilityActionDetail, channelLabel } from '@/utils/testingTasks'
 import {
   mergeCheckpointCatalog,
   parseCheckpointCatalog,
@@ -34,6 +34,10 @@ const props = defineProps({
   caseGoal: { type: String, default: '' },
   caseSpec: { type: Object, default: null },
   caseCoverage: { type: Object, default: null },
+  envProfile: { type: String, default: '' },
+  envLabel: { type: String, default: '' },
+  envAlign: { type: Object, default: null },
+  platform: { type: String, default: '' },
 })
 
 const goal = ref('')
@@ -126,9 +130,34 @@ function reset() {
 }
 
 function upsert(stepNo, patch) {
-  let s = steps.value.find(x => x.step === stepNo)
-  if (!s) { s = { step: stepNo }; steps.value.push(s); steps.value.sort((a, b) => a.step - b.step) }
+  const no = Number(stepNo)
+  let s = steps.value.find(x => Number(x.step) === no)
+  if (!s) { s = { step: no }; steps.value.push(s); steps.value.sort((a, b) => a.step - b.step) }
   Object.assign(s, patch)
+}
+
+const SETTLE_STATUS = {
+  pass: 'pass', skipped: 'skipped', skip: 'skipped',
+  fail: 'fail', failed: 'fail', blocked: 'blocked',
+  declined: 'declined', done: 'done',
+}
+
+function settleStatus(rs) {
+  const k = String(rs || '').toLowerCase()
+  return SETTLE_STATUS[k] || (k || undefined)
+}
+
+function applyTraceOntoStep(s, e) {
+  const cap = e?.capability_id || e?.event_kind
+  if (cap && (!s.cap || s.cap === 'done')) s.cap = cap
+  if (e?.executor_used && !s.executor) s.executor = e.executor_used
+  const settled = settleStatus(e?.status)
+  if (settled) {
+    s.result_status = e.status
+    s.status = settled
+  }
+  if (e?.summary || e?.error) s.summary = e.summary || e.error
+  if (e?.lane) s.lane = e.lane
 }
 
 function applyAgentEvent(d) {
@@ -148,6 +177,7 @@ function applyAgentEvent(d) {
       thought: d.summary || (checking ? '正在校验…' : '正在看图决策…'),
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
       ...(knowledge ? { knowledge } : {}),
+      ...(d.lane ? { lane: d.lane } : {}),
     })
     if (d.step) activeStep.value = d.step
   }
@@ -157,7 +187,9 @@ function applyAgentEvent(d) {
       status: d.status,
       action: d.action,
       thumb: normalizeThumb(d.thumb),
-      cap: d.action?.capability_id,
+      ...(d.action?.capability_id || d.capability_id
+        ? { cap: d.action?.capability_id || d.capability_id }
+        : {}),
       ...(knowledge ? { knowledge } : {}),
       ...(Array.isArray(d.checkpoint_ids) && d.checkpoint_ids.length ? { checkpoint_ids: d.checkpoint_ids } : {}),
       ...(Array.isArray(d.checkpoints_hit) && d.checkpoints_hit.length ? { checkpoints_hit: d.checkpoints_hit } : {}),
@@ -168,16 +200,12 @@ function applyAgentEvent(d) {
       ...(d.llm_input ? { llm_input: d.llm_input } : {}),
       ...(d.llm_output ? { llm_output: d.llm_output } : {}),
       ...(d.llm_meta ? { llm_meta: d.llm_meta } : {}),
+      ...(d.lane ? { lane: d.lane } : {}),
     })
     activeStep.value = d.step
   }
   else if (d.phase === 'result') {
-    const rs = String(d.result_status || '').toLowerCase()
-    const settled = ({
-      pass: 'pass', skipped: 'skipped', skip: 'skipped',
-      fail: 'fail', failed: 'fail', blocked: 'blocked',
-      declined: 'declined', done: 'done',
-    })[rs] || (rs || undefined)
+    const settled = settleStatus(d.result_status)
     upsert(d.step, {
       result_status: d.result_status,
       ...(settled ? { status: settled } : {}),
@@ -186,6 +214,7 @@ function applyAgentEvent(d) {
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
       ...(d.capability_id ? { cap: d.capability_id } : {}),
       ...(knowledge ? { knowledge } : {}),
+      ...(d.lane ? { lane: d.lane } : {}),
     })
     if (d.step) activeStep.value = d.step
   }
@@ -225,6 +254,7 @@ function applyPlanEvents(evs) {
       summary: e.summary || e.error, elapsed,
       thought: e.ai_reasoning || '',
       thumb,
+      lane: e.lane || '',
       action: e.plan_event ? { capability_id: e.capability_id, params: e.plan_event.params } : null,
       ...(knowledge ? { knowledge } : {}),
       ...(recId ? {
@@ -316,8 +346,8 @@ async function backfill(runId) {
       applyPlanEvents(Array.isArray(evs) ? evs : [])
     } else {
       (evs || []).forEach((e, i) => {
-        const stepNo = e.seq ?? i + 1
-        const s = steps.value.find((x) => x.step === stepNo)
+        const stepNo = Number(e.seq ?? i + 1)
+        const s = steps.value.find((x) => Number(x.step) === stepNo)
         const thumb = normalizeThumb(e.thumb || e.screenshot_thumb || '')
         const elapsed = resolveElapsed(e)
         if (!s) {
@@ -329,13 +359,13 @@ async function backfill(runId) {
             summary: e.summary || e.error,
             elapsed,
             thumb: thumb || undefined,
+            lane: e.lane || '',
           })
           return
         }
+        applyTraceOntoStep(s, e)
         if (thumb && !isValidThumb(s.thumb)) s.thumb = thumb
         if (elapsed > 0 && !(Number(s.elapsed) > 0)) s.elapsed = elapsed
-        if (e.capability_id && (!s.cap || s.cap === 'done')) s.cap = e.capability_id
-        if (e.executor_used && !s.executor) s.executor = e.executor_used
         const rec = e.vlm_meta?.recovery
         if (rec && !s.recovery) s.recovery = rec
         if (rec && !s.recoverySummary) s.recoverySummary = e.summary || s.recoverySummary
@@ -426,6 +456,9 @@ const hasExpected = computed(() => {
 const coverageCls = computed(() => props.caseCoverage?.coverage_class || '')
 const coverageHeadLabel = computed(() => props.caseCoverage?.coverage_label || COVERAGE_LABEL[coverageCls.value] || '')
 const caseSettled = computed(() => finished.value || Boolean(coverageCls.value))
+function liveStep(s) {
+  return isLiveEngineStep(s, { finished: caseSettled.value, siblings: steps.value })
+}
 const coverageGaps = computed(() => {
   const fromCov = Array.isArray(props.caseCoverage?.gaps) ? props.caseCoverage.gaps.filter((g) => g?.tag) : []
   if (fromCov.length) return fromCov
@@ -440,6 +473,10 @@ const runGroups = computed(() => buildCaseRunGroups({
   engineSteps: steps.value,
   finished: caseSettled.value,
   live: props.live && !caseSettled.value,
+  envProfile: props.envProfile,
+  envLabel: props.envLabel,
+  envAlign: props.envAlign,
+  platform: props.platform,
 }))
 const hasRunTree = computed(() => runGroups.value.some((g) => g.tasks.length))
 const liveTaskId = computed(() => runningTaskId(runGroups.value, steps.value, {
@@ -492,19 +529,6 @@ const statusClass = (s) => {
   if (['ask_human', 'blocked', 'partial', 'thinking', 'checking', 'running', 'continue'].includes(s)) return 'warn'
   return ''
 }
-const fmtAction = (a) => {
-  if (!a || !a.capability_id) return ''
-  const p = a.params || {}
-  const kv = Object.keys(p).map((k) => {
-    const v = p[k]
-    if (v && typeof v === 'object') {
-      try { return `${k}=${JSON.stringify(v)}` } catch { return `${k}=${String(v)}` }
-    }
-    return `${k}=${v}`
-  }).join(', ')
-  return kv ? `${a.capability_id}(${kv})` : a.capability_id
-}
-
 const usedKnowledge = (s) => {
   const seenIds = new Set()
   const seenTitles = new Set()
@@ -566,7 +590,7 @@ const filmFrames = computed(() => {
       at,
       elapsed,
       status: s.result_status || s.status,
-      cap: s.cap || s.action?.capability_id || `#${s.step}`,
+      cap: s.cap || s.action?.capability_id || '',
     }
   })
 })
@@ -792,7 +816,7 @@ defineExpose({ goal, overall, finished })
               limit: isLimit && i === waterfallBars.length - 1,
             }"
             :style="{ left: b.leftPct + '%', width: b.widthPct + '%', background: b.color }"
-            :title="`#${b.step} ${b.cap} · ${fmtDuration(b.elapsed)}`"
+            :title="`#${b.step} ${capabilityLabel(b.cap) || b.cap} · ${fmtDuration(b.elapsed)}`"
             @click="openStepDetailDrawer(b.step)"
           >#{{ b.step }}</button>
         </div>
@@ -808,7 +832,7 @@ defineExpose({ goal, overall, finished })
               bad: statusClass(f.status) === 'bad',
               limit: isLimit && i === nodeCols.length - 1,
             }"
-            :title="`#${f.step} ${f.cap} · ${fmtDuration(f.elapsed)}`"
+            :title="`#${f.step} ${capabilityLabel(f.cap) || f.cap} · ${fmtDuration(f.elapsed)}`"
             @mouseenter="hoverStep = f.step"
             @mouseleave="hoverStep = null"
             @click="onFilmClick(f, $event)"
@@ -819,8 +843,8 @@ defineExpose({ goal, overall, finished })
             </div>
             <div class="tl-meta">
               <span class="node-idx">#{{ f.step }}</span>
-              <span class="node-cap" :title="f.cap">{{ f.cap }}</span>
-              <span v-if="isLiveEngineStep(f)" class="crt-spin sm" title="执行中" />
+              <span class="node-cap" :title="capabilityLabel(f.cap) || f.cap">{{ capabilityLabel(f.cap) || f.cap }}</span>
+              <span v-if="liveStep(f)" class="crt-spin sm" title="执行中" />
               <span v-else class="node-ms">{{ fmtDuration(f.elapsed) }}</span>
             </div>
           </button>
@@ -891,13 +915,13 @@ defineExpose({ goal, overall, finished })
                     <div class="et-head">
                       <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
                       <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
-                      <span class="et-cap">{{ s.cap || '' }}<span v-if="s.executor" class="et-via">via {{ s.executor }}</span></span>
-                      <span v-if="isLiveEngineStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
+                      <span class="et-cap">{{ capabilityLabel(s.cap) || s.cap || '' }}<span v-if="channelLabel(s.executor)" class="et-via">{{ channelLabel(s.executor) }}</span></span>
+                      <span v-if="liveStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
                       <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
                     </div>
-                    <div v-if="s.action" class="et-actline">
-                      <span class="et-act-label">动作</span>
-                      <code>{{ fmtAction(s.action) }}</code>
+                    <div v-if="capabilityActionDetail(s.action)" class="et-actline">
+                      <span class="et-act-label">对象</span>
+                      <span class="et-act">{{ capabilityActionDetail(s.action) }}</span>
                     </div>
                     <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
                     <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
@@ -917,7 +941,7 @@ defineExpose({ goal, overall, finished })
                       </button>
                     </div>
                     <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
-                      <span class="et-packs-label">知识库命中</span>
+                      <span class="et-packs-label">本步知识</span>
                       <button
                         v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
                         type="button"
@@ -966,13 +990,13 @@ defineExpose({ goal, overall, finished })
               <div class="et-head">
                 <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
                 <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
-                <span class="et-cap">{{ s.cap || '' }}<span v-if="s.executor" class="et-via">via {{ s.executor }}</span></span>
-                <span v-if="isLiveEngineStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
+                <span class="et-cap">{{ capabilityLabel(s.cap) || s.cap || '' }}<span v-if="channelLabel(s.executor)" class="et-via">{{ channelLabel(s.executor) }}</span></span>
+                <span v-if="liveStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
                 <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
               </div>
-              <div v-if="s.action" class="et-actline">
-                <span class="et-act-label">动作</span>
-                <code>{{ fmtAction(s.action) }}</code>
+              <div v-if="capabilityActionDetail(s.action)" class="et-actline">
+                <span class="et-act-label">对象</span>
+                <span class="et-act">{{ capabilityActionDetail(s.action) }}</span>
               </div>
               <div v-if="s.thought" class="et-thought">{{ readableText(s.thought) }}</div>
               <div v-if="s.summary" class="et-summary">{{ readableText(s.summary) }}</div>
@@ -992,7 +1016,7 @@ defineExpose({ goal, overall, finished })
                 </button>
               </div>
               <div v-if="usedKnowledge(s).length" class="et-packs knowledge-pills">
-                <span class="et-packs-label">知识库命中</span>
+                <span class="et-packs-label">本步知识</span>
                 <button
                   v-for="(k, ki) in usedKnowledge(s)" :key="k.uid || k.id || ki"
                   type="button"
@@ -1345,7 +1369,7 @@ defineExpose({ goal, overall, finished })
   min-height: 36px;
   flex-shrink: 0;
 }
-.node-idx { font-size: 11px; font-weight: 800; color: #4f46e5; flex-shrink: 0; }
+.node-idx { font-size: 11px; font-weight: 800; color: var(--mo-primary, #4f46e5); flex-shrink: 0; }
 .node-cap {
   font-size: 11px;
   color: #334155;
@@ -1621,8 +1645,18 @@ defineExpose({ goal, overall, finished })
 }
 .et-body { flex: 1; min-width: 0; }
 .et-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
-.et-cap { font-size: 13px; font-weight: 600; color: #1f2937; font-family: ui-monospace, monospace; }
-.et-via { color: #9ca3af; font-weight: 400; margin-left: 6px; font-size: 12px; }
+.et-cap { font-size: 13px; font-weight: 700; color: var(--mo-text, #1f2937); }
+.et-via {
+  display: inline-flex;
+  margin-left: 8px;
+  font-weight: 650;
+  font-size: 11px;
+  color: var(--mo-primary, #6366f1);
+  background: var(--mo-primary-soft, #eef2ff);
+  padding: 1px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
 .et-badge { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: #e5e7eb; color: #4b5563; flex-shrink: 0; }
 .et-badge.ok { background: #dcfce7; color: #166534; }
 .et-badge.bad { background: #fee2e2; color: #991b1b; }
@@ -1656,11 +1690,11 @@ defineExpose({ goal, overall, finished })
   border-radius: 4px;
   flex-shrink: 0;
 }
-.et-actline code {
-  font-family: ui-monospace, monospace;
-  color: #1d4ed8;
-  word-break: break-all;
+.et-act {
+  color: var(--mo-text, #1f2937);
+  word-break: break-word;
   font-size: 12px;
+  line-height: 1.45;
 }
 .et-thought { font-size: 13px; color: #374151; line-height: 1.6; white-space: pre-wrap; margin-top: 6px; }
 .et-packs { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }

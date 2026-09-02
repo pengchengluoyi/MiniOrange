@@ -1,6 +1,6 @@
 ---
 name: settings-ui-style
-description: Keep MiniOrange Settings pages visually consistent. Use when creating or editing Vue settings pages under src/views/Settings, including tabs, cards, key configuration, Skills catalog, robots, applications, or environment configuration UI.
+description: Keep MiniOrange Settings pages visually consistent. Use when creating or editing Vue settings pages under src/views/Settings. Global tokens and non-settings Vue UI live in vue-ui-style.
 ---
 
 # Settings UI Style
@@ -11,7 +11,7 @@ Apply this skill whenever editing `src/views/Settings/**` or adding settings-rel
 
 ## Core Rule
 
-Use the shared settings style layer in `src/views/Settings/settings-ui.css`. Prefer semantic classes over local one-off CSS.
+Use the shared settings style layer in `src/views/Settings/settings-ui.css`. Prefer semantic classes over local one-off CSS. Colors come from `src/styles/tokens.css` (`--mo-*` aliased as `--settings-*`).
 
 Do not create a new visual language for each page.
 
@@ -55,18 +55,7 @@ Settings pages should follow this hierarchy:
 - `settings-action-pill`: colored pill action button.
 - `settings-action-arrow`: small arrow dot inside action pill.
 
-## Visual Tokens
-
-Use these defaults unless a page has a strong reason not to:
-
-- Background: `#f6f7fb`
-- Card background: `#ffffff`
-- Border: `#e3e8f0`
-- Text: `#111827`
-- Muted text: `#6b7280`
-- Primary: `#6366f1`
-- Radius: `16px`
-- Shadow: `0 10px 24px rgba(15, 23, 42, 0.04)`
+- Visual Tokens: `src/styles/tokens.css` (`--mo-*`). Do not re-hardcode `#f6f7fb` / `#6366f1` in new CSS.
 
 ## Interaction Rules
 

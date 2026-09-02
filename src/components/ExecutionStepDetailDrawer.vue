@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { getPack } from '@/api/packs'
-import { formatElapsed } from '@/utils/testingTasks'
+import { formatElapsed, capabilityLabel, formatCapabilityAction, channelLabel } from '@/utils/testingTasks'
 import { checkpointLabel, resolveCheckpointHits } from '@/utils/checkpoints'
 import PayloadView from '@/components/PayloadView.vue'
 
@@ -51,19 +51,6 @@ const statusTone = (s) => {
   return 'info'
 }
 
-const fmtAction = (a) => {
-  if (!a || !a.capability_id) return ''
-  const p = a.params || {}
-  const kv = Object.keys(p).map((k) => {
-    const v = p[k]
-    if (v && typeof v === 'object') {
-      try { return `${k}=${JSON.stringify(v)}` } catch { return `${k}=${String(v)}` }
-    }
-    return `${k}=${v}`
-  }).join(', ')
-  return kv ? `${a.capability_id}(${kv})` : a.capability_id
-}
-
 const fmtMs = (ms) => formatElapsed(ms) || (ms ? `${ms}ms` : '')
 
 const hasLlmInput = computed(() => step.value?.llm_input != null && step.value?.llm_input !== '')
@@ -75,7 +62,7 @@ const recoveryActions = computed(() => {
   const list = recovery.value?.actions
   return Array.isArray(list) ? list : []
 })
-const actionLine = computed(() => fmtAction(step.value?.action))
+const actionLine = computed(() => formatCapabilityAction(step.value?.action))
 const isRecoveryStep = computed(() => !!(recovery.value || (step.value?.packs || []).length
   || String(step.value?.cap || '').startsWith('recovery_')))
 
@@ -119,8 +106,7 @@ const systemLine = computed(() => {
 
 const stepTitle = computed(() => {
   const cap = String(step.value?.cap || step.value?.action?.capability_id || '')
-  if (cap.startsWith('recovery_')) return cap.slice(9)
-  return cap || '本步详情'
+  return capabilityLabel(cap) || '本步详情'
 })
 
 const kv = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`)
@@ -170,7 +156,7 @@ watch(
         </div>
         <div class="sd-meta">
           <span v-if="isRecoveryStep">系统恢复</span>
-          <span v-if="step.executor">{{ step.executor }}</span>
+          <span v-if="channelLabel(step.executor)">{{ channelLabel(step.executor) }}</span>
           <span v-if="fmtMs(step.elapsed)">{{ fmtMs(step.elapsed) }}</span>
         </div>
       </header>
@@ -180,13 +166,13 @@ watch(
           <h4>本步摘要</h4>
           <div v-if="actionLine" class="sd-field">
             <span class="sd-label">动作</span>
-            <code>{{ actionLine }}</code>
+            <span>{{ actionLine }}</span>
           </div>
           <div v-else-if="recoveryActions.length" class="sd-field">
             <span class="sd-label">处置动作</span>
             <ol class="sd-acts">
               <li v-for="(a, i) in recoveryActions" :key="i">
-                <code>{{ a.capability }}</code>
+                <code>{{ capabilityLabel(a.capability) || a.capability }}</code>
                 <i v-if="a.status">{{ a.status }}</i>
                 <span v-if="a.skipped">跳过 {{ a.skipped }}</span>
                 <span v-else-if="a.summary">{{ a.summary }}</span>
@@ -250,13 +236,13 @@ watch(
                   </dd>
                   <dt v-if="packMap[packUidOf(p)]?.detail?.actions?.length">规则动作</dt>
                   <dd v-if="packMap[packUidOf(p)]?.detail?.actions?.length">
-                    {{ packMap[packUidOf(p)].detail.actions.map((a) => a.capability).join(' → ') }}
+                    {{ packMap[packUidOf(p)].detail.actions.map((a) => capabilityLabel(a.capability) || a.capability).join(' → ') }}
                   </dd>
                   <dt v-if="recoveryActions.length">本步实跑</dt>
                   <dd v-if="recoveryActions.length">
                     <ol class="sd-acts">
                       <li v-for="(a, i) in recoveryActions" :key="i">
-                        <code>{{ a.capability }}</code>
+                        <code>{{ capabilityLabel(a.capability) || a.capability }}</code>
                         <i v-if="a.status">{{ a.status }}</i>
                         <span v-if="a.summary">{{ a.summary }}</span>
                       </li>

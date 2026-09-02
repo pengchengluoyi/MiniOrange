@@ -140,7 +140,7 @@ const envFilled = (key) => {
 const ensureEnvReady = (env) => {
   if (!envSnap.value.filledKeys.length) return true
   if (envFilled(env)) return true
-  ElMessage.warning(`${envTitle(env)}环境还没填渠道标识，先去「配置 → 环境配置」填好再下发`)
+  ElMessage.warning(`${envTitle(env)}环境还没填应用启动标识，先去「配置 → 环境配置」填好再下发`)
   return false
 }
 
@@ -202,12 +202,12 @@ const activeJobId = computed(() => {
 const showJobPanel = (id) => !showJobTabs.value || activeJobId.value === id
 const listPageTitle = computed(() => {
   if (board.value === 'req') return '需求测试'
-  if (board.value === 'sch') return '本应用排期'
+  if (board.value === 'sch') return '本项目排期'
   return '版本测试'
 })
 const listPageDesc = computed(() => {
   if (board.value === 'req') return '评审需求 · 准备用例 · 提测 · 验收。点需求单进入阶段；点节点只查看，不会改状态。'
-  if (board.value === 'sch') return '只看本应用的开测窗口。实验室总日历在测试首页。'
+  if (board.value === 'sch') return '只看本项目的开测窗口。实验室总日历在测试首页。'
   return '定开测日期 · 预发回归 · 发版评审。'
 })
 const viewingReqCurrent = computed(() => {

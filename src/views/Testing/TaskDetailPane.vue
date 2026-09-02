@@ -17,7 +17,7 @@ import { generatedCasesFromProcess } from '@/utils/qaProcess'
 import { envLabel } from '@/constants/envProfiles'
 import { normalizeCaseRow } from '@/utils/caseText'
 import { clipText, slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
-import { isGapRow, isProductFailRow, isUnverifiableRow, summarizeTaskCoverage } from '@/utils/caseCatalog'
+import { isProductFailRow, buildSignoff, buildExecReport, STATE_LABEL, REASON_LABEL, signoffStateTag } from '@/utils/caseCatalog'
 import {
   apiErrorDetail,
   applyTestingTaskEvent,
@@ -40,24 +40,26 @@ import {
   taskProgressPct,
   taskSns,
   taskTitle,
-  displayTaskStatus,
+  taskRunContext,
+  DEVICE_SLOT_ROLE_LABEL,
 } from '@/utils/testingTasks'
 
 const props = defineProps({
   taskId: { type: String, required: true },
   appId: { type: String, default: '' },
   seed: { type: Object, default: null },
+  caseId: { type: String, default: '' },
+  caseSn: { type: String, default: '' },
 })
-const emit = defineEmits(['open-task'])
+const emit = defineEmits(['open-task', 'open-case'])
 
 const loading = ref(false)
 const task = ref(null)
-const selectedCaseRunId = ref('')
 const headerMeta = ref(null)
 const pollTimer = ref(null)
-const view = ref('cases')
+const view = ref('summary')
 const casePage = ref(1)
-const casePageSize = ref(10)
+const casePageSize = ref(20)
 const knowPage = ref(1)
 const knowPageSize = ref(10)
 const reviewingDraft = ref(null)
@@ -74,6 +76,20 @@ const catalog = ref([])
 const processMeta = ref({ requirements: [], releases: [] })
 
 const caseRunIdOf = (c) => c.report_run_id || (c.case_id ? `${props.taskId}::${c.case_id}` : '')
+const caseNavKey = (c) => String(c?.case_id || '').trim() || caseRunIdOf(c)
+const isCasePage = computed(() => Boolean(props.caseId))
+
+const findCaseIn = (cases, caseId, sn) => {
+  const list = cases || []
+  const cid = String(caseId || '')
+  if (!cid) return null
+  const byRun = list.find((c) => caseRunIdOf(c) === cid)
+  if (byRun) return byRun
+  const hits = list.filter((c) => String(c.case_id || '') === cid)
+  if (!hits.length) return null
+  if (sn) return hits.find((c) => String(c.sn || '') === String(sn)) || hits[0]
+  return hits[0]
+}
 
 const isEmptySpecVal = (v) => v == null || v === '' || (Array.isArray(v) && !v.length)
 
@@ -116,15 +132,40 @@ const executedCases = computed(() => sourceCases.value.filter((c) => !isPendingS
 const showPendingTab = computed(() => pendingCases.value.length > 0)
 const railCases = computed(() => (caseTab.value === 'pending' && showPendingTab.value ? pendingCases.value : executedCases.value))
 const pagedRailCases = computed(() => slicePage(railCases.value, casePage.value, casePageSize.value))
-
-const isLive = computed(() => task.value?.status === 'running')
 const failedCases = computed(() => (task.value?.cases || []).filter(isProductFailRow))
-const unverifiableCases = computed(() => (task.value?.cases || []).filter(isUnverifiableRow))
-const gapCases = computed(() => (task.value?.cases || []).filter(isGapRow))
-const coverageStats = computed(() => summarizeTaskCoverage(task.value?.cases || []))
-const skippedCases = computed(() =>
-  (task.value?.cases || []).filter((c) => ['cancelled', 'skipped', 'pending'].includes(c.status) && task.value?.status !== 'running'),
-)
+const execReport = computed(() => buildExecReport(task.value?.cases || []))
+const runContext = computed(() => taskRunContext(task.value))
+const cannotKindTag = (row) => {
+  if (row?.kind === 'UNVERIFIABLE') return 'info'
+  if (row?.kind === 'UNSUPPORTED') return 'warning'
+  return 'warning'
+}
+const signoffReq = computed(() => {
+  const id = String(task.value?.requirementId || '')
+  if (!id) return null
+  return (processMeta.value.requirements || []).find((r) => r.id === id) || null
+})
+const signoff = computed(() => {
+  const cases = task.value?.cases || []
+  const points = signoffReq.value?.understanding?.points || []
+  const local = buildSignoff(cases, { points })
+  if (local.rows.length) return local
+  const remote = task.value?.signoff
+  if (remote && (remote.rows || []).length) return remote
+  return local
+})
+const signoffPage = ref(1)
+const signoffPageSize = ref(20)
+const pagedSignoff = computed(() => slicePage(signoff.value.rows || [], signoffPage.value, signoffPageSize.value))
+const openSignoffRow = (row) => {
+  const cid = String(row?.case_id || '')
+  if (!cid) return
+  const hit = (task.value?.cases || []).find((c) => String(c.case_id || '') === cid)
+  if (!hit) return
+  const id = caseNavKey(hit)
+  if (!id) return
+  emit('open-case', { case_id: id, sn: hit.sn || '', report_run_id: hit.report_run_id || '' })
+}
 const progressPct = computed(() => taskProgressPct(task.value))
 const headStats = computed(() => {
   const cases = task.value?.cases || []
@@ -137,10 +178,18 @@ const headStats = computed(() => {
     pending: cases.filter((c) => isPendingStatus(c.status)).length,
   }
 })
-const caseRailOpen = ref(true)
-const selectedCase = computed(() =>
-  (task.value?.cases || []).find((c) => caseRunIdOf(c) === selectedCaseRunId.value) || null,
-)
+const isLive = computed(() => task.value?.status === 'running')
+const selectedCase = computed(() => findCaseIn(task.value?.cases, props.caseId, props.caseSn))
+const caseEnvAlign = computed(() => {
+  const t = task.value
+  const sn = String(selectedCase.value?.sn || '').trim()
+  const bySn = t?.envAlignBySn
+  if (sn && bySn && typeof bySn === 'object' && bySn[sn] && typeof bySn[sn] === 'object') {
+    return bySn[sn]
+  }
+  return t?.envAlign || null
+})
+const selectedCaseRunId = computed(() => (selectedCase.value ? caseRunIdOf(selectedCase.value) : ''))
 const showTimeline = computed(() => {
   const s = selectedCase.value?.status
   return Boolean(selectedCaseRunId.value && s && !['pending', 'cancelled', 'skipped'].includes(s))
@@ -201,6 +250,7 @@ const deviceLanes = computed(() => {
   const sns = taskSns(task.value)
   const cases = task.value?.cases || []
   const runningTask = task.value?.status === 'running' || task.value?.status === 'queued'
+  const held = new Set(runContext.value.heldSns)
   return sns.map((sn) => {
     const units = cases.filter((c) => c.sn === sn)
     const running = units.find((c) => c.status === 'running')
@@ -209,7 +259,12 @@ const deviceLanes = computed(() => {
     const doneUnits = units.filter((c) => !['pending', 'queued', 'running'].includes(String(c.status || '')))
     let label = '已完成'
     let laneState = 'done'
-    if (!runningTask) {
+    const heldSlot = (task.value?.device_plan?.slots || []).find((s) => s.sn === sn)
+    if (held.has(sn) && !running) {
+      const role = DEVICE_SLOT_ROLE_LABEL[heldSlot?.role] || '占用'
+      label = `${role} · 已占用`
+      laneState = 'held'
+    } else if (!runningTask) {
       const failed = units.filter((c) => ['fail', 'blocked', 'declined'].includes(c.status)).length
       if (!units.length) {
         label = '未执行'
@@ -309,16 +364,6 @@ const hitlForThisTask = computed(() => {
   return null
 })
 
-const pickDefaultCase = (cases) => {
-  if (!cases?.length) return null
-  return cases.find((c) => c.hitl)
-    || cases.find((c) => c.status === 'running')
-    || cases.find((c) => c.status === 'blocked')
-    || cases.find((c) => ['fail', 'failed', 'partial', 'declined'].includes(c.status))
-    || cases.find((c) => c.status === 'pending')
-    || cases[0]
-}
-
 const loadHeader = async (caseRunId) => {
   headerMeta.value = null
   if (!caseRunId) return
@@ -341,14 +386,10 @@ const loadHeader = async (caseRunId) => {
   }
 }
 
-const selectCase = async (c) => {
-  const id = caseRunIdOf(c)
+const selectCase = (c) => {
+  const id = caseNavKey(c)
   if (!id) return
-  selectedCaseRunId.value = id
-  view.value = 'cases'
-  if (isPendingStatus(c.status) && pendingCases.value.length) caseTab.value = 'pending'
-  else caseTab.value = 'executed'
-  await loadHeader(id)
+  emit('open-case', { case_id: id, sn: c.sn || '', report_run_id: c.report_run_id || '' })
 }
 
 const keepReviewedProposals = (prev, next) => {
@@ -383,12 +424,7 @@ const loadTask = async ({ silent = false } = {}) => {
       next = { ...next, cases: props.seed.cases }
     }
     task.value = keepReviewedProposals(task.value, next)
-
-    const stillValid = selectedCaseRunId.value
-      && next?.cases?.some((c) => caseRunIdOf(c) === selectedCaseRunId.value)
-    if (!stillValid && next?.cases?.length) {
-      await selectCase(pickDefaultCase(next.cases))
-    } else if (selectedCaseRunId.value) {
+    if (isCasePage.value && selectedCase.value) {
       await loadHeader(selectedCaseRunId.value)
     }
   } finally {
@@ -502,6 +538,13 @@ const retryOne = async (c) => {
   }
 }
 
+const retryOneById = async (row) => {
+  const cid = String(row?.case_id || '')
+  if (!cid) return
+  const hit = (task.value?.cases || []).find((c) => String(c.case_id || '') === cid)
+  await retryOne(hit || row)
+}
+
 const markProposalStatus = (id, status) => {
   const apply = (list) => {
     const hit = (list || []).find((k) => k?.id === id)
@@ -566,10 +609,6 @@ const onWs = (res) => {
     if (task.value) {
       task.value = keepReviewedProposals(task.value, applyTestingTaskEvent(task.value, data))
     }
-    if (data.event === 'case_running' && data.case) {
-      const row = (task.value?.cases || []).find((c) => c.case_id === data.case.case_id)
-      if (row) selectCase(row)
-    }
     if (data.event === 'task_finished' || data.event === 'cancelled') {
       loadTask({ silent: true })
     }
@@ -621,7 +660,6 @@ const loadCatalog = async () => {
 watch(
   () => props.taskId,
   () => {
-    selectedCaseRunId.value = ''
     view.value = 'cases'
     hitlPending.value = null
     caseTab.value = 'executed'
@@ -629,26 +667,25 @@ watch(
   },
 )
 
+watch(
+  () => [props.caseId, props.caseSn],
+  () => {
+    if (isCasePage.value && selectedCase.value) loadHeader(selectedCaseRunId.value)
+    else headerMeta.value = null
+  },
+)
+
 watch(showPendingTab, (show) => {
   if (!show) caseTab.value = 'executed'
 })
 
-watch(selectedCase, (c) => {
-  if (!c) return
-  if (isPendingStatus(c.status) && showPendingTab.value) caseTab.value = 'pending'
-  else if (!isPendingStatus(c.status)) caseTab.value = 'executed'
-})
-
-watch([caseTab, () => railCases.value.length, selectedCaseRunId], () => {
-  const idx = railCases.value.findIndex((c) => caseRunIdOf(c) === selectedCaseRunId.value)
-  casePage.value = idx >= 0 ? Math.floor(idx / casePageSize.value) + 1 : 1
+watch([caseTab, () => railCases.value.length], () => {
+  casePage.value = 1
 })
 
 watch(() => pendingKnowledge.value.length, () => {
   knowPage.value = 1
 })
-
-const caseRowClass = ({ row }) => (caseRunIdOf(row) === selectedCaseRunId.value ? 'is-current' : '')
 
 const openReview = (row) => {
   reviewingDraft.value = { ...row }
@@ -662,8 +699,99 @@ const saveReview = async () => {
 </script>
 
 <template>
-  <div class="pane" v-loading="loading">
-    <template v-if="task">
+  <div class="pane" :class="{ 'is-case': isCasePage }" v-loading="loading">
+    <template v-if="task && isCasePage">
+      <div class="pane-head">
+        <div class="pane-head-main">
+          <div class="pane-head-info">
+            <div class="pane-head-title-row">
+              <el-tag
+                v-if="selectedCase?.status"
+                :type="statusTagType(selectedCase.status, selectedCase)"
+                effect="dark"
+                round
+                :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
+              >{{ statusLabel(selectedCase.status, selectedCase) }}</el-tag>
+              <span class="title" :title="selectedCase?.name || selectedCase?.case_id">{{ selectedCase?.name || selectedCase?.case_id || '用例详情' }}</span>
+              <el-tag v-if="selectedCase?.sn" size="small" effect="plain" round>{{ shortDeviceLabel(selectedCase.sn) }}</el-tag>
+            </div>
+            <div class="pane-head-stats">
+              <span>任务 {{ taskTitle(task) }}</span>
+              <span v-if="selectedCase?.case_id">{{ selectedCase.case_id }}</span>
+              <span v-if="headerMeta?.elapsed && !headerMeta.live">{{ formatElapsed(headerMeta.elapsed) }}</span>
+              <span v-if="selectedCase?.summary">{{ clipText(selectedCase.summary, 80) }}</span>
+            </div>
+          </div>
+          <div class="pane-head-actions">
+            <slot name="actions" />
+            <el-button size="small" text @click="copyRunId">复制编号</el-button>
+            <el-button
+              v-if="headerMeta && !headerMeta.live && selectedCase"
+              size="small"
+              text
+              :type="['fail', 'failed', 'partial'].includes(selectedCase.status) ? 'info' : 'primary'"
+              @click="promoteRun"
+            >{{ ['fail', 'failed', 'partial'].includes(selectedCase.status) ? '仍提升为 Baseline' : '提升为 Baseline' }}</el-button>
+            <el-button
+              v-if="selectedCase && ['fail', 'failed', 'partial', 'declined'].includes(selectedCase.status)"
+              size="small"
+              plain
+              :loading="retrying"
+              @click="retryOne(selectedCase)"
+            >重跑</el-button>
+          </div>
+        </div>
+      </div>
+      <div v-if="hitlForThisTask" class="hitl-banner">
+        <div class="hitl-banner-text">
+          <strong>等待人工确认</strong>
+          <span>{{ hitlForThisTask.title || hitlForThisTask.body || 'Agent 已暂停，请在弹窗中回复后继续' }}</span>
+        </div>
+      </div>
+      <div v-if="caseProposals.length" class="know-block compact">
+        <h4>本条可沉淀的知识 <small>{{ caseProposals.length }}</small></h4>
+        <article v-for="row in caseProposals" :key="row.id" class="know-card">
+          <header>
+            <el-input v-model="row.title" size="small" class="know-title" placeholder="知识标题" />
+            <small>{{ SOURCE_LABEL[row.source] || '用例执行' }}</small>
+          </header>
+          <p v-if="row.question" class="know-q">{{ row.question }}</p>
+          <el-input
+            v-model="row.content"
+            type="textarea"
+            class="know-body"
+            :autosize="{ minRows: 2, maxRows: 5 }"
+          />
+          <div class="know-actions">
+            <el-button link :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
+            <el-button link type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并通过</el-button>
+          </div>
+        </article>
+      </div>
+      <p v-if="selectedCase?.status === 'pending'" class="pending-hint">
+        {{ runningCaseName ? `排队中，当前正在跑 ${runningCaseName}` : '排队中，等待执行' }}
+      </p>
+      <p v-else-if="selectedCase && (selectedCase.status === 'cancelled' || selectedCase.status === 'skipped')" class="pending-hint">
+        {{ selectedCase.summary || '该用例未执行或已取消' }}
+      </p>
+      <div v-if="selectedCase" class="timeline-pane">
+        <ExecutionTimeline
+          class="tl"
+          :run-id="showTimeline ? selectedCaseRunId : ''"
+          :live="isLive && selectedCase?.status === 'running'"
+          :case-summary="selectedCase?.summary || ''"
+          :case-goal="headerMeta?.goal || selectedCase?.name || ''"
+          :case-spec="selectedSpec"
+          :case-coverage="selectedCase?.coverage || null"
+          :env-profile="task?.envProfile || ''"
+          :env-label="task?.envProfile ? envLabel(task.envProfile) : ''"
+          :env-align="caseEnvAlign"
+          :platform="selectedCase?.platform || task?.platform || ''"
+        />
+      </div>
+      <el-empty v-else-if="!loading" description="找不到该用例" />
+    </template>
+    <template v-else-if="task">
       <div class="pane-head">
         <div class="pane-head-main">
           <div class="pane-head-info">
@@ -673,19 +801,16 @@ const saveReview = async () => {
               <el-tag v-if="taskSns(task).length > 1" size="small" effect="plain" round>{{ coverageLabel(taskCoverage(task)) }}</el-tag>
             </div>
             <div class="pane-head-stats">
-              <span>全部 {{ headStats.total }}</span>
-              <span class="ok">通过 {{ coverageStats.pass || headStats.passed }}</span>
-              <span class="bad">校验不通过 {{ coverageStats.product_fail }}</span>
-              <span v-if="coverageStats.prep_insufficient">准备不足 {{ coverageStats.prep_insufficient }}</span>
-              <span v-if="coverageStats.step_unexecutable">步骤无法执行 {{ coverageStats.step_unexecutable }}</span>
-              <span v-if="coverageStats.expect_unverifiable" class="warn">无法验证 {{ coverageStats.expect_unverifiable }}</span>
-              <span v-if="coverageStats.engine_error">引擎故障 {{ coverageStats.engine_error }}</span>
-              <span v-if="coverageStats.untestable">测不了 {{ coverageStats.untestable }}</span>
+              <span class="ok">通过 {{ execReport.passedCount || 0 }}</span>
+              <span class="bad">失败 {{ execReport.failedCount || 0 }}</span>
+              <span class="warn">不可做 {{ execReport.cannotCount || 0 }}</span>
+              <span class="warn">还没测到 {{ execReport.pendingCount || 0 }}</span>
               <span v-if="headStats.blocked">阻塞 {{ headStats.blocked }}</span>
               <span v-if="headStats.running">运行中 {{ headStats.running }}</span>
               <span v-if="headStats.pending">等待 {{ headStats.pending }}</span>
-              <span v-if="coverageStats.productPassRate != null && displayTaskStatus(task) !== 'cancelled'">产品通过率 {{ coverageStats.productPassRate }}%</span>
+              <span>用例 {{ headStats.total }}</span>
               <span v-if="taskSns(task).length">设备 {{ formatTaskDevices(task) }}</span>
+              <span v-if="runContext.sessionLine">登录态 {{ runContext.sessionLine }}</span>
             </div>
             <div v-if="headChips.length" class="pane-head-chips">
               <span v-for="chip in headChips" :key="chip.k" class="head-chip" :title="`${chip.k} ${chip.v}`">
@@ -745,17 +870,96 @@ const saveReview = async () => {
         <el-button type="warning" size="small" @click="focusHitlCase">去处理</el-button>
       </div>
 
-      <div class="seg">
-        <button type="button" :class="{ active: view === 'cases' }" @click="view = 'cases'">用例与时间线</button>
-        <button type="button" :class="{ active: view === 'info' }" @click="view = 'info'">任务详情</button>
-        <button type="button" :class="{ active: view === 'summary' }" @click="view = 'summary'">总结报表</button>
-        <button type="button" :class="{ active: view === 'knowledge' }" @click="view = 'knowledge'">
-          待审核知识<template v-if="pendingKnowledge.length"> {{ pendingKnowledge.length }}</template>
+      <div class="settings-tabbar pane-tabs">
+        <button type="button" class="settings-tab" :class="{ active: view === 'summary' }" @click="view = 'summary'">
+          <strong>测试报告</strong>
+          <span>通过 / 失败 / 不可做</span>
+        </button>
+        <button type="button" class="settings-tab" :class="{ active: view === 'signoff' }" @click="view = 'signoff'">
+          <strong>签收</strong>
+          <span>测试点三态，给人签字</span>
+        </button>
+        <button type="button" class="settings-tab" :class="{ active: view === 'cases' }" @click="view = 'cases'">
+          <strong>用例</strong>
+          <span>点一行进入步骤</span>
+        </button>
+        <button type="button" class="settings-tab" :class="{ active: view === 'info' }" @click="view = 'info'">
+          <strong>任务详情</strong>
+          <span>环境与设备</span>
+        </button>
+        <button type="button" class="settings-tab" :class="{ active: view === 'knowledge' }" @click="view = 'knowledge'">
+          <strong>待审核知识</strong>
+          <span>{{ pendingKnowledge.length ? `${pendingKnowledge.length} 条` : '本趟沉淀' }}</span>
         </button>
       </div>
 
-      <template v-if="view === 'info'">
+      <template v-if="view === 'signoff'">
+        <div class="fail-block signoff-block">
+          <h4>测试点签收</h4>
+          <p class="signoff-note">
+            签收是给人签字的测试点表，不是执行器分数。每一行一个测试点：成立＝这屏上看到了该点要求的现象；不成立＝看了但没有；未观察＝这趟没看见（没跑到 / 场景没有 / 这句看不了）。通过率只算成立和不成立。时间线只当证据，不拿来签字。
+          </p>
+          <div class="table-wrap">
+          <el-table
+            :data="pagedSignoff"
+            border
+            stripe
+            size="small"
+            height="100%"
+            empty-text="还没有观察结论"
+            @row-click="openSignoffRow"
+          >
+            <el-table-column label="结论" width="96">
+              <template #default="{ row }">
+                <el-tag :type="signoffStateTag(row.state)" size="small" effect="light">
+                  {{ STATE_LABEL[row.state] || row.state }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="测试点 / 观察" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.title || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="未观察原因" width="120">
+              <template #default="{ row }">
+                <span v-if="row.state === 'unobserved'">{{ row.reason_label || REASON_LABEL[row.reason] || '—' }}</span>
+                <span v-else class="muted-cell">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="用例" width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.case_id || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="88" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="row.case_id" link type="primary" size="small" @click.stop="openSignoffRow(row)">看步骤</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          </div>
+          <el-pagination
+            class="table-pager compact"
+            background
+            small
+            layout="total, sizes, prev, pager, next"
+            :total="(signoff.rows || []).length"
+            :page-sizes="TABLE_PAGE_SIZES"
+            v-model:page-size="signoffPageSize"
+            v-model:current-page="signoffPage"
+          />
+        </div>
+      </template>
+
+      <template v-else-if="view === 'info'">
         <div class="info-page">
+          <section class="info-group info-group-wide">
+            <div class="info-kicker">运行上下文</div>
+            <dl class="info-facts">
+              <div v-for="row in runContext.rows" :key="row.k">
+                <dt>{{ row.k }}</dt>
+                <dd>{{ row.v }}</dd>
+              </div>
+            </dl>
+            <p v-if="runContext.note" class="ctx-note">{{ runContext.note }}</p>
+          </section>
           <section v-for="group in factGroups" :key="group.title" class="info-group">
             <div class="info-kicker">{{ group.title }}</div>
             <dl class="info-facts">
@@ -769,101 +973,116 @@ const saveReview = async () => {
       </template>
 
       <template v-else-if="view === 'summary'">
-        <div class="metrics">
-          <div class="metric"><div class="k">产品通过率</div><div class="v">{{ coverageStats.productPassRate == null ? '—' : `${coverageStats.productPassRate}%` }}</div></div>
-          <div class="metric"><div class="k">通过</div><div class="v ok">{{ coverageStats.pass || 0 }}</div></div>
-          <div class="metric"><div class="k">校验不通过</div><div class="v bad">{{ coverageStats.product_fail || 0 }}</div></div>
-          <div class="metric"><div class="k">无法验证</div><div class="v warn">{{ coverageStats.expect_unverifiable || 0 }}</div></div>
-          <div class="metric"><div class="k">执行期缺口</div><div class="v warn">{{ coverageStats.gaps || 0 }}</div></div>
-        </div>
-        <div class="fail-block">
-          <h4>校验不通过</h4>
-          <el-table :data="failedCases" border stripe size="small" empty-text="没有校验不通过的用例">
-            <el-table-column prop="case_id" label="用例" width="100" />
-            <el-table-column prop="name" label="名称" min-width="110" />
-            <el-table-column label="设备" width="128">
-              <template #default="{ row }">
-                {{ [platformLabel(row.device_platform || taskPlatformOfSn(task, row.sn)), shortDeviceLabel(row.sn)].filter(Boolean).join(' · ') || '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="108">
-              <template #default="{ row }">
-                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="摘要" min-width="200">
-              <template #default="{ row }">
-                <span class="fail-summary">{{ row.summary || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
-                <el-button link type="primary" :disabled="retrying" @click="retryOne(row)">重跑</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <div v-if="unverifiableCases.length" class="fail-block">
-          <h4>无法验证（未观察到该性质：不算通过，也不当产品红）</h4>
-          <el-table :data="unverifiableCases" border stripe size="small">
-            <el-table-column prop="case_id" label="用例" width="100" />
-            <el-table-column prop="name" label="名称" min-width="110" />
-            <el-table-column label="状态" width="108">
-              <template #default="{ row }">
-                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="摘要" min-width="200">
-              <template #default="{ row }">
-                <span class="fail-summary">{{ row.summary || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="100" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <div v-if="gapCases.length" class="fail-block">
-          <h4>执行期缺口（改用例，不要当产品红重跑）</h4>
-          <el-table :data="gapCases" border stripe size="small">
-            <el-table-column prop="case_id" label="用例" width="100" />
-            <el-table-column prop="name" label="名称" min-width="110" />
-            <el-table-column label="缺口" width="140">
-              <template #default="{ row }">
-                <el-tag :type="statusTagType(row.status, row)" size="small">{{ statusLabel(row.status, row) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="摘要" min-width="200">
-              <template #default="{ row }">
-                <span class="fail-summary">{{ row.summary || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="100" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="selectCase(row)">看时间线</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <div v-if="skippedCases.length" class="fail-block">
-          <h4>未执行 / 已取消</h4>
-          <el-table :data="skippedCases" border stripe size="small">
-            <el-table-column prop="case_id" label="用例" width="100" />
-            <el-table-column prop="name" label="名称" min-width="110" />
-            <el-table-column label="状态" width="80">
-              <template #default="{ row }">
-                <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="摘要" min-width="200">
-              <template #default="{ row }">
-                <span class="fail-summary">{{ row.summary || '—' }}</span>
-              </template>
-            </el-table-column>
-          </el-table>
+        <div class="report-scroll">
+          <section class="settings-info-card report-ctx">
+            <div class="settings-kicker">运行上下文</div>
+            <div class="report-ctx-chips">
+              <span v-for="row in runContext.rows" :key="row.k">
+                <em>{{ row.k }}</em>{{ row.v }}
+              </span>
+            </div>
+            <p v-if="runContext.note" class="ctx-note">{{ runContext.note }}</p>
+          </section>
+          <p class="signoff-note">
+            通过＝当前屏检测成立。失败＝检测了但没过，才可能是产品红。不可做＝认不出 / 动作表外 / 这句看不了。还没测到＝红了就停或没轮到。
+          </p>
+          <section class="settings-table-card report-table is-pass">
+            <div class="report-table-head">
+              <strong>通过</strong>
+              <span>做了什么、怎么检测</span>
+              <em>{{ execReport.passedCount || 0 }}</em>
+            </div>
+            <el-table :data="execReport.passed" border stripe size="small" empty-text="没有检测成立的观察" @row-click="openSignoffRow">
+              <el-table-column label="观察到" min-width="220">
+                <template #default="{ row }">{{ row.text || row.case_name || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="怎么检测" min-width="140" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.how || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="case_id" label="用例" width="148" show-overflow-tooltip />
+              <el-table-column label="操作" width="88" align="right">
+                <template #default="{ row }">
+                  <el-button v-if="row.case_id" link type="primary" size="small" @click.stop="openSignoffRow(row)">看步骤</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+          <section class="settings-table-card report-table is-fail">
+            <div class="report-table-head">
+              <strong>失败</strong>
+              <span>检测了什么、为什么没过</span>
+              <em>{{ execReport.failedCount || 0 }}</em>
+            </div>
+            <el-table :data="execReport.failed" border stripe size="small" empty-text="没有检测失败的观察" @row-click="openSignoffRow">
+              <el-table-column label="检测了什么" min-width="180">
+                <template #default="{ row }">{{ row.text || row.case_name || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="怎么检测" width="150" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.how || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="失败依据" min-width="200">
+                <template #default="{ row }">
+                  <span class="fail-summary">{{ row.evidence || '—' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="case_id" label="用例" width="148" show-overflow-tooltip />
+              <el-table-column label="操作" width="120" align="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click.stop="openSignoffRow(row)">看步骤</el-button>
+                  <el-button link type="primary" size="small" :disabled="retrying" @click.stop="retryOneById(row)">重跑</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+          <section class="settings-table-card report-table is-warn">
+            <div class="report-table-head">
+              <strong>不可做</strong>
+              <span>什么方向、什么分类</span>
+              <em>{{ execReport.cannotCount || 0 }}</em>
+            </div>
+            <el-table :data="execReport.cannot" border stripe size="small" empty-text="没有认不出或看不了的句子" @row-click="openSignoffRow">
+              <el-table-column label="方向" width="72">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="plain">{{ row.dir || '—' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="分类" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="cannotKindTag(row)" effect="light">{{ row.kind_label || row.tag || '—' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="原文" min-width="220">
+                <template #default="{ row }">{{ row.text || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="case_id" label="用例" width="148" show-overflow-tooltip />
+              <el-table-column label="操作" width="88" align="right">
+                <template #default="{ row }">
+                  <el-button v-if="row.case_id" link type="primary" size="small" @click.stop="openSignoffRow(row)">看步骤</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+          <section class="settings-table-card report-table is-pending">
+            <div class="report-table-head">
+              <strong>还没测到</strong>
+              <span>红了就停或没轮到</span>
+              <em>{{ execReport.pendingCount || 0 }}</em>
+            </div>
+            <el-table :data="execReport.pending" border stripe size="small" empty-text="没有未测到的观察" @row-click="openSignoffRow">
+              <el-table-column label="观察" min-width="220">
+                <template #default="{ row }">{{ row.text || row.case_name || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="原因" width="120">
+                <template #default="{ row }">{{ row.reason_label || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="case_id" label="用例" width="148" show-overflow-tooltip />
+              <el-table-column label="操作" width="88" align="right">
+                <template #default="{ row }">
+                  <el-button v-if="row.case_id" link type="primary" size="small" @click.stop="openSignoffRow(row)">看步骤</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </div>
       </template>
 
@@ -916,7 +1135,7 @@ const saveReview = async () => {
         </div>
       </template>
 
-      <template v-else>
+      <template v-else-if="view === 'cases'">
         <div v-if="isMatrix" class="matrix-wrap">
           <div class="matrix" :style="{ gridTemplateColumns: `88px repeat(${deviceLanes.length}, minmax(64px, 1fr))` }">
             <span class="matrix-h">用例</span>
@@ -939,7 +1158,6 @@ const saveReview = async () => {
             </template>
           </div>
         </div>
-        <div class="split" :class="{ 'case-rail-collapsed': !caseRailOpen }">
         <div class="case-list">
           <div class="case-list-toolbar">
             <div v-if="showPendingTab" class="case-tabs">
@@ -956,9 +1174,8 @@ const saveReview = async () => {
             </div>
             <div v-else class="case-list-head">
               <strong>用例</strong>
-              <span>{{ railCases.length }}</span>
+              <span>{{ railCases.length }} 条 · 点击一行进入步骤</span>
             </div>
-            <el-button text size="small" @click="caseRailOpen = false">收起列表</el-button>
           </div>
           <div class="table-wrap">
             <el-table
@@ -966,13 +1183,11 @@ const saveReview = async () => {
               border
               stripe
               size="small"
-              highlight-current-row
-              :row-class-name="caseRowClass"
-              empty-text="暂无用例"
               height="100%"
+              empty-text="暂无用例"
               @row-click="selectCase"
             >
-              <el-table-column label="状态" width="72">
+              <el-table-column label="状态" width="108">
                 <template #default="{ row }">
                   <el-tag
                     :type="statusTagType(row.status, row)"
@@ -982,12 +1197,20 @@ const saveReview = async () => {
                   >{{ statusLabel(row.status, row) }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="case_id" label="编号" width="88" show-overflow-tooltip />
-              <el-table-column label="名称" min-width="108" show-overflow-tooltip>
+              <el-table-column prop="case_id" label="编号" width="140" show-overflow-tooltip />
+              <el-table-column label="名称" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">{{ row.name || row.summary || '—' }}</template>
               </el-table-column>
-              <el-table-column label="设备" width="100" show-overflow-tooltip>
+              <el-table-column label="设备" width="140" show-overflow-tooltip>
                 <template #default="{ row }">{{ shortDeviceLabel(row.sn) || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="摘要" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.summary || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="88" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click.stop="selectCase(row)">看步骤</el-button>
+                </template>
               </el-table-column>
             </el-table>
           </div>
@@ -995,75 +1218,13 @@ const saveReview = async () => {
             class="table-pager compact"
             background
             small
-            layout="total, prev, pager, next"
+            layout="total, sizes, prev, pager, next"
             :total="railCases.length"
-            :page-size="casePageSize"
+            :page-sizes="TABLE_PAGE_SIZES"
+            v-model:page-size="casePageSize"
             v-model:current-page="casePage"
           />
         </div>
-        <div class="timeline-pane">
-          <div class="tl-toolbar">
-            <el-button v-if="!caseRailOpen" size="small" @click="caseRailOpen = true">展开用例列表</el-button>
-            <template v-if="selectedCase">
-              <strong class="tl-title" :title="selectedCaseRunId">{{ selectedCase.case_id || selectedCaseRunId }}<template v-if="selectedCase.sn"> · {{ shortDeviceLabel(selectedCase.sn) }}</template></strong>
-              <el-tag
-                v-if="selectedCase.status"
-                :type="statusTagType(selectedCase.status, selectedCase)"
-                size="small"
-                :class="{ 'tag-limit': isStepLimitCase(selectedCase) }"
-              >{{ statusLabel(selectedCase.status, selectedCase) }}</el-tag>
-              <span v-if="headerMeta?.elapsed && !headerMeta.live" class="muted">{{ formatElapsed(headerMeta.elapsed) }}</span>
-              <span class="tl-toolbar-spacer" />
-              <el-button size="small" text @click="copyRunId">复制编号</el-button>
-              <el-button
-                v-if="headerMeta && !headerMeta.live"
-                size="small"
-                text
-                :type="['fail', 'failed', 'partial'].includes(selectedCase.status) ? 'info' : 'primary'"
-                @click="promoteRun"
-              >{{ ['fail', 'failed', 'partial'].includes(selectedCase.status) ? '仍提升为 Baseline' : '提升为 Baseline' }}</el-button>
-            </template>
-          </div>
-          <template v-if="selectedCase">
-            <div v-if="caseProposals.length" class="know-block compact">
-              <h4>本条可沉淀的知识 <small>{{ caseProposals.length }}</small></h4>
-              <article v-for="row in caseProposals" :key="row.id" class="know-card">
-                <header>
-                  <el-input v-model="row.title" size="small" class="know-title" placeholder="知识标题" />
-                  <small>{{ SOURCE_LABEL[row.source] || '用例执行' }}</small>
-                </header>
-                <p v-if="row.question" class="know-q">{{ row.question }}</p>
-                <el-input
-                  v-model="row.content"
-                  type="textarea"
-                  class="know-body"
-                  :autosize="{ minRows: 2, maxRows: 5 }"
-                />
-                <div class="know-actions">
-                  <el-button link :loading="reviewingId === row.id" @click="rejectProposal(row)">跳过</el-button>
-                  <el-button link type="primary" :loading="reviewingId === row.id" @click="approveProposal(row)">录入并通过</el-button>
-                </div>
-              </article>
-            </div>
-            <p v-if="selectedCase.status === 'pending'" class="pending-hint">
-              {{ runningCaseName ? `排队中，当前正在跑 ${runningCaseName}` : '排队中，等待执行' }}
-            </p>
-            <p v-else-if="selectedCase.status === 'cancelled' || selectedCase.status === 'skipped'" class="pending-hint">
-              {{ selectedCase.summary || '该用例未执行或已取消' }}
-            </p>
-            <ExecutionTimeline
-              class="tl"
-              :run-id="showTimeline ? selectedCaseRunId : ''"
-              :live="isLive && selectedCase?.status === 'running'"
-              :case-summary="selectedCase?.summary || ''"
-              :case-goal="headerMeta?.goal || selectedCase?.name || ''"
-              :case-spec="selectedSpec"
-              :case-coverage="selectedCase?.coverage || null"
-            />
-          </template>
-          <el-empty v-else description="选择左侧用例查看详情" />
-        </div>
-      </div>
       </template>
     </template>
     <el-empty v-else-if="!loading" description="无法加载该任务" />
@@ -1102,6 +1263,7 @@ const saveReview = async () => {
   gap: 10px;
   box-sizing: border-box;
   overflow: hidden;
+  padding: 14px 16px 12px;
 }
 .device-lanes {
   display: grid;
@@ -1117,6 +1279,10 @@ const saveReview = async () => {
   border: 1px solid #e3e8f0;
   border-radius: 10px;
   background: #f8fafc;
+}
+.device-lane.held {
+  background: var(--mo-primary-soft, #eef2ff);
+  border-color: color-mix(in srgb, var(--mo-primary) 28%, white);
 }
 .device-lane strong { font-size: 12px; color: #111827; }
 .device-lane span {
@@ -1247,13 +1413,23 @@ const saveReview = async () => {
   min-width: 0;
   overflow: hidden;
 }
+.info-group-wide {
+  grid-column: 1 / -1;
+}
+.ctx-note {
+  margin: 0;
+  padding: 0 14px 12px;
+  font-size: 12px;
+  color: var(--mo-muted, #6b7280);
+  line-height: 1.55;
+}
 .info-kicker {
-  color: #4f46e5;
+  color: var(--mo-primary, #4f46e5);
   font-size: 12px;
   font-weight: 800;
   padding: 10px 14px;
-  background: #f8fafc;
-  border-bottom: 1px solid #eef2f7;
+  background: var(--mo-soft, #f8fafc);
+  border-bottom: 1px solid var(--mo-border, #eef2f7);
 }
 .info-facts {
   display: grid;
@@ -1448,56 +1624,127 @@ const saveReview = async () => {
   color: #334155;
 }
 .know-actions { display: flex; justify-content: flex-end; gap: 2px; }
-.seg {
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: #eef2ff;
-  width: fit-content;
+.pane-tabs {
   flex-shrink: 0;
+  margin-bottom: 0;
+  overflow: visible;
 }
-.seg button {
-  border: none;
-  background: transparent;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #64748b;
-  cursor: pointer;
+.pane-tabs .settings-tab {
+  flex: 1 1 0;
+  min-width: 0;
 }
-.seg button.active {
-  background: #fff;
-  color: #4f46e5;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+.pane-tabs .settings-tab.active,
+.pane-tabs .settings-tab.is-active {
+  background: var(--mo-primary-soft);
+  box-shadow: none;
 }
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+.pane-tabs .settings-tab.active strong,
+.pane-tabs .settings-tab.is-active strong {
+  color: var(--mo-primary);
 }
-.metric {
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid #e3e8f0;
-  background: #fff;
+.pane-tabs .settings-tab.active::after,
+.pane-tabs .settings-tab.is-active::after {
+  bottom: 0;
+  height: 3px;
 }
-.metric .k { font-size: 12px; color: #6b7280; }
-.metric .v { margin-top: 4px; font-size: 24px; font-weight: 700; color: #111827; }
-.metric .v.ok { color: #059669; }
-.metric .v.bad { color: #dc2626; }
-.metric .v.warn { color: #d97706; }
-.fail-block {
+.report-scroll {
   flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+.report-ctx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.report-ctx-chips span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--mo-border);
+  border-radius: 999px;
+  background: var(--mo-card);
+  font-size: 12px;
+  color: var(--mo-text);
+  overflow-wrap: anywhere;
+}
+.report-ctx-chips em {
+  font-style: normal;
+  color: var(--mo-muted);
+  font-weight: 650;
+}
+.report-ctx .ctx-note { padding: 8px 0 0; }
+.report-table {
+  flex: none;
+  padding: 8px 10px 4px;
+}
+.report-table-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px 8px;
+}
+.report-table-head strong {
+  font-size: 14px;
+  font-weight: 750;
+  color: var(--mo-text);
+}
+.report-table-head span {
+  flex: 1;
+  font-size: 12px;
+  color: var(--mo-muted);
+}
+.report-table-head em {
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--mo-text);
+}
+.report-table.is-pass { border-left: 3px solid var(--el-color-success); }
+.report-table.is-fail { border-left: 3px solid var(--el-color-danger); }
+.report-table.is-warn { border-left: 3px solid var(--el-color-warning); }
+.report-table.is-pending { border-left: 3px solid var(--mo-border-strong); }
+.report-table :deep(.el-table) {
+  --el-table-header-bg-color: var(--mo-soft);
+}
+.report-table :deep(.el-table .el-table__row) { cursor: pointer; }
+.report-table :deep(.el-table .cell) {
+  white-space: normal;
+  line-height: 1.45;
+}
+.report-table :deep(.el-table__empty-block) { min-height: 72px; }
+.fail-block {
   min-height: 0;
   padding: 12px 14px;
   border-radius: 14px;
-  border: 1px solid #e3e8f0;
-  background: #fff;
+  border: 1px solid var(--mo-border, #e3e8f0);
+  background: var(--mo-card, #fff);
   overflow: auto;
 }
+.signoff-block {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.signoff-block .table-wrap { min-height: 200px; }
+.signoff-block :deep(.el-table .el-table__row) { cursor: pointer; }
+.signoff-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--mo-muted, #6b7280);
+  line-height: 1.55;
+}
+.muted-cell { color: var(--mo-muted, #9ca3af); }
 .knowledge-tab {
+  flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1513,19 +1760,27 @@ const saveReview = async () => {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.split {
+.pane.is-case .timeline-pane {
   flex: 1;
   min-height: 0;
+}
+.case-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
-  gap: 12px;
-  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--mo-border, #e3e8f0);
+  border-radius: 14px;
+  background: var(--mo-card, #fff);
 }
-.split.case-rail-collapsed {
-  grid-template-columns: minmax(0, 1fr);
+.case-list .table-wrap {
+  flex: 1 1 0;
+  height: 0;
+  min-height: 180px;
 }
-.split.case-rail-collapsed .case-list { display: none; }
 .case-list-toolbar {
   display: flex;
   align-items: center;
@@ -1535,17 +1790,6 @@ const saveReview = async () => {
 }
 .case-list-toolbar .case-tabs,
 .case-list-toolbar .case-list-head { flex: 1; min-width: 0; }
-.case-list {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  padding: 8px;
-  border: 1px solid #e3e8f0;
-  border-radius: 14px;
-  background: #fff;
-}
 .table-wrap {
   flex: 1;
   min-height: 0;
@@ -1560,7 +1804,7 @@ const saveReview = async () => {
 .table-pager.compact { padding-top: 6px; }
 .case-list :deep(.el-table .el-table__row) { cursor: pointer; }
 .case-list :deep(.el-table .el-table__row.is-current) {
-  background: #eef2ff !important;
+  background: var(--mo-primary-soft, #eef2ff) !important;
 }
 .case-list-head {
   display: flex;
@@ -1590,7 +1834,7 @@ const saveReview = async () => {
 }
 .case-tabs button.active {
   background: #fff;
-  color: #4f46e5;
+  color: var(--mo-primary, #4f46e5);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
 }
 .pending-hint {
@@ -1605,15 +1849,16 @@ const saveReview = async () => {
   --el-tag-text-color: #6d28d9 !important;
 }
 .timeline-pane {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   width: 100%;
   display: flex;
   flex-direction: column;
   padding: 12px;
-  border: 1px solid #e3e8f0;
+  border: 1px solid var(--mo-border, #e3e8f0);
   border-radius: 14px;
-  background: #f8fafc;
+  background: var(--mo-soft, #f8fafc);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -1636,15 +1881,7 @@ const saveReview = async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tl { flex: 1; min-height: 0; width: 100%; overflow: auto; padding-top: 4px; }
-@media (max-width: 1100px) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(200px, 32vh) minmax(0, 1fr);
-  }
-  .split.case-rail-collapsed { grid-template-rows: minmax(0, 1fr); }
-  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+.tl { flex: 1; min-height: 0; width: 100%; overflow: hidden; padding-top: 4px; }
 </style>
 
 <style>

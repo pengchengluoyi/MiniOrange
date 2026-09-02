@@ -42,16 +42,24 @@ const isWorkShellRoute = computed(() => (
   route.meta?.workMode === 'testing' ||
   route.path.startsWith('/testing')
 ))
+const isGuestRoute = computed(() => (
+  route.name === 'Login' ||
+  !!route.meta?.requiresGuest ||
+  route.path === '/' ||
+  route.path === '/login' ||
+  !route.matched.length
+))
 const hideGlobalTitlebar = computed(() => (
-  isSettingsRoute.value || isWorkShellRoute.value || route.name === 'Login'
+  isSettingsRoute.value || isWorkShellRoute.value || isGuestRoute.value
 ))
 const showCopilotWidget = computed(() => (
+  !!route.meta?.requiresAuth &&
   route.name !== 'Dialogue' &&
   route.name !== 'Login' &&
   !route.path.startsWith('/testing') &&
   route.meta?.workMode !== 'testing' &&
-  route.meta?.requiresAuth !== false &&
   !route.meta?.requiresGuest &&
+  !isGuestRoute.value &&
   !reportOverlayOpen.value
 ))
 
@@ -84,8 +92,8 @@ onUnmounted(() => {
 body {
   margin: 0;
   padding: 0;
-  background: #f2f3f5; /* Neutral canvas background */
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--mo-bg);
+  font-family: var(--el-font-family);
   overflow: hidden;
 }
 

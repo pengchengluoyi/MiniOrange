@@ -97,11 +97,11 @@ export const saveProjectAccounts = (projectId, accounts) => {
     })
 }
 
-export const pickProjectAccounts = (projectId, { prompt = '', env = '' } = {}) => {
+export const pickProjectAccounts = (projectId, { prompt = '', env = '', surface = '' } = {}) => {
     return request({
         url: `/project/${projectId}/accounts/pick`,
         method: 'post',
-        data: { prompt, env },
+        data: { prompt, env, surface },
     })
 }
 

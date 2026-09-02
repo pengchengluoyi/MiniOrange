@@ -6,15 +6,38 @@ import {
   splitStepOperations,
 } from './caseText.js'
 
-const LIVE = new Set(['thinking', 'checking', 'running', 'continue'])
+const LIVE = new Set(['thinking', 'checking', 'running', 'continue', 'ask_human'])
 const FAIL = new Set(['fail', 'failed', 'give_up', 'declined', 'blocked'])
 const DONE = new Set(['done', 'pass', 'skipped', 'skip'])
 
-export function isLiveEngineStep(s) {
-  const st = String(s?.status || '')
-  const rs = String(s?.result_status || '')
-  if (LIVE.has(st) && !DONE.has(rs) && !FAIL.has(rs)) return true
-  return false
+function normEngineStatus(s) {
+  return String(s || '').toLowerCase()
+}
+
+function isTerminalEngineStatus(st) {
+  return DONE.has(st) || FAIL.has(st)
+}
+
+export function isLiveEngineStep(s, opts = {}) {
+  if (opts.finished) return false
+  const st = normEngineStatus(s?.status)
+  const rs = normEngineStatus(s?.result_status)
+  if (isTerminalEngineStatus(st) || isTerminalEngineStatus(rs)) return false
+  if (!(LIVE.has(st) || LIVE.has(rs))) return false
+  const siblings = opts.siblings
+  if (Array.isArray(siblings) && siblings.length) {
+    const no = Number(s?.step)
+    if (Number.isFinite(no) && no > 0) {
+      const laterSettled = siblings.some((x) => {
+        const n = Number(x?.step)
+        if (!Number.isFinite(n) || n <= no) return false
+        return isTerminalEngineStatus(normEngineStatus(x?.status))
+          || isTerminalEngineStatus(normEngineStatus(x?.result_status))
+      })
+      if (laterSettled) return false
+    }
+  }
+  return true
 }
 
 export function isFailEngineStep(s) {
@@ -37,7 +60,7 @@ function engineKind(step) {
   const blob = `${cap} ${step?.summary || ''} ${step?.thought || ''}`
   if (/assert|checkpoint|assert_skip/.test(cap) || /断言失败|assert_visual|assert_goal|无法校验|无法验证/.test(blob)) return 'assert'
   if (/skip_out_of_order/.test(cap)) return 'assert'
-  if (/skip_restart|clear_cache|check_logged|check_not_logged|check_sim|check_wechat|grant_perm|keep_permission|pick_account|bind_account|inspect_session|session_gate/.test(cap)) {
+  if (/skip_restart|clear_cache|check_logged|check_not_logged|check_sim|check_wechat|grant_perm|keep_permission|pick_account|bind_account|inspect_session|inspect_env|session_gate|session_align|env_align|case_scene/.test(cap)) {
     return 'prep'
   }
   if (/recovery|overlay|dismiss_popup|close_popup/.test(cap)) return 'heal'
@@ -133,6 +156,13 @@ function pickPrepRow(text, rows) {
 
 function stampPrepTask(text, row) {
   const guessed = classifyPrepLine(text)
+  if (guessed.code === 'PREP.OK.deferred') {
+    return {
+      code: 'PREP.OK.deferred',
+      msg: row?.msg || '后台开关由用例步骤/预期验证，不单独查后台',
+      gapTag: '',
+    }
+  }
   let code = row?.code || ''
   let msg = row?.msg || ''
   const inLib = guessed.kind && guessed.kind !== 'unknown' && !String(guessed.code || '').includes('UNSUPPORTED')
@@ -152,29 +182,68 @@ function stampPrepTask(text, row) {
   return { code, msg, gapTag }
 }
 
-function emptyTree(spec, coverage) {
+function envPrepTask({ envProfile = '', envLabel = '', envAlign = null, platform = '' } = {}) {
+  const align = envAlign && typeof envAlign === 'object' ? envAlign : null
+  if (align?.skipped === 'url_distinguishes' || align?.skipped === 'no_target') return null
+  const plat = String(platform || '').toLowerCase()
+  if (['web', 'browser', 'playwright', 'server'].includes(plat)) return null
+  const wanted = String(envProfile || align?.wanted || '').trim()
+  if (!wanted && !align) return null
+  const name = String(envLabel || align?.label || wanted).trim() || wanted
+  const title = `切换到${name}环境`
+  if (align?.ok === false) {
+    return makeTask({
+      id: 'p-env',
+      kind: 'prep',
+      title,
+      code: 'PREP.UNMET.env',
+      msg: align.reason || `当前环境与本趟「${name}」不一致`,
+      stepNum: 0,
+    })
+  }
+  if (align?.ok) {
+    return makeTask({
+      id: 'p-env',
+      kind: 'prep',
+      title,
+      code: 'PREP.OK.env',
+      msg: align.reason || (align.unconfirmed ? '当前屏未看出环境标识，未当作不一致' : `已对齐 ${name}`),
+      stepNum: 0,
+    })
+  }
+  return makeTask({ id: 'p-env', kind: 'prep', title, stepNum: 0 })
+}
+
+function emptyTree(spec, coverage, envOpts = {}) {
   const groups = []
+  const envTask = envPrepTask(envOpts)
   const prepLines = splitPreconditionLines(spec?.precondition || spec?.precondition_raw || '')
   const prepCov = Array.isArray(coverage?.prep) ? [...coverage.prep] : []
-  if (prepLines.length || prepCov.length) {
+  if (envTask || prepLines.length || prepCov.length) {
     const lines = prepLines.length ? prepLines : prepCov.map((p) => p.text || p.kind)
+    const rest = envTask
+      ? lines.filter((text) => classifyPrepLine(text).kind !== 'check_env')
+      : lines
     groups.push(makeGroup({
       id: 'prep',
       label: '前置',
       kind: 'prep',
-      tasks: lines.map((text, i) => {
-        const row = pickPrepRow(text, prepCov)
-        const stamped = stampPrepTask(text, row)
-        return makeTask({
-          id: `p${i + 1}`,
-          kind: 'prep',
-          title: text,
-          code: stamped.code,
-          msg: stamped.msg,
-          gapTag: stamped.gapTag,
-          stepNum: 0,
-        })
-      }),
+      tasks: [
+        ...(envTask ? [envTask] : []),
+        ...rest.map((text, i) => {
+          const row = pickPrepRow(text, prepCov)
+          const stamped = stampPrepTask(text, row)
+          return makeTask({
+            id: `p${i + 1}`,
+            kind: 'prep',
+            title: text,
+            code: stamped.code,
+            msg: stamped.msg,
+            gapTag: stamped.gapTag,
+            stepNum: 0,
+          })
+        }),
+      ],
     }))
   }
   for (const pair of alignCaseStepExpected(spec)) {
@@ -199,20 +268,38 @@ function emptyTree(spec, coverage) {
         stepNum: pair.num,
       }))
     })
-    const expCode = expRows.map((e) => e.code).filter(Boolean).join('|')
-      || (skipExpect ? 'EXPECT.SKIPPED.no_expect' : '')
-    const expGuess = skipExpect ? { code: '', id: '' } : classifyExpectLine(pair.expected)
-    const gapFromRows = expRows.map((e) => e.code).find((c) => codeLooksGap(c))
-    const expGapCode = gapFromRows || (codeLooksGap(expGuess.code) ? expGuess.code : '')
-    tasks.push(makeTask({
-      id: `s${pair.num}-ck`,
-      kind: 'check',
-      title: skipExpect ? '不验' : pair.expected,
-      skip: skipExpect,
-      code: expCode,
-      gapTag: skipExpect ? '' : gapTagOf(expGapCode || expCode, expGuess.id),
-      stepNum: pair.num,
-    }))
+    const unexecNoExpect = skipExpect && String(coverage?.coverage_class || '') === 'step_unexecutable'
+    if (expRows.length > 1) {
+      expRows.forEach((e, i) => {
+        const expGuess = classifyExpectLine(e.text)
+        const expGapCode = codeLooksGap(e.code) ? e.code : ''
+        tasks.push(makeTask({
+          id: `s${pair.num}-ck${i + 1}`,
+          kind: 'check',
+          title: e.text || pair.expected,
+          skip: /SKIPPED\.no_expect/.test(String(e.code || '')) && !unexecNoExpect,
+          code: e.code || '',
+          gapTag: unexecNoExpect ? '无法执行 · 未写预期' : gapTagOf(expGapCode, expGuess.id),
+          stepNum: pair.num,
+        }))
+      })
+    } else {
+      const expCode = expRows.map((e) => e.code).filter(Boolean).join('|')
+        || (skipExpect ? 'EXPECT.SKIPPED.no_expect' : '')
+      const expGuess = skipExpect ? { code: '', id: '' } : classifyExpectLine(pair.expected)
+      const gapFromRows = expRows.map((e) => e.code).find((c) => codeLooksGap(c))
+      const guessGap = (!gapFromRows && !/SKIPPED/.test(expCode) && codeLooksGap(expGuess.code)) ? expGuess.code : ''
+      const expGapCode = gapFromRows || guessGap
+      tasks.push(makeTask({
+        id: `s${pair.num}-ck`,
+        kind: 'check',
+        title: skipExpect ? (unexecNoExpect ? '未写预期' : '不验') : pair.expected,
+        skip: skipExpect && !unexecNoExpect,
+        code: expCode,
+        gapTag: unexecNoExpect ? '无法执行 · 未写预期' : (skipExpect ? '' : gapTagOf(expGapCode, expGuess.id)),
+        stepNum: pair.num,
+      }))
+    }
     groups.push(makeGroup({
       id: `s${pair.num}`,
       label: `步骤 ${pair.num}${pair.step ? ` · ${pair.step}` : ''}`,
@@ -249,9 +336,13 @@ function matchPrepTask(prep, step) {
   if (!tasks.length) return null
   const cap = capOf(step)
   const hit = (pred) => tasks.find(pred)
-  if (/session_gate|inspect_session|check_logged|pick_account|bind_account/.test(cap)) {
+  const isEnvRow = (t) => t.id === 'p-env' || classifyPrepLine(t.title).kind === 'check_env' || /环境/.test(t.title)
+  if (/inspect_env|env_align/.test(cap)) {
+    return hit(isEnvRow) || hit((t) => t.id === 'p-env')
+  }
+  if (/session_gate|inspect_session|case_scene|check_logged|pick_account|bind_account/.test(cap)) {
     return hit((t) => /logged|session/.test(classifyPrepLine(t.title).kind) || /已登录|未登录|游客|登录/.test(t.title))
-      || hit((t) => !isGapTask(t))
+      || hit((t) => t.id !== 'p-env' && !isGapTask(t))
   }
   if (/skip_restart|launch_app|open_app|close_app|kill_app/.test(cap)) {
     return hit((t) => /已打开|打开.*app|打开应用/i.test(t.title))
@@ -264,9 +355,10 @@ function matchPrepTask(prep, step) {
 }
 
 function hangCheck(g, no) {
-  const ck = g?.tasks.find((t) => t.kind === 'check')
-  if (ck && !ck.skip) ck.cardNos.push(no)
-  return ck
+  const cks = (g?.tasks || []).filter((t) => t.kind === 'check' && !t.skip)
+  const target = cks.find((t) => !(t.cardNos || []).length) || cks[cks.length - 1]
+  if (target) target.cardNos.push(no)
+  return target
 }
 
 function opsHung(g) {
@@ -285,94 +377,90 @@ function hangDoCard(task, no, cap) {
   return /skip_repeat/.test(String(cap || '')) ? 'check' : 'do'
 }
 
+function isSkipEngineStep(s) {
+  return /^(skipped|skip)$/.test(normEngineStatus(s?.result_status || s?.status))
+}
+
+function laneOf(step) {
+  const v = String(step?.lane || '').toLowerCase()
+  if (v === 'prep' || v === 'step' || v === 'expect') return v
+  return ''
+}
+
 function assignEngineSteps(groups, engineSteps) {
   const prep = groups.find((g) => g.kind === 'prep')
   const stepGroups = groups.filter((g) => g.kind === 'step')
   let stepI = 0
-  let inPrep = Boolean(prep?.tasks?.length)
   let lastDo = null
-  let lastHang = 'prep'
-
+  let lastHang = prep?.tasks?.length ? 'prep' : 'do'
+  let phase = prep?.tasks?.length ? 'prep' : 'step'
+  let alignActive = false
   const firstOpLaunch = stepGroups[0]?.tasks?.some(
     (t) => t.kind === 'do' && t.catalogId === 'launch_app',
   )
 
-  for (const step of engineSteps || []) {
-    const no = Number(step?.step)
-    if (!Number.isFinite(no) || no <= 0) continue
-    const kind = engineKind(step)
-    const cps = parseCpNums(step)
-    const capId = catalogIdFromCap(capOf(step))
-    const cap = capOf(step)
-    const gCur = stepGroups[Math.min(stepI, Math.max(0, stepGroups.length - 1))]
-    const waitOrThink = isWaitCap(cap) || (!cap && isLiveEngineStep(step))
-    const toCheck = kind === 'assert'
-      || (lastHang === 'check' && waitOrThink)
-      || (lastHang !== 'prep' && opsHung(gCur) && waitOrThink)
+  const hangOnPrep = (step, no) => {
+    if (!prep?.tasks?.length) return false
+    const t = matchPrepTask(prep, step)
+    if (t) t.cardNos.push(no)
+    lastDo = null
+    lastHang = 'prep'
+    return true
+  }
 
-    if (toCheck) {
-      inPrep = false
-      const nums = cps.length
-        ? cps
-        : [stepGroups[Math.min(stepI, Math.max(0, stepGroups.length - 1))]?.stepNum]
-      let lastIdx = -1
-      for (const n of nums) {
-        const g = stepGroups.find((x) => x.stepNum === n) || stepGroups[stepI]
-        hangCheck(g, no)
-        lastIdx = Math.max(lastIdx, stepGroups.indexOf(g))
-      }
-      const rs = String(step?.result_status || '').toLowerCase()
-      lastDo = null
-      if (kind === 'assert' && lastIdx >= 0 && (rs === 'pass' || rs === 'done')) {
+  const hangOnExpect = (step, no) => {
+    const cps = parseCpNums(step)
+    const n = cps.length
+      ? cps[0]
+      : stepGroups[Math.min(stepI, Math.max(0, stepGroups.length - 1))]?.stepNum
+    const g = stepGroups.find((x) => x.stepNum === n) || stepGroups[stepI]
+    hangCheck(g, no)
+    const lastIdx = stepGroups.indexOf(g)
+    const rs = String(step?.result_status || '').toLowerCase()
+    lastDo = null
+    lastHang = 'check'
+    if (engineKind(step) === 'assert' && lastIdx >= 0 && (rs === 'pass' || rs === 'done')) {
+      const pending = (g?.tasks || []).filter((t) => t.kind === 'check' && !t.skip && !(t.cardNos || []).length)
+      if (!pending.length) {
         stepI = Math.min(lastIdx + 1, stepGroups.length)
         const next = stepGroups[stepI]
         lastHang = !next || opsHung(next) ? 'check' : 'do'
-      } else {
-        lastHang = 'check'
       }
-      continue
     }
+  }
 
+  const hangOnStep = (step, no) => {
+    if (!stepGroups.length) return
+    const kind = engineKind(step)
+    const cap = capOf(step)
+    const capId = catalogIdFromCap(cap)
+    const cps = parseCpNums(step)
+    if (kind === 'heal' && lastDo) {
+      lastDo.cardNos.push(no)
+      return
+    }
     if (cps.length && kind !== 'assert') {
-      inPrep = false
       const n = cps[0]
       const g = stepGroups.find((x) => x.stepNum === n) || stepGroups[Math.min(stepI, stepGroups.length - 1)]
       const ops = (g?.tasks || []).filter((t) => t.kind === 'do')
       if (!ops.length) {
         hangCheck(g, no)
         lastHang = 'check'
-        continue
+        return
       }
       const task = pickDoTask(g, capId) || ops[0]
       lastHang = hangDoCard(task, no, cap)
       if (task) lastDo = task
       const idx = stepGroups.indexOf(g)
       if (idx >= 0) stepI = idx
-      continue
+      return
     }
-
-    const launchAsPrep = kind === 'launch' && inPrep && !firstOpLaunch
-    if ((kind === 'prep' || launchAsPrep) && prep?.tasks?.length && inPrep) {
-      const t = matchPrepTask(prep, step)
-      if (t) t.cardNos.push(no)
-      lastDo = null
-      lastHang = 'prep'
-      continue
-    }
-
-    inPrep = false
-    if (!stepGroups.length) continue
-    if (kind === 'heal' && lastDo) {
-      lastDo.cardNos.push(no)
-      continue
-    }
-
     let g = stepGroups[Math.min(stepI, stepGroups.length - 1)]
     const ops = (g?.tasks || []).filter((t) => t.kind === 'do')
     if (!ops.length) {
       hangCheck(g, no)
       lastHang = 'check'
-      continue
+      return
     }
     const curHas = Boolean(capId && ops.some((t) => t.catalogId === capId))
     if (capId && g && !curHas) {
@@ -393,6 +481,40 @@ function assignEngineSteps(groups, engineSteps) {
       lastHang = 'check'
     }
   }
+
+  for (const step of engineSteps || []) {
+    const no = Number(step?.step)
+    if (!Number.isFinite(no) || no <= 0) continue
+    const kind = engineKind(step)
+    const cap = capOf(step)
+    const tagged = laneOf(step)
+    const waitOrThink = isWaitCap(cap) || (!cap && isLiveEngineStep(step))
+    const gCur = stepGroups[Math.min(stepI, Math.max(0, stepGroups.length - 1))]
+
+    if (/session_align|env_align/.test(cap)) alignActive = !isSkipEngineStep(step)
+    if (/inspect_session|inspect_env|session_gate/.test(cap)) alignActive = false
+
+    let lane = tagged
+    if (!lane) {
+      if (waitOrThink && lastHang === 'check') lane = 'expect'
+      else if (waitOrThink && lastHang === 'prep' && alignActive) lane = 'prep'
+      else if (kind === 'assert' || (lastHang !== 'prep' && opsHung(gCur) && waitOrThink)) lane = 'expect'
+      else if (phase === 'prep' && (kind === 'prep' || alignActive || (kind === 'launch' && !firstOpLaunch))) lane = 'prep'
+      else lane = 'step'
+      if (phase !== 'prep' && lane === 'prep') {
+        lane = kind === 'assert' || lastHang === 'check' ? 'expect' : 'step'
+      }
+    }
+
+    if (lane === 'prep' && hangOnPrep(step, no)) continue
+    if (lane === 'expect') {
+      hangOnExpect(step, no)
+      if (phase === 'prep') phase = 'step'
+      continue
+    }
+    hangOnStep(step, no)
+    phase = 'step'
+  }
 }
 
 function resolveCards(task, byNo) {
@@ -400,11 +522,17 @@ function resolveCards(task, byNo) {
 }
 
 function taskStatus(task, { finished, runningId, blocked, byNo }) {
-  if (task.kind === 'check' && (task.skip || /SKIPPED\.no_expect/.test(task.code))) return 'skip'
+  if (task.kind === 'check' && task.skip && !task.gapTag) return 'skip'
+  if (task.kind === 'check' && /SKIPPED\.no_expect/.test(task.code) && !task.gapTag) return 'skip'
   if (task.id === runningId) return 'run'
   const cards = resolveCards(task, byNo)
-  if (cards.some(isLiveEngineStep)) return 'run'
+  const allSteps = [...byNo.values()]
+  if (cards.some((s) => isLiveEngineStep(s, { finished, siblings: allSteps }))) return 'run'
+  if (codeLooksSkip(task.code) && /step_not_done|SKIPPED\.blocked/.test(String(task.code || '')) && !codeLooksFail(task.code)) {
+    return 'blocked'
+  }
   if (codeLooksFail(task.code) || cards.some(isFailEngineStep)) return 'fail'
+  if (/PREP\.OK\.deferred/.test(task.code)) return 'skip'
   if (codeLooksGap(task.code) || task.gapTag) return 'gap'
   if (blocked && task.kind !== 'prep') return 'blocked'
   if (codeLooksOk(task.code) && (finished || cards.length)) return 'done'
@@ -412,7 +540,7 @@ function taskStatus(task, { finished, runningId, blocked, byNo }) {
     return cards.some(isFailEngineStep) ? 'fail' : 'done'
   }
   if (finished) {
-    if (codeLooksSkip(task.code) && /no_expect/.test(task.code)) return 'skip'
+    if (codeLooksSkip(task.code) && /no_expect/.test(task.code) && !task.gapTag) return 'skip'
     if (codeLooksSkip(task.code)) return 'blocked'
     if (cards.length) return cards.some(isFailEngineStep) ? 'fail' : 'done'
     if (task.kind === 'prep' && !task.code) return 'blocked'
@@ -444,36 +572,43 @@ function groupHint(group) {
     return `${d}/${n}`
   }
   const ops = group.tasks.filter((t) => t.kind === 'do')
-  const ck = group.tasks.find((t) => t.kind === 'check')
+  const cks = group.tasks.filter((t) => t.kind === 'check')
   const doneOps = ops.filter((t) => t.status === 'done').length
+  const ckFail = cks.some((t) => t.status === 'fail')
+  const ckRun = cks.some((t) => t.status === 'run')
+  const ckGap = cks.find((t) => t.status === 'gap')
+  const ckSkip = cks.length && cks.every((t) => t.status === 'skip')
+  const ckDone = cks.length && cks.every((t) => t.status === 'done' || t.status === 'skip' || t.status === 'gap')
   if (!ops.length) {
     if (group.status === 'blocked') return '未执行'
-    if (ck?.status === 'skip') return '不验'
-    if (ck?.status === 'gap') return ck.gapTag || '无法验证'
-    if (ck?.status === 'run') return '校验中'
-    if (ck?.status === 'done') return '已校验'
-    if (ck?.status === 'fail') return '校验不通过'
+    if (ckSkip) return '不验'
+    if (ckGap) return ckGap.gapTag || '无法验证'
+    if (ckRun) return '校验中'
+    if (ckFail) return '校验不通过'
+    if (ckDone) return '已校验'
     return ''
   }
   if (group.status === 'blocked') return '未执行'
-  if (ck?.status === 'skip') return `${ops.length} 个操作 · 不验`
-  if (ck?.status === 'gap') return `${ops.length} 个操作 · ${ck.gapTag || '无法验证'}`
-  if (ck?.status === 'run') return `操作 ${doneOps}/${ops.length} · 校验中`
+  if (ckSkip) return `${ops.length} 个操作 · 不验`
+  if (ckGap && !ckFail) return `${ops.length} 个操作 · ${ckGap.gapTag || '无法验证'}`
+  if (ckRun) return `操作 ${doneOps}/${ops.length} · 校验中`
+  if (ckFail) return `操作 ${doneOps}/${ops.length} · 校验不通过`
   if (group.status === 'run') return `操作 ${doneOps}/${ops.length} · 校验还没到`
-  return `操作 ${doneOps}/${ops.length}${ck ? (ck.status === 'done' ? ' · 已校验' : '') : ''}`
+  return `操作 ${doneOps}/${ops.length}${ckDone ? ' · 已校验' : ''}`
 }
 
 function groupRunLabel(group) {
   if (group.status !== 'run') return TASK_STATUS_LABEL[group.status] || group.status
   if (group.kind === 'prep') return '执行中'
-  const ck = group.tasks.find((t) => t.kind === 'check')
-  if (ck?.status === 'run') return '校验中'
+  const cks = group.tasks.filter((t) => t.kind === 'check')
+  if (cks.some((t) => t.status === 'run')) return '校验中'
   if (group.tasks.some((t) => t.kind === 'do' && t.status === 'run')) return '操作中'
   return '执行中'
 }
 
 export function runningTaskId(groups, engineSteps, { finished, live } = {}) {
-  const focus = [...(engineSteps || [])].reverse().find(isLiveEngineStep)
+  const liveOpts = { finished, siblings: engineSteps }
+  const focus = [...(engineSteps || [])].reverse().find((s) => isLiveEngineStep(s, liveOpts))
     || ((live && !finished) ? engineSteps?.[engineSteps.length - 1] : null)
   if (focus) {
     const no = Number(focus.step)
@@ -510,14 +645,18 @@ export function taskIdForEngineStep(groups, stepNo) {
   return ''
 }
 
-export function buildCaseRunGroups({ spec, coverage, engineSteps = [], finished = false, live = false } = {}) {
+export function buildCaseRunGroups({
+  spec, coverage, engineSteps = [], finished = false, live = false,
+  envProfile = '', envLabel = '', envAlign = null, platform = '',
+} = {}) {
   const row = normalizeCaseRow(spec || {})
-  const groups = emptyTree(row, coverage)
+  const groups = emptyTree(row, coverage, { envProfile, envLabel, envAlign, platform })
   if (!groups.length) return []
   assignEngineSteps(groups, engineSteps)
   const cls = String(coverage?.coverage_class || '')
   const blocked = (coverage?.prep || []).some((p) => codeLooksFail(p.code))
-    || (engineSteps || []).some((s) => /session_gate/.test(capOf(s)) && isFailEngineStep(s))
+    || (engineSteps || []).some((s) => /session_gate|env_align/.test(capOf(s)) && isFailEngineStep(s))
+    || (envAlign && envAlign.ok === false)
   const settled = finished || (Boolean(cls) && (cls !== 'prep_insufficient' || blocked))
   const byNo = new Map((engineSteps || []).map((s) => [Number(s.step), s]))
   const runId = ''
@@ -560,13 +699,15 @@ export function taskStatusLabel(task) {
     return '执行中'
   }
   if (task?.status === 'fail' && task.kind === 'check') return '校验不通过'
+  if (/PREP\.OK\.deferred/.test(c)) return '由步骤验证'
+  if (task?.status === 'blocked' || /SKIPPED\.step_not_done|SKIPPED\.blocked/.test(c)) return '未执行'
   if (task?.gapTag) return task.gapTag
   if (codeLooksGap(c)) return gapTagOf(c)
   if (/UNMET|PREP\.FAIL/.test(c)) return '未就绪'
   if (task?.status === 'gap' && task.kind === 'check') return '无法验证'
   if (task?.status === 'fail' && task.kind === 'prep') return '未就绪'
   if (task?.status === 'fail') return '失败'
-  if (task?.skip || /SKIPPED\.no_expect/.test(c)) return '不验'
+  if (task?.skip || (/SKIPPED\.no_expect/.test(c) && !task?.gapTag)) return '不验'
   if (task?.status === 'blocked' || task?.status === 'queued' || /SKIPPED/.test(c)) return '未执行'
   return TASK_STATUS_LABEL[task?.status] || task?.status || ''
 }

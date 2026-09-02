@@ -42,19 +42,20 @@
       </div>
 
       <div class="channel-head">
-        <span>渠道</span>
-        <el-button size="small" @click="addChannelOpen = true">新增渠道</el-button>
+        <span>应用与平台</span>
+        <el-button size="small" @click="openAddChannel">新增应用</el-button>
       </div>
       <div class="field-list">
         <div v-for="ch in channels" :key="ch.id" class="field-row">
           <div class="field-label">
-            <span class="field-name">{{ ch.label }}</span>
+            <span class="field-name">{{ channelTitle(ch) }}</span>
+            <span v-if="channelKindText(ch)" class="field-meta">{{ channelKindText(ch) }}</span>
             <button type="button" class="var-chip" :title="'复制 ' + wrapVar(ch)" @click="copyKey(ch)">{{ wrapVar(ch) }}</button>
           </div>
           <div class="field-control">
             <el-input
               :model-value="channelVal(ch)"
-              :placeholder="ch.placeholder || ch.label"
+              :placeholder="ch.placeholder || channelTitle(ch)"
               clearable
               spellcheck="false"
               @update:model-value="(v) => setChannelVal(ch, v)"
@@ -71,8 +72,74 @@
         </div>
       </div>
 
+      <div class="channel-head">
+        <span>登录凭证</span>
+      </div>
+      <div class="field-list">
+        <div class="field-row">
+          <div class="field-label">
+            <span class="field-name">一次性口令</span>
+          </div>
+          <div class="field-control">
+            <el-select v-model="otpMode" style="width: 100%">
+              <el-option label="自动（账号固定码 → 环境固定码 → 知识 → 解码平台 → 问人）" value="auto" />
+              <el-option label="只用固定码" value="fixed" />
+              <el-option label="解码平台" value="adapter" />
+              <el-option label="每次问人" value="hitl" />
+            </el-select>
+            <el-input
+              v-if="otpMode === 'fixed' || otpMode === 'auto'"
+              v-model="otpFixed"
+              placeholder="本环境默认固定码，可空；账号备注里的码优先"
+              style="margin-top: 8px"
+            />
+            <template v-if="otpMode === 'adapter' || otpMode === 'auto'">
+              <el-input
+                v-model="otpAdapterUrl"
+                placeholder="解码平台 URL，POST {slot, env, account}"
+                style="margin-top: 8px"
+              />
+              <el-input
+                v-model="otpAdapterHeader"
+                type="password"
+                show-password
+                placeholder="可选 Authorization"
+                style="margin-top: 8px"
+              />
+            </template>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field-label">
+            <span class="field-name">登录号</span>
+          </div>
+          <div class="field-control">
+            <el-select v-model="phoneMode" style="width: 100%">
+              <el-option label="自动（账号管理 → 知识 → 解码平台 → 问人）" value="auto" />
+              <el-option label="只用账号管理" value="pool" />
+              <el-option label="解码平台" value="adapter" />
+              <el-option label="真实号 / 问人" value="hitl" />
+            </el-select>
+            <template v-if="phoneMode === 'adapter' || phoneMode === 'auto'">
+              <el-input
+                v-model="phoneAdapterUrl"
+                placeholder="取号平台 URL"
+                style="margin-top: 8px"
+              />
+              <el-input
+                v-model="phoneAdapterHeader"
+                type="password"
+                show-password
+                placeholder="可选 Authorization"
+                style="margin-top: 8px"
+              />
+            </template>
+          </div>
+        </div>
+      </div>
+
       <p class="panel-hint">
-        每个环境只维护各渠道的启动标识。流程下发时按阶段所选环境取对应渠道。
+        本项目可以有多套 App / Web / Server。三方平台用简称区分（CRM、OR、管理后台）。左侧每个环境各自填启动标识，测试和正式地址分开。口令来源按环境解释，业务步骤不挑选来源。
       </p>
     </section>
 
@@ -88,21 +155,22 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="addChannelOpen" title="新增渠道" width="440px" align-center append-to-body>
+    <el-dialog v-model="addChannelOpen" title="新增应用" width="460px" align-center append-to-body>
       <el-form label-position="top">
-        <el-form-item label="常用渠道">
-          <el-select v-model="draftChannelId" placeholder="选一个，或下面自定义" clearable style="width: 100%">
-            <el-option
-              v-for="c in unusedPresets"
-              :key="c.id"
-              :label="c.label"
-              :value="c.id"
-            />
+        <el-form-item label="类型" required>
+          <el-select v-model="draftKind" style="width: 100%">
+            <el-option v-for="k in CHANNEL_KINDS" :key="k.id" :label="k.label" :value="k.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="!draftChannelId" label="自定义名称">
-          <el-input v-model="draftChannelLabel" placeholder="例如：鸿蒙" />
+        <el-form-item v-if="draftKind === 'app'" label="端" required>
+          <el-select v-model="draftPlatform" style="width: 100%">
+            <el-option v-for="p in APP_PLATFORMS" :key="p.id" :label="p.label" :value="p.id" />
+          </el-select>
         </el-form-item>
+        <el-form-item :label="sameKindExists ? '三方简称（必填）' : '三方简称'">
+          <el-input v-model="draftAlias" :placeholder="sameKindExists ? '例如：CRM、OR、管理后台' : '主应用可空；三方必填，例如 CRM'" />
+        </el-form-item>
+        <p class="panel-hint tight">同一类型可有多条。各环境的包名 / 网址在左侧分别填，测试和正式不会混用。</p>
       </el-form>
       <template #footer>
         <el-button @click="addChannelOpen = false">取消</el-button>
@@ -117,9 +185,15 @@ import { ref, reactive, watch, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getProjectEnv, updateProjectEnv } from '@/api/workReport'
 import {
+  APP_PLATFORMS,
+  CHANNEL_KINDS,
   DEFAULT_CHANNELS,
+  channelKindText,
+  channelTitle,
+  emptyEnvSecrets,
   emptyProfile,
   normalizeEnvDoc,
+  normalizeEnvSecrets,
   resolveChannelValue,
   slugEnvKey,
 } from '@/constants/envProfiles'
@@ -144,8 +218,9 @@ const profiles = reactive({})
 const addEnvOpen = ref(false)
 const draftEnvLabel = ref('')
 const addChannelOpen = ref(false)
-const draftChannelId = ref('')
-const draftChannelLabel = ref('')
+const draftKind = ref('web')
+const draftPlatform = ref('android')
+const draftAlias = ref('')
 
 const activeIndex = computed(() => Math.max(0, environments.value.findIndex((e) => e.key === activeTab.value)))
 const activeLabel = computed({
@@ -156,7 +231,11 @@ const activeLabel = computed({
     dirty.value = true
   },
 })
-const unusedPresets = computed(() => DEFAULT_CHANNELS.filter((c) => !channels.value.some((x) => x.id === c.id)))
+const sameKindExists = computed(() => channels.value.some((c) => {
+  if (c.kind !== draftKind.value) return false
+  if (draftKind.value !== 'app') return true
+  return c.platform === draftPlatform.value
+}))
 const activeUsage = computed(() => envUsage(props.workflow, activeTab.value))
 const activeUsageText = computed(() => activeUsage.value.map((u) => `${u.trackLabel}「${u.stepLabel}」`).join('、'))
 
@@ -195,6 +274,43 @@ const inheritHint = (ch) => {
   }
   return `未单独填写，与「${name}」相同`
 }
+
+const activeEnv = computed(() => environments.value.find((e) => e.key === activeTab.value) || null)
+const ensureSecrets = (env) => {
+  if (!env) return emptyEnvSecrets()
+  if (!env.secrets?.otp || !env.secrets?.phone) {
+    env.secrets = normalizeEnvSecrets(env.secrets)
+  }
+  return env.secrets
+}
+const otpMode = computed({
+  get: () => ensureSecrets(activeEnv.value).otp.mode,
+  set: (v) => { ensureSecrets(activeEnv.value).otp.mode = v; dirty.value = true },
+})
+const otpFixed = computed({
+  get: () => ensureSecrets(activeEnv.value).otp.fixed,
+  set: (v) => { ensureSecrets(activeEnv.value).otp.fixed = v; dirty.value = true },
+})
+const otpAdapterUrl = computed({
+  get: () => ensureSecrets(activeEnv.value).otp.adapter_url,
+  set: (v) => { ensureSecrets(activeEnv.value).otp.adapter_url = v; dirty.value = true },
+})
+const otpAdapterHeader = computed({
+  get: () => ensureSecrets(activeEnv.value).otp.adapter_header,
+  set: (v) => { ensureSecrets(activeEnv.value).otp.adapter_header = v; dirty.value = true },
+})
+const phoneMode = computed({
+  get: () => ensureSecrets(activeEnv.value).phone.mode,
+  set: (v) => { ensureSecrets(activeEnv.value).phone.mode = v; dirty.value = true },
+})
+const phoneAdapterUrl = computed({
+  get: () => ensureSecrets(activeEnv.value).phone.adapter_url,
+  set: (v) => { ensureSecrets(activeEnv.value).phone.adapter_url = v; dirty.value = true },
+})
+const phoneAdapterHeader = computed({
+  get: () => ensureSecrets(activeEnv.value).phone.adapter_header,
+  set: (v) => { ensureSecrets(activeEnv.value).phone.adapter_header = v; dirty.value = true },
+})
 
 const profileFilled = (key) => {
   const snap = profiles[key]
@@ -238,10 +354,18 @@ const buildPayload = () => {
   const keys = environments.value.map((e) => e.key)
   return {
     default_profile: keys[0] || 'test',
-    environments: environments.value.map((e) => ({ key: e.key, label: e.label })),
+    environments: environments.value.map((e) => ({
+      key: e.key,
+      label: e.label,
+      secrets: normalizeEnvSecrets(e.secrets),
+    })),
     channels: channels.value.map((c) => ({
       id: c.id,
-      label: c.label,
+      kind: c.kind,
+      platform: c.platform,
+      alias: c.alias || '',
+      third_party: Boolean(c.third_party || c.alias),
+      label: channelTitle(c),
       field: c.field,
       placeholder: c.placeholder || '',
     })),
@@ -311,7 +435,7 @@ const confirmAddEnv = () => {
   }
   let key = slugEnvKey(label, 'env')
   if (environments.value.some((e) => e.key === key)) key = `${key}${environments.value.length + 1}`
-  environments.value = [...environments.value, { key, label }]
+  environments.value = [...environments.value, { key, label, secrets: emptyEnvSecrets() }]
   profiles[key] = emptyProfile(channels.value)
   activeTab.value = key
   draftEnvLabel.value = ''
@@ -323,7 +447,7 @@ const removeEnv = async () => {
   if (environments.value.length <= 1) return
   const cur = environments.value.find((e) => e.key === activeTab.value)
   try {
-    await ElMessageBox.confirm(`删除环境「${cur?.label || activeTab.value}」？各渠道配置会一起丢掉。`, '删除环境', { type: 'warning' })
+    await ElMessageBox.confirm(`删除环境「${cur?.label || activeTab.value}」？各应用配置会一起丢掉。`, '删除环境', { type: 'warning' })
   } catch { return }
   const key = activeTab.value
   const idx = environments.value.findIndex((e) => e.key === key)
@@ -334,25 +458,40 @@ const removeEnv = async () => {
   dirty.value = true
 }
 
+const openAddChannel = () => {
+  draftKind.value = 'web'
+  draftPlatform.value = 'android'
+  draftAlias.value = ''
+  addChannelOpen.value = true
+}
+
 const confirmAddChannel = () => {
-  let ch = unusedPresets.value.find((c) => c.id === draftChannelId.value)
-  if (!ch) {
-    const label = String(draftChannelLabel.value || '').trim()
-    if (!label) {
-      ElMessage.warning('请选择常用渠道，或填写自定义名称')
-      return
-    }
-    let id = slugEnvKey(label, 'ch')
-    if (channels.value.some((c) => c.id === id)) id = `${id}${channels.value.length + 1}`
-    ch = { id, label, field: 'value', placeholder: '' }
+  const kind = draftKind.value
+  const platform = kind === 'app' ? draftPlatform.value : kind
+  const alias = String(draftAlias.value || '').trim()
+  if (sameKindExists.value && !alias) {
+    ElMessage.warning('同类型已有一条，请填写三方平台简称，例如 CRM、管理后台')
+    return
   }
-  channels.value = [...channels.value, { ...ch }]
+  const preset = DEFAULT_CHANNELS.find((c) => c.id === platform) || DEFAULT_CHANNELS.find((c) => c.kind === kind)
+  const aliasSlug = slugEnvKey(alias, '')
+  let id = aliasSlug ? `${platform}-${aliasSlug}` : platform
+  if (channels.value.some((c) => c.id === id)) id = `${id}${channels.value.length + 1}`
+  const ch = {
+    id,
+    kind,
+    platform,
+    alias,
+    third_party: Boolean(alias),
+    label: alias || preset?.label || kind,
+    field: preset?.field || 'value',
+    placeholder: preset?.placeholder || '',
+  }
+  channels.value = [...channels.value, ch]
   for (const env of environments.value) {
     ensureProfile(env.key)
     profiles[env.key][ch.id] = { [ch.field]: '' }
   }
-  draftChannelId.value = ''
-  draftChannelLabel.value = ''
   addChannelOpen.value = false
   dirty.value = true
 }
@@ -361,7 +500,7 @@ const removeChannel = async (id) => {
   if (channels.value.length <= 1) return
   const ch = channels.value.find((c) => c.id === id)
   try {
-    await ElMessageBox.confirm(`删除渠道「${ch?.label || id}」？所有环境下的这项配置都会丢掉。`, '删除渠道', { type: 'warning' })
+    await ElMessageBox.confirm(`删除「${channelTitle(ch) || id}」？所有环境下的这项配置都会丢掉。`, '删除应用', { type: 'warning' })
   } catch { return }
   channels.value = channels.value.filter((c) => c.id !== id)
   for (const env of environments.value) {
@@ -553,7 +692,11 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFille
 .field-name {
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--mo-text);
+}
+.field-meta {
+  font-size: 11px;
+  color: var(--mo-muted);
 }
 .var-chip {
   border: none;

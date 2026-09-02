@@ -84,6 +84,47 @@ export const initServiceConfig = async () => {
   return host
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** True only when the API actually answers. Unlike getServiceHost, this does not fall back to a dead host. */
+export const pingServer = async (timeoutMs = 800) => {
+  if (usesWebProxy()) {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      const response = await fetch('/sys/server_info', {
+        method: 'GET',
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      return response.ok || response.status === 404
+    } catch {
+      return false
+    }
+  }
+
+  const cached = localStorage.getItem('service_host')
+  const candidates = [...new Set([cached, DEFAULT_HOST, REMOTE_HOST].filter(Boolean))]
+  for (const host of candidates) {
+    const found = await probe(host, timeoutMs)
+    if (found) {
+      localStorage.setItem('service_host', found)
+      return true
+    }
+  }
+  return false
+}
+
+export const waitForServer = async ({ timeoutMs = 0, intervalMs = 600, isCancelled } = {}) => {
+  const started = Date.now()
+  while (!isCancelled?.()) {
+    if (timeoutMs > 0 && Date.now() - started >= timeoutMs) return false
+    if (await pingServer(800)) return true
+    await sleep(intervalMs)
+  }
+  return false
+}
+
 export const SERVICE_PORT = DEFAULT_PORT
 export const LOCAL_HOST = DEFAULT_HOST
 export const MDNS_HOST = REMOTE_HOST

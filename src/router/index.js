@@ -36,7 +36,7 @@ const routes = [
     },
     {
         path: '/',
-        redirect: '/dialogue'
+        redirect: '/login'
     },
     {
         path: '/settings',
@@ -129,15 +129,15 @@ const routes = [
     },
     {
         path: '/testing/:appId/tasks/:taskId',
-        redirect: (to) => ({
-            name: 'TestingApp',
-            params: { appId: to.params.appId },
-            query: {
-                ...to.query,
-                tab: 'tasks',
-                task: to.params.taskId,
-            },
-        }),
+        name: 'TestingTask',
+        component: TestingApp,
+        meta: { title: '任务详情', requiresAuth: true, workMode: 'testing' }
+    },
+    {
+        path: '/testing/:appId/tasks/:taskId/cases/:caseId',
+        name: 'TestingTaskCase',
+        component: TestingApp,
+        meta: { title: '用例详情', requiresAuth: true, workMode: 'testing' }
     },
     {
         path: '/report/apps',
@@ -188,7 +188,11 @@ const routes = [
         name: 'Editor',
         redirect: { name: 'TestingHome' },
         meta: { title: '工作流编辑', requiresAuth: true },
-    }
+    },
+    {
+        path: '/:pathMatch(.*)*',
+        redirect: '/login',
+    },
 ]
 
 const router = createRouter({
@@ -196,6 +200,18 @@ const router = createRouter({
     history: createWebHashHistory(),
     routes
 })
+
+const AUTH_CHECK_MS = 8000
+
+function withTimeout(promise, ms = AUTH_CHECK_MS) {
+    let timer
+    return Promise.race([
+        promise.finally(() => clearTimeout(timer)),
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('auth-timeout')), ms)
+        }),
+    ])
+}
 
 router.beforeEach(async (to, from, next) => {
     if (to.fullPath !== from.fullPath) clearTitlebar()
@@ -223,18 +239,16 @@ router.beforeEach(async (to, from, next) => {
         }
     }
 
-    // 1. 如果不需要鉴权，直接放行
-    if (!to.meta.requiresAuth && !to.meta.requiresGuest) return next()
+    // Login handles connecting / 登录中. Do not bounce guests before that overlay can show.
+    if (to.meta.requiresGuest || (!to.meta.requiresAuth && !to.meta.requiresGuest)) return next()
 
     try {
-        const auth = await getAuthStatus()
+        const auth = await withTimeout(getAuthStatus(), 8000)
         const loggedIn = !!auth?.data?.logged_in
-        if (to.meta.requiresAuth && !loggedIn) return next('/login')
-        if (to.meta.requiresGuest && loggedIn) return next('/dialogue')
+        if (!loggedIn) return next('/login')
         next()
     } catch (e) {
-        if (to.meta.requiresAuth) return next('/login')
-        next()
+        return next('/login')
     }
 })
 

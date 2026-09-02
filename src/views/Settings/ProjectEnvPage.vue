@@ -22,7 +22,7 @@ const goProjects = () => router.push({ name: 'TestingHome' })
     <div class="head-row">
       <div>
         <h2>{{ projectName }} · 运行环境</h2>
-        <p class="desc">包名与 URL 在此维护；应用执行时按所选 Profile 解析。</p>
+        <p class="desc">本项目的 App / Web / Server 与各环境启动标识在此维护。</p>
       </div>
       <el-button type="primary" :loading="editorRef?.saving" @click="save">保存</el-button>
     </div>

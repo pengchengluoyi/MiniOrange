@@ -55,14 +55,14 @@ const tabs = computed(() => {
   const hidden = props.hideSections || []
   if (props.embedded) {
     return [
-      { key: 'env', label: '环境配置', desc: '上线顺序 · 渠道' },
+      { key: 'env', label: '环境配置', desc: '上线顺序 · 应用与平台 · 登录凭证' },
       { key: 'flow', label: '阶段模板', desc: '阶段对齐已配环境' },
       { key: 'workflow', label: '角色编排', desc: '角色 Prompt 编排' },
       { key: 'figma', label: '设计稿', desc: '同步 Figma' },
     ].filter((t) => !hidden.includes(t.key))
   }
   return [
-    { key: 'env', label: '环境配置', desc: '上线顺序 · 渠道' },
+    { key: 'env', label: '环境配置', desc: '上线顺序 · 应用与平台 · 登录凭证' },
     { key: 'flow', label: '阶段模板', desc: '阶段对齐已配环境' },
     { key: 'workflow', label: '角色编排', desc: '角色 Prompt 编排' },
     { key: 'figma', label: '设计稿' },
@@ -386,7 +386,7 @@ onMounted(async () => {
       <el-card v-if="projectId" shadow="never" class="card env-config-card">
         <h3>环境配置</h3>
         <p class="hint">
-          左侧从上到下就是上线顺序。每一步填各渠道怎么启动。
+          左侧从上到下就是上线顺序。每一步维护本项目的 App / Web / Server，三方平台用简称区分；测试和正式的启动标识分开填。
           <button type="button" class="settings-action-pill hint-pill" @click="switchTab('flow')">
             去改流程模板<span class="settings-action-arrow">→</span>
           </button>
@@ -394,7 +394,7 @@ onMounted(async () => {
         <ProjectEnvEditor ref="envEditorRef" :project-id="projectId" :workflow="workflow" @saved="() => { loadEnvSnap() }" />
       </el-card>
       <el-alert v-else type="info" show-icon :closable="false" class="env-missing">
-        未关联项目 ID，请从测试工作台进入该应用后再编辑环境。
+        未关联项目，请从测试工作台进入该项目后再编辑环境。
       </el-alert>
     </div>
 

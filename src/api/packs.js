@@ -1,9 +1,9 @@
 import request from '@/utils/request'
 
-// Packs 控制台：YAML 声明的扩展（capability / recovery / knowledge / oracle）
+// Packs 控制台。Tab 分类由 GET /packs/kinds 下发（前置/步骤/预期/通用 + 恢复/知识/判定）
 // 后端见 MiniOrangeServer/server/routers/rPacks.py
 
-/** Tab 元数据：每类的中文名、条目数、是否已就绪 */
+/** Tab 元数据：中文名、条目数、是否已就绪。不要在页面写死分类。 */
 export const listPackKinds = () =>
   request({ url: '/packs/kinds', method: 'get' })
 

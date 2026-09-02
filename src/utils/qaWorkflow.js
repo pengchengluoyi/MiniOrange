@@ -82,7 +82,7 @@ export const PROCESS_JOBS = [
   { id: 'draft_sign', role_id: 'req-qa-bm', label: '验收草稿', output: '验收建议', tab: '验收建议', tick: false },
   { id: 'pick_regression', role_id: 'version-qa-bm', label: '圈定回归范围', output: '回归用例', tab: '回归范围', tick: false },
   { id: 'draft_gate', role_id: 'version-qa-bm', label: '发版草稿', output: '发版建议', tab: '发版建议', tick: false },
-  { id: 'pick_account', role_id: 'test-engineer', label: '筛测试账号', output: '本步用的号', tab: '测试账号', tick: false },
+  { id: 'pick_account', role_id: 'test-engineer', label: '租账号', output: '本步用的号', tab: '测试资源', tick: false },
 ]
 
 export const PROCESS_JOB_MAP = Object.fromEntries(PROCESS_JOBS.map((j) => [j.id, j]))
@@ -123,7 +123,7 @@ export function defaultChains() {
     {
       id: 'wf-dispatch',
       name: '下发执行',
-      summary: '开跑前按场景筛测试账号，再下发真机。',
+      summary: '开跑前按场景租账号，再下发真机。',
       steps: [{ capability_id: 'pick_account', role_id: 'test-engineer' }],
     },
     {

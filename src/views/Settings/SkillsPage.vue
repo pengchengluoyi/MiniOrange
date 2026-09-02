@@ -8,7 +8,7 @@ import './settings-ui.css'
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">能力目录</h2>
-        <p class="settings-page-desc">执行器动作和编排能力的说明。外部系统在「插件」，YAML 包在「扩展包」。</p>
+        <p class="settings-page-desc">写用例时按点击、输入、打开应用来说。编排层会先租测试资源再备会话，不必手写内部名称。</p>
       </div>
     </header>
     <SkillsPanel />

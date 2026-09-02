@@ -1,12 +1,15 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElLoading, ElMessage } from 'element-plus'
 import { Minus, FullScreen, Close } from '@element-plus/icons-vue'
 import { getAuthStatus, loginAccount, registerAccount, sendAuthCode } from '@/api/auth'
 import { persistRealtimeTokens, bootstrapRealtime } from '@/utils/realtime'
 import { pullAgentSessions } from '@/utils/agentSessions'
 import { useAppChrome } from '@/composables/useAppChrome'
+import { waitForServer, getBaseUrl } from '@/utils/config'
+import { setGlobalBaseUrl } from '@/utils/request'
+import { lastAgentPath } from '@/utils/workMode'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -26,9 +29,40 @@ const cooldown = ref(0)
 const serverOk = ref(true)
 const needsSetup = ref(false)
 const mailConfigured = ref(false)
+const bootOpen = ref(true)
+const bootPhase = ref('connecting')
 const { isElectron, isMac, showMacTraffic, showWinControls, handleMinimize, handleMaximize, handleClose } = useAppChrome()
 
 let cooldownTimer = null
+let bootGen = 0
+
+const bootTitle = computed(() => {
+  if (bootPhase.value === 'entering') return '登录中'
+  if (bootPhase.value === 'auth') return '正在确认登录'
+  return '正在连接服务'
+})
+
+let bootLoading = null
+const setBootLoading = (open, text) => {
+  if (!open) {
+    bootLoading?.close()
+    bootLoading = null
+    return
+  }
+  if (bootLoading) {
+    bootLoading.setText?.(text)
+    return
+  }
+  bootLoading = ElLoading.service({
+    lock: true,
+    text,
+    background: 'rgba(246, 247, 251, 0.56)',
+  })
+}
+
+watch([bootOpen, bootTitle], ([open, text]) => {
+  setBootLoading(open, text)
+}, { immediate: true })
 
 const isAccount = computed(() => method.value === 'account')
 const isRegister = computed(() => !isAccount.value && mode.value === 'register')
@@ -47,11 +81,19 @@ const submitLabel = computed(() => {
   return isRegister.value ? '注册并进入' : '登录'
 })
 
-const goHome = () => router.replace('/')
+const homePath = () => {
+  const last = lastAgentPath()
+  if (!last || last === '/' || last.startsWith('/login')) return '/dialogue'
+  return last
+}
+
+const goHome = () => router.replace(homePath())
 
 const persistSession = (data) => {
   persistRealtimeTokens(data || {})
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const setMethod = (next) => {
   method.value = next
@@ -82,20 +124,52 @@ const startCooldown = (sec) => {
   }, 1000)
 }
 
-const loadStatus = async () => {
+const runBoot = async () => {
+  const gen = ++bootGen
+  bootOpen.value = true
+  bootPhase.value = 'connecting'
+  serverOk.value = true
+
+  const connected = await waitForServer({
+    timeoutMs: 90000,
+    intervalMs: 600,
+    isCancelled: () => gen !== bootGen,
+  })
+  if (gen !== bootGen) return
+  if (!connected) {
+    serverOk.value = false
+    bootOpen.value = false
+    return
+  }
+
+  try {
+    setGlobalBaseUrl(getBaseUrl())
+  } catch (_) { /* axios will probe */ }
+
+  bootPhase.value = 'auth'
   try {
     const res = await getAuthStatus()
+    if (gen !== bootGen) return
     const data = res?.data || {}
     serverOk.value = true
     needsSetup.value = !!data.needs_setup
     mailConfigured.value = !!data.mail_configured
     if (data.logged_in) {
+      bootPhase.value = 'entering'
+      await bootstrapRealtime()
+      try { await pullAgentSessions() } catch (_) { /* sessions can wait */ }
+      if (gen !== bootGen) return
       goHome()
       return
     }
+    await sleep(280)
   } catch (_) {
+    if (gen !== bootGen) return
     serverOk.value = false
+    bootOpen.value = false
+    return
   }
+  bootOpen.value = false
 }
 
 const validate = () => {
@@ -159,6 +233,8 @@ const submit = async () => {
       persistSession(res?.data || {})
       ElMessage.success('登录成功')
     }
+    bootOpen.value = true
+    bootPhase.value = 'entering'
     await bootstrapRealtime()
     await pullAgentSessions()
     goHome()
@@ -170,9 +246,11 @@ const submit = async () => {
 }
 
 onMounted(() => {
-  loadStatus()
+  runBoot()
 })
 onUnmounted(() => {
+  bootGen += 1
+  setBootLoading(false, '')
   if (cooldownTimer) clearInterval(cooldownTimer)
 })
 </script>
@@ -219,7 +297,7 @@ onUnmounted(() => {
 
           <div v-if="!serverOk" class="server-off">
             <p>连不上服务</p>
-            <button type="button" class="ghost" @click="loadStatus">重试</button>
+            <button type="button" class="ghost" @click="runBoot">重试</button>
           </div>
 
           <template v-else>
@@ -292,6 +370,7 @@ onUnmounted(() => {
 
 <style scoped>
 .login-page {
+  position: relative;
   height: 100%;
   min-height: 0;
   display: flex;

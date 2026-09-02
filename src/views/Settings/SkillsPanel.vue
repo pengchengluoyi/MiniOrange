@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { getSkillsCatalog } from '@/api/settings'
+import './settings-ui.css'
 
 const loading = ref(false)
 const activeLayer = ref('executor')
@@ -125,7 +126,7 @@ onMounted(load)
           @click="activeLayer = 'executor'"
         >
           <strong>设备操作</strong>
-          <span>nodeCode / 引擎能力</span>
+          <span>点击、输入、打开应用</span>
         </button>
         <button
           type="button"
@@ -134,7 +135,7 @@ onMounted(load)
           @click="activeLayer = 'server'"
         >
           <strong>编排服务</strong>
-          <span>Server 自动调用</span>
+          <span>账号、登录、编排</span>
         </button>
       </div>
       <el-input
@@ -151,8 +152,8 @@ onMounted(load)
     </div>
 
     <!-- 常用速查：仅执行器、无搜索时展示 -->
-    <section v-if="activeLayer === 'executor' && !keyword.trim()" class="cheatsheet">
-      <h3>写用例时怎么说</h3>
+    <section v-if="activeLayer === 'executor' && !keyword.trim()" class="settings-info-card cheatsheet">
+      <div class="settings-kicker">写用例时怎么说</div>
       <div class="cheat-grid">
         <div v-for="item in FEATURED" :key="item.label" class="cheat-item">
           <span class="cheat-label">{{ item.label }}</span>
@@ -165,53 +166,55 @@ onMounted(load)
     <template v-if="activeLayer === 'executor'">
       <div v-if="!filteredExecutorOps.length && !loading" class="empty">无匹配</div>
 
-      <div class="op-list">
-        <button
-          v-for="op in filteredExecutorOps"
-          :key="op.key"
-          type="button"
-          class="op-row"
-          :class="[{ open: expandedOp === op.key }, toneClass(op)]"
-          @click="toggleOp(op.key)"
-        >
-          <div class="op-main">
-            <span class="tone-dot"></span>
-            <span class="op-name">{{ op.name }}</span>
-            <code class="op-example">{{ primaryExample(op) }}</code>
-            <span class="platforms">
-              <span v-for="p in op.platforms" :key="p" class="platform-tag">{{ platformLabel(p) }}</span>
-            </span>
-            <span class="op-node">{{ nodeLabel(op) }}</span>
-          </div>
-
-          <div v-if="expandedOp === op.key" class="op-detail" @click.stop>
-            <p v-if="op.description" class="detail-desc">{{ op.description }}</p>
-            <p v-if="op.risk" class="risk-text">注意：{{ op.risk }}</p>
-            <div v-if="op.examples?.length > 1" class="detail-ex">
-              <span v-for="ex in op.examples" :key="ex" class="ex-tag">{{ ex }}</span>
+      <div v-if="filteredExecutorOps.length" class="settings-card op-card">
+        <div class="op-list">
+          <button
+            v-for="op in filteredExecutorOps"
+            :key="op.key"
+            type="button"
+            class="op-row"
+            :class="[{ open: expandedOp === op.key, 'show-tech': showTech }, toneClass(op)]"
+            @click="toggleOp(op.key)"
+          >
+            <div class="op-main">
+              <span class="tone-dot"></span>
+              <span class="op-name">{{ op.name }}</span>
+              <code class="op-example">{{ primaryExample(op) }}</code>
+              <span class="platforms">
+                <span v-for="p in op.platforms" :key="p" class="platform-tag">{{ platformLabel(p) }}</span>
+              </span>
+              <span v-if="showTech" class="op-node">{{ nodeLabel(op) }}</span>
             </div>
-            <template v-if="showTech">
-              <div v-if="op.params?.length" class="detail-params">
-                <span
-                  v-for="p in op.params"
-                  :key="p.name"
-                  class="param-tag"
-                >{{ p.name }}<template v-if="p.example">={{ p.example }}</template></span>
+
+            <div v-if="expandedOp === op.key" class="op-detail" @click.stop>
+              <p v-if="op.description" class="detail-desc">{{ op.description }}</p>
+              <p v-if="op.risk" class="risk-text">注意：{{ op.risk }}</p>
+              <div v-if="op.examples?.length > 1" class="detail-ex">
+                <span v-for="ex in op.examples" :key="ex" class="ex-tag">{{ ex }}</span>
               </div>
-              <code v-if="op.invoke" class="detail-invoke">{{ op.invoke }}</code>
-            </template>
-          </div>
-        </button>
+              <template v-if="showTech">
+                <div v-if="op.params?.length" class="detail-params">
+                  <span
+                    v-for="p in op.params"
+                    :key="p.name"
+                    class="param-tag"
+                  >{{ p.name }}<template v-if="p.example">={{ p.example }}</template></span>
+                </div>
+                <code v-if="op.invoke" class="detail-invoke">{{ op.invoke }}</code>
+              </template>
+            </div>
+          </button>
+        </div>
       </div>
     </template>
 
     <!-- Server：分组简洁列表 -->
     <template v-else>
-      <p v-if="!keyword.trim()" class="server-hint">以下由 Copilot / 回归执行自动调用，无需手写 nodeCode。</p>
+      <p v-if="!keyword.trim()" class="server-hint">这些能力由执行批次和 Copilot 自动调用，写用例时不用管。</p>
 
       <div v-if="!filteredServerGroups.length && !loading" class="empty">无匹配</div>
 
-      <section v-for="group in filteredServerGroups" :key="group.key" class="server-section">
+      <section v-for="group in filteredServerGroups" :key="group.key" class="settings-card server-section">
         <h3 class="section-title">{{ group.title }}</h3>
         <div class="server-list">
           <div v-for="item in group.items" :key="item.id" class="server-row">
@@ -266,7 +269,7 @@ onMounted(load)
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--settings-muted, #9ca3af);
   cursor: pointer;
   user-select: none;
 }
@@ -276,24 +279,15 @@ onMounted(load)
 }
 
 .tech-toggle input {
-  accent-color: #6366f1;
+  accent-color: var(--settings-primary, var(--mo-primary, #6366f1));
 }
 
-/* 速查表 */
 .cheatsheet {
-  margin-bottom: 24px;
-  padding: 16px 18px;
-  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 48%, #f5f3ff 100%);
-  border: 1px solid #c7d2fe;
-  border-radius: 12px;
-  box-shadow: 0 10px 24px rgba(79, 70, 229, 0.08);
+  margin-bottom: 16px;
 }
 
-.cheatsheet h3 {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #312e81;
+.cheatsheet .settings-kicker {
+  margin-bottom: 10px;
 }
 
 .cheat-grid {
@@ -313,7 +307,7 @@ onMounted(load)
   flex-shrink: 0;
   width: 56px;
   font-weight: 600;
-  color: #4338ca;
+  color: var(--settings-primary, var(--mo-primary, #4338ca));
 }
 
 .cheat-ex {
@@ -325,15 +319,15 @@ onMounted(load)
   border: 1px solid rgba(199, 210, 254, 0.7);
 }
 
-/* 执行器列表 */
+.op-card {
+  padding: 0;
+  overflow: hidden;
+}
+
 .op-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  background: #dbeafe;
-  border: 1px solid #dbeafe;
-  border-radius: 10px;
-  overflow: hidden;
+  gap: 0;
 }
 
 .op-row {
@@ -348,21 +342,29 @@ onMounted(load)
   transition: background 0.1s;
 }
 
+.op-row + .op-row {
+  border-top: 1px solid var(--settings-border, #e3e8f0);
+}
+
 .op-row:hover {
-  background: #fafafa;
+  background: var(--settings-soft, #fafafa);
 }
 
 .op-row.open {
-  background: #f8fbff;
+  background: var(--mo-primary-soft, #f8fbff);
 }
 
 .op-main {
   display: grid;
-  grid-template-columns: 10px 100px 1fr 190px 140px;
+  grid-template-columns: 10px 100px 1fr 190px;
   gap: 12px;
   align-items: center;
   padding: 11px 16px;
   font-size: 13px;
+}
+
+.op-row.show-tech .op-main {
+  grid-template-columns: 10px 100px 1fr 190px 140px;
 }
 
 .tone-dot {
@@ -533,16 +535,20 @@ onMounted(load)
 }
 
 .server-list {
-  border: 1px solid #bfdbfe;
-  border-radius: 10px;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
 }
 
 .server-row {
-  padding: 12px 16px;
-  background: linear-gradient(90deg, #fff 0%, #f8fbff 100%);
-  border-bottom: 1px solid #e0f2fe;
+  padding: 12px 0;
+  background: transparent;
+  border-bottom: 1px solid var(--settings-border, #e0f2fe);
   font-size: 13px;
+}
+
+.server-row:last-child {
+  border-bottom: none;
 }
 
 .server-row:last-child {

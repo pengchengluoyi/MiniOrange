@@ -8,7 +8,7 @@ import './settings-ui.css'
     <header class="settings-page-header">
       <div>
         <h2 class="settings-page-title">扩展包</h2>
-        <p class="settings-page-desc">应用或团队的 YAML 能力包。和「插件」（外部系统）不是同一件事。</p>
+        <p class="settings-page-desc">执行能力按前置、步骤、预期、通用由服务端下发。恢复 / 知识 / 判定仍是 YAML 扩展。</p>
       </div>
     </header>
     <PacksPanel />
